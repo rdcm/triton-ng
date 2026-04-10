@@ -22,6 +22,8 @@ pub struct InferenceResult {
 pub struct InferenceContext {
     tx: Sender<InferenceResult>,
     allocator: ResponseAllocator,
+    pending_outputs: Vec<OutputTensor>,
+    error: Option<String>,
 }
 
 pub struct Server {
@@ -122,7 +124,12 @@ impl Server {
             ptr::null_mut(),
         ))?;
 
-        let context = Box::new(InferenceContext { tx, allocator });
+        let context = Box::new(InferenceContext {
+            tx,
+            allocator,
+            pending_outputs: Vec::new(),
+            error: None,
+        });
         let context_ptr = Box::into_raw(context) as *mut c_void;
 
         if let Err(e) = ffi_call!(
@@ -170,51 +177,71 @@ impl Server {
 
 /// Called by Triton after the backend has fully released the inference request.
 /// At this point it is safe to delete the request object.
+///
+/// The header says RELEASE_ALL should always be set today, but recommends
+/// checking explicitly in case future versions add new flags.
 unsafe extern "C" fn inference_request_release(
     request: *mut triton_sys::TRITONSERVER_InferenceRequest,
-    _flags: u32,
+    flags: u32,
     _userp: *mut std::os::raw::c_void,
 ) {
-    if !request.is_null() {
+    use triton_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL as RELEASE_ALL;
+    if flags & (RELEASE_ALL as u32) != 0 && !request.is_null() {
         unsafe { triton_sys::TRITONSERVER_InferenceRequestDelete(request) };
     }
 }
 
+/// Called by Triton for each response (and once more with a null response when
+/// RESPONSE_COMPLETE_FINAL is set, to signal end-of-stream).
+///
+/// For one-to-one models this is called exactly once with FINAL set.
+/// For decoupled/streaming models it may be called multiple times; we
+/// accumulate outputs across all non-final callbacks and only send the
+/// collected result (and drop the context) when FINAL arrives.
 unsafe extern "C" fn inference_response_complete(
     response_ptr: *mut triton_sys::TRITONSERVER_InferenceResponse,
-    _flags: u32,
+    flags: u32,
     userp: *mut std::os::raw::c_void,
 ) {
-    let context = unsafe { Box::from_raw(userp as *mut InferenceContext) };
+    use triton_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL as FINAL;
+    let is_final = flags & (FINAL as u32) != 0;
 
-    let response = match InferenceResponse::from_ptr(response_ptr) {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = context.tx.send(InferenceResult {
+    // Borrow context without taking ownership — we only own it on the final call.
+    let context = unsafe { &mut *(userp as *mut InferenceContext) };
+
+    if !response_ptr.is_null() {
+        match InferenceResponse::from_ptr(response_ptr) {
+            Err(e) => {
+                context.error.get_or_insert_with(|| e.to_string());
+            }
+            Ok(response) => {
+                if let Some(err) = response.error() {
+                    context.error.get_or_insert_with(|| err.to_string());
+                } else {
+                    match response.outputs() {
+                        Ok(outputs) => context.pending_outputs.extend(outputs),
+                        Err(e) => {
+                            context.error.get_or_insert_with(|| e.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if is_final {
+        let context = unsafe { Box::from_raw(userp as *mut InferenceContext) };
+        let result = if let Some(error) = context.error {
+            InferenceResult {
                 outputs: vec![],
-                error: Some(e.to_string()),
-            });
-            return;
-        }
-    };
-
-    let result = if let Some(error) = response.error() {
-        InferenceResult {
-            outputs: vec![],
-            error: Some(error.to_string()),
-        }
-    } else {
-        match response.outputs() {
-            Ok(outputs) => InferenceResult {
-                outputs,
+                error: Some(error),
+            }
+        } else {
+            InferenceResult {
+                outputs: context.pending_outputs,
                 error: None,
-            },
-            Err(e) => InferenceResult {
-                outputs: vec![],
-                error: Some(e.to_string()),
-            },
-        }
-    };
-
-    let _ = context.tx.send(result);
+            }
+        };
+        let _ = context.tx.send(result);
+    }
 }

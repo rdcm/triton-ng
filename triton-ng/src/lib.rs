@@ -1,7 +1,11 @@
 #[path = "backend.rs"]
 pub mod backend;
+#[path = "backend_handle.rs"]
+pub mod backend_handle;
 #[path = "model.rs"]
 pub mod model;
+#[path = "model_instance.rs"]
+pub mod model_instance;
 #[path = "request.rs"]
 pub mod request;
 #[macro_use]
@@ -23,10 +27,12 @@ pub mod server;
 pub mod utils;
 
 pub use backend::*;
+pub use backend_handle::*;
 pub use error::*;
 pub use inference_request::*;
 pub use inference_response::*;
 pub use model::*;
+pub use model_instance::*;
 pub use request::*;
 pub use response::*;
 pub use response_allocator::*;

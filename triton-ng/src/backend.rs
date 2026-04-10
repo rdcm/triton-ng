@@ -1,5 +1,7 @@
+use crate::backend_handle::BackendHandle;
 use crate::error::Error;
 use crate::model::Model;
+use crate::model_instance::ModelInstance;
 use crate::request::Request;
 
 pub trait Backend {
@@ -10,7 +12,7 @@ pub trait Backend {
     /// shared across all models that use the backend.
     ///
     /// Corresponds to TRITONBACKEND_Initialize.
-    fn initialize() -> Result<(), Error> {
+    fn initialize(_backend: &BackendHandle) -> Result<(), Error> {
         Ok(())
     }
 
@@ -19,8 +21,9 @@ pub trait Backend {
     /// before the backend is unloaded. All state associated with the
     /// backend should be freed and any threads created for the backend
     /// should be exited/joined before returning from this function.
+    ///
     /// Corresponds to TRITONBACKEND_Finalize.
-    fn finalize() -> Result<(), Error> {
+    fn finalize(_backend: &BackendHandle) -> Result<(), Error> {
         Ok(())
     }
 
@@ -30,7 +33,7 @@ pub trait Backend {
     /// initialize any state associated with the instance.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceInitialize.
-    fn model_instance_initialize() -> Result<(), Error> {
+    fn model_instance_initialize(_instance: &ModelInstance) -> Result<(), Error> {
         Ok(())
     }
 
@@ -42,7 +45,7 @@ pub trait Backend {
     /// exited/joined before returning from this function.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceFinalize.
-    fn model_instance_finalize() -> Result<(), Error> {
+    fn model_instance_finalize(_instance: &ModelInstance) -> Result<(), Error> {
         Ok(())
     }
 
@@ -79,30 +82,38 @@ macro_rules! declare_backend {
     ($class:ident) => {
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_Initialize(
-            backend: *const triton_ng::sys::TRITONBACKEND_Backend,
+            backend: *mut triton_ng::sys::TRITONBACKEND_Backend,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::initialize())
+            triton_ng::call_checked!($class::initialize(
+                &triton_ng::BackendHandle::from_ptr(backend)
+            ))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_Finalize(
-            backend: *const triton_ng::sys::TRITONBACKEND_Backend,
+            backend: *mut triton_ng::sys::TRITONBACKEND_Backend,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::finalize())
+            triton_ng::call_checked!($class::finalize(
+                &triton_ng::BackendHandle::from_ptr(backend)
+            ))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
             instance: *mut triton_ng::sys::TRITONBACKEND_ModelInstance,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::model_instance_initialize())
+            triton_ng::call_checked!($class::model_instance_initialize(
+                &triton_ng::ModelInstance::from_ptr(instance)
+            ))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceFinalize(
-            instance: *const triton_ng::sys::TRITONBACKEND_ModelInstance,
+            instance: *mut triton_ng::sys::TRITONBACKEND_ModelInstance,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::model_instance_finalize())
+            triton_ng::call_checked!($class::model_instance_finalize(
+                &triton_ng::ModelInstance::from_ptr(instance)
+            ))
         }
 
         #[unsafe(no_mangle)]
