@@ -1,3 +1,7 @@
+setup-protoc:
+	sudo dnf install protobuf-compiler
+	protoc --version
+
 docker-env-up:
 	mkdir ./backends/custom_backend -p
 	docker compose up -d
@@ -18,12 +22,14 @@ logs:
 	docker logs triton
 
 update-submodules:
+	git submodule update --init --recursive
 	git submodule update --remote
 
 gen-grpc-client:
 	cargo build --manifest-path=triton-grpc-client/Cargo.toml --release
 
 build:
+	mkdir -p models/mnist/1
 	cargo build --release
 	mv target/release/libtriton_custom_backend.so backends/custom_backend/libtriton_custom_backend.so
 

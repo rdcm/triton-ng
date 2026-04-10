@@ -54,8 +54,8 @@ impl InferenceRequest {
             name_cstr.as_ptr(),
             data.as_ptr() as *const c_void,
             data.len(),
-            triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU, // TODO: check this
-            0,                                                                // device_id
+            triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU,
+            0, // device_id
         ))
     }
 

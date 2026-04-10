@@ -51,7 +51,7 @@ impl Backend for MnistBackend {
             inference_req.add_requested_output("Plus214_Output_0")?;
 
             println!("[MNIST] Running inference...");
-            let inference_result = server.infer_async(&inference_req)?;
+            let inference_result = server.infer_async(inference_req)?;
 
             let output_tensor = &inference_result.outputs[0];
             println!("[MNIST] Got output: {} bytes", output_tensor.data.len());

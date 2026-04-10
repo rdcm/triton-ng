@@ -62,16 +62,15 @@ impl Input {
     }
 
     pub fn as_string(&self) -> Result<String, Error> {
-        let _properties = self.properties()?;
         let buffer = self.buffer()?;
-
         let strings = decode_string(&buffer)?;
-        // TODO: remove unwrap
-        Ok(strings.first().unwrap().clone())
+        strings
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty BYTES tensor".into())
     }
 
     pub fn as_u64(&self) -> Result<u64, Error> {
-        let _properties = self.properties()?;
         let buffer = self.buffer()?;
 
         let mut bytes = [0u8; 8];
@@ -81,7 +80,6 @@ impl Input {
     }
 
     pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
-        let _properties = self.properties()?;
         let buffer = self.buffer()?;
 
         let count = buffer.len() / std::mem::size_of::<f32>();

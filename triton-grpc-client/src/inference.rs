@@ -1877,6 +1877,23 @@ pub struct ModelEnsembling {
     /// @@
     #[prost(message, repeated, tag = "1")]
     pub step: ::prost::alloc::vec::Vec<model_ensembling::Step>,
+    /// @@  .. cpp:var:: uint32 max_inflight_requests
+    /// @@
+    /// @@     BETA  (Subject to change)
+    /// @@     The maximum number of concurrent in-flight requests allowed at each
+    /// @@     ensemble step across all ongoing ensemble requests for this model
+    /// @@     instance. This per-step limit prevents unbounded memory growth when
+    /// @@     ensemble steps produce responses faster than downstream steps can
+    /// @@     consume them (for example, in decoupled models).
+    /// @@     The default value is 0, which indicates that no limit is enforced.
+    /// @@
+    /// @@     Note: Applying this limit may block upstream steps while they wait
+    /// @@     for downstream capacity. This blocking does not cancel or internally
+    /// @@     time out intermediate requests, but clients may experience increased
+    /// @@     end-to-end latency.
+    /// @@
+    #[prost(uint32, tag = "2")]
+    pub max_inflight_requests: u32,
 }
 /// Nested message and enum types in `ModelEnsembling`.
 pub mod model_ensembling {

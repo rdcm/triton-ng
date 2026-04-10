@@ -2,7 +2,8 @@ use crate::TritonError;
 use crate::server::OutputTensor;
 use crate::utils::cstr_to_string;
 use std::ffi::{c_char, c_void};
-use std::{ptr, slice};
+use std::ptr;
+use std::slice;
 
 pub struct InferenceResponse {
     ptr: *mut triton_sys::TRITONSERVER_InferenceResponse,
@@ -21,15 +22,13 @@ impl InferenceResponse {
     }
 
     pub fn error(&self) -> Option<TritonError> {
-        unsafe {
-            let error_ptr: *mut triton_sys::TRITONSERVER_Error = ptr::null_mut();
-            triton_sys::TRITONSERVER_InferenceResponseError(self.ptr);
+        let error_ptr =
+            unsafe { triton_sys::TRITONSERVER_InferenceResponseError(self.ptr) };
 
-            if error_ptr.is_null() {
-                None
-            } else {
-                Some(TritonError::new(error_ptr))
-            }
+        if error_ptr.is_null() {
+            None
+        } else {
+            Some(unsafe { TritonError::new(error_ptr) })
         }
     }
 

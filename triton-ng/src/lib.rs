@@ -29,4 +29,6 @@ pub use inference_response::*;
 pub use model::*;
 pub use request::*;
 pub use response::*;
+pub use response_allocator::*;
+pub use server::*;
 pub use triton_sys as sys;

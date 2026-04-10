@@ -3,6 +3,9 @@ name = "triton-ng"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+cuda = []
+
 [dependencies]
 libc = { workspace = true }
 byteorder = { workspace = true }

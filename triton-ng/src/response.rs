@@ -8,6 +8,9 @@ use std::slice;
 
 pub struct Response {
     ptr: *mut triton_sys::TRITONBACKEND_Response,
+    /// Set to true after a successful `send()` so Drop doesn't double-delete.
+    /// `TRITONBACKEND_ResponseSend` transfers ownership to Triton.
+    sent: bool,
 }
 
 impl Response {
@@ -21,7 +24,7 @@ impl Response {
 
         ensure_ptr!(response)?;
 
-        Ok(Self { ptr: response })
+        Ok(Self { ptr: response, sent: false })
     }
 
     pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Response {
@@ -51,15 +54,32 @@ impl Response {
         Ok(Output::from_ptr(output))
     }
 
-    pub fn send(self) -> Result<(), TritonError> {
+    pub fn send(mut self) -> Result<(), TritonError> {
         let send_flags =
             triton_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL;
 
-        ffi_call!(triton_sys::TRITONBACKEND_ResponseSend(
+        let result = ffi_call!(triton_sys::TRITONBACKEND_ResponseSend(
             self.ptr,
             send_flags,
             ptr::null_mut()
-        ))
+        ));
+
+        if result.is_ok() {
+            // Triton now owns the response object.
+            self.sent = true;
+        }
+
+        result
+    }
+}
+
+impl Drop for Response {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && !self.sent {
+            unsafe {
+                triton_sys::TRITONBACKEND_ResponseDelete(self.ptr);
+            }
+        }
     }
 }
 
