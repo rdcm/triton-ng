@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use tonic::Request;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, ClientTlsConfig};
 use triton_grpc_client::inference::grpc_inference_service_client::GrpcInferenceServiceClient;
 use triton_grpc_client::inference::model_infer_request::{
     InferInputTensor, InferRequestedOutputTensor,
@@ -31,11 +31,19 @@ use crate::types::{
 #[derive(Debug, Clone)]
 pub struct TritonClientConfig {
     url: String,
+    tls: Option<ClientTlsConfig>,
 }
 
 impl TritonClientConfig {
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into() }
+        Self { url: url.into(), tls: None }
+    }
+
+    /// Enables TLS. Pass `ClientTlsConfig::new()` for system roots, or configure
+    /// a custom CA / client identity for mTLS.
+    pub fn with_tls(mut self, tls: ClientTlsConfig) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     pub fn url(&self) -> &str {
@@ -69,10 +77,14 @@ pub struct TritonClient {
 impl TritonClient {
     /// Connects to the Triton server. Returns an error if the server is unreachable.
     pub async fn new(config: TritonClientConfig) -> Result<Self> {
-        let channel = Channel::from_shared(config.url.clone())
-            .map_err(|e| Error::InvalidUrl(e.to_string()))?
-            .connect()
-            .await?;
+        let mut endpoint = Channel::from_shared(config.url.clone())
+            .map_err(|e| Error::InvalidUrl(e.to_string()))?;
+
+        if let Some(tls) = config.tls.clone() {
+            endpoint = endpoint.tls_config(tls)?;
+        }
+
+        let channel = endpoint.connect().await?;
         Ok(Self {
             config,
             client: GrpcInferenceServiceClient::new(channel),
