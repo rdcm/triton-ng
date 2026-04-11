@@ -23,7 +23,7 @@ services:
       --load-model=mnist_onnx
     volumes:
       - ./models:/models
-      - ./backends/custom_backend:/opt/tritonserver/backends/custom_backend
+      - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so
     ports:
       - "8000:8000" # HTTP
       - "8001:8001" # gRPC

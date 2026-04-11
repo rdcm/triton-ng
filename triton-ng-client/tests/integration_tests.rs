@@ -96,8 +96,9 @@ async fn repository_index_lists_all_available_models() -> Result<()> {
     let models = sut.repository_index(false).await?;
     let names: Vec<&str> = models.iter().map(|m| m.name.as_str()).collect();
     assert!(
-        names.contains(&"mnist_onnx"),
-        "mnist_onnx missing from index"
+        names.contains(&sut.config.mnist_model.as_str()),
+        "{} missing from index",
+        sut.config.mnist_model
     );
     assert!(names.contains(&"mnist"), "mnist missing from index");
     Ok(())
