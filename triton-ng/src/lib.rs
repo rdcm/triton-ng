@@ -56,8 +56,8 @@ pub mod __macro_support {
         // SAFETY: replace('\0') guarantees no null bytes remain.
         let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
         unsafe {
-            triton_sys::TRITONSERVER_ErrorNew(
-                triton_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
                 c_str.as_ptr(),
             ) as ErrorPtr
         }
@@ -66,14 +66,14 @@ pub mod __macro_support {
     /// Wraps a raw backend handle pointer. Called from `declare_backend!`.
     pub unsafe fn backend_handle(ptr: *mut c_void) -> crate::backend_handle::BackendHandle {
         crate::backend_handle::BackendHandle::from_ptr(
-            ptr as *mut triton_sys::TRITONBACKEND_Backend,
+            ptr as *mut triton_ng_sys::TRITONBACKEND_Backend,
         )
     }
 
     /// Wraps a raw model instance pointer. Called from `declare_backend!`.
     pub unsafe fn model_instance(ptr: *mut c_void) -> crate::model_instance::ModelInstance {
         crate::model_instance::ModelInstance::from_ptr(
-            ptr as *mut triton_sys::TRITONBACKEND_ModelInstance,
+            ptr as *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
         )
     }
 
@@ -84,10 +84,10 @@ pub mod __macro_support {
         requests_ptr: *const *mut c_void,
         request_count: u32,
     ) -> Result<(crate::model::Model, Vec<crate::request::Request>), ErrorPtr> {
-        let mut model_ptr: *mut triton_sys::TRITONBACKEND_Model = std::ptr::null_mut();
+        let mut model_ptr: *mut triton_ng_sys::TRITONBACKEND_Model = std::ptr::null_mut();
         let err = unsafe {
-            triton_sys::TRITONBACKEND_ModelInstanceModel(
-                instance as *mut triton_sys::TRITONBACKEND_ModelInstance,
+            triton_ng_sys::TRITONBACKEND_ModelInstanceModel(
+                instance as *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
                 &mut model_ptr,
             )
         };
@@ -101,7 +101,7 @@ pub mod __macro_support {
         let requests = raw
             .iter()
             .map(|&r| {
-                crate::request::Request::from_ptr(r as *mut triton_sys::TRITONBACKEND_Request)
+                crate::request::Request::from_ptr(r as *mut triton_ng_sys::TRITONBACKEND_Request)
             })
             .collect();
 

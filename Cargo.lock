@@ -34,7 +34,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "triton-client",
+ "triton-ng-client",
 ]
 
 [[package]]
@@ -1748,30 +1748,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "triton-client"
-version = "0.1.0"
-dependencies = [
- "thiserror",
- "tonic",
- "triton-grpc-client",
-]
-
-[[package]]
 name = "triton-custom-backend"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "triton-ng",
-]
-
-[[package]]
-name = "triton-grpc-client"
-version = "0.1.0"
-dependencies = [
- "prost",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
 ]
 
 [[package]]
@@ -1783,7 +1764,18 @@ dependencies = [
  "libc",
  "serde_json",
  "triton-ng-macros",
- "triton-sys",
+ "triton-ng-sys",
+]
+
+[[package]]
+name = "triton-ng-client"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "thiserror",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]
@@ -1796,7 +1788,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "triton-sys"
+name = "triton-ng-sys"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -4,7 +4,7 @@ pub enum Error {
     Config(#[from] config::ConfigError),
 
     #[error("client error: {0}")]
-    Client(#[from] triton_client::Error),
+    Client(#[from] triton_ng_client::Error),
 
     #[error("model has no inputs")]
     ModelHasNoInputs,

@@ -5,17 +5,17 @@ use libc::c_char;
 use triton_ng_macros::triton_call;
 
 pub struct ModelInstance {
-    ptr: *mut triton_sys::TRITONBACKEND_ModelInstance,
+    ptr: *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
 }
 
 impl ModelInstance {
-    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_ModelInstance) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_ModelInstance) -> Self {
         Self { ptr }
     }
 
     pub fn name(&self) -> Result<String, TritonError> {
         let mut name: *const c_char = std::ptr::null();
-        triton_call!(triton_sys::TRITONBACKEND_ModelInstanceName(
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceName(
             self.ptr, &mut name
         ))?;
         Ok(unsafe { cstr_to_string(name) })
@@ -23,7 +23,7 @@ impl ModelInstance {
 
     pub fn device_id(&self) -> Result<i32, TritonError> {
         let mut device_id: i32 = 0;
-        triton_call!(triton_sys::TRITONBACKEND_ModelInstanceDeviceId(
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceDeviceId(
             self.ptr,
             &mut device_id
         ))?;
@@ -31,8 +31,8 @@ impl ModelInstance {
     }
 
     pub fn kind(&self) -> Result<InstanceKind, TritonError> {
-        let mut kind: triton_sys::TRITONSERVER_InstanceGroupKind = 0;
-        triton_call!(triton_sys::TRITONBACKEND_ModelInstanceKind(
+        let mut kind: triton_ng_sys::TRITONSERVER_InstanceGroupKind = 0;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceKind(
             self.ptr, &mut kind
         ))?;
         Ok(InstanceKind::from_sys(kind))

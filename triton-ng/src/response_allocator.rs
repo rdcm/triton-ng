@@ -14,15 +14,15 @@ unsafe extern "C" {
 }
 
 /// Tag stored in `buffer_userp` so the release callback knows how to free.
-type MemoryKind = triton_sys::TRITONSERVER_MemoryType;
+type MemoryKind = triton_ng_sys::TRITONSERVER_MemoryType;
 
 pub struct ResponseAllocator {
-    ptr: *mut triton_sys::TRITONSERVER_ResponseAllocator,
+    ptr: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
 }
 
 impl ResponseAllocator {
     pub fn new() -> Result<Self, TritonError> {
-        let ptr = triton_call!(triton_sys::TRITONSERVER_ResponseAllocatorNew(
+        let ptr = triton_call!(triton_ng_sys::TRITONSERVER_ResponseAllocatorNew(
             &mut _,
             Some(alloc_fn),
             Some(release_fn),
@@ -31,7 +31,7 @@ impl ResponseAllocator {
         Ok(Self { ptr })
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_ResponseAllocator {
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_ResponseAllocator {
         self.ptr
     }
 }
@@ -40,7 +40,7 @@ impl Drop for ResponseAllocator {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe {
-                triton_sys::TRITONSERVER_ResponseAllocatorDelete(self.ptr);
+                triton_ng_sys::TRITONSERVER_ResponseAllocatorDelete(self.ptr);
             }
         }
     }
@@ -51,23 +51,24 @@ impl Drop for ResponseAllocator {
 /// We store the *actual* memory kind in `buffer_userp` (as a `Box<MemoryKind>`)
 /// so that `release_fn` knows which allocator to use when freeing.
 unsafe extern "C" fn alloc_fn(
-    _allocator: *mut triton_sys::TRITONSERVER_ResponseAllocator,
+    _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
     _tensor_name: *const c_char,
     byte_size: usize,
-    memory_type: triton_sys::TRITONSERVER_MemoryType,
+    memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
     memory_type_id: i64,
     _userp: *mut c_void,
     buffer: *mut *mut c_void,
     buffer_userp: *mut *mut c_void,
-    actual_memory_type: *mut triton_sys::TRITONSERVER_MemoryType,
+    actual_memory_type: *mut triton_ng_sys::TRITONSERVER_MemoryType,
     actual_memory_type_id: *mut i64,
-) -> *mut triton_sys::TRITONSERVER_Error {
+) -> *mut triton_ng_sys::TRITONSERVER_Error {
     // Zero-size outputs are valid; return a null buffer with no userp.
     if byte_size == 0 {
         unsafe {
             *buffer = ptr::null_mut();
             *buffer_userp = ptr::null_mut();
-            *actual_memory_type = triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
+            *actual_memory_type =
+                triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
             *actual_memory_type_id = 0;
         }
         return ptr::null_mut();
@@ -77,8 +78,8 @@ unsafe extern "C" fn alloc_fn(
 
     if buf.is_null() {
         return unsafe {
-            triton_sys::TRITONSERVER_ErrorNew(
-                triton_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
                 c"failed to allocate output buffer".as_ptr() as *const c_char,
             )
         };
@@ -98,13 +99,13 @@ unsafe extern "C" fn alloc_fn(
 
 /// Triton calls this when it is done with a buffer allocated by `alloc_fn`.
 unsafe extern "C" fn release_fn(
-    _allocator: *mut triton_sys::TRITONSERVER_ResponseAllocator,
+    _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
     buffer: *mut c_void,
     buffer_userp: *mut c_void,
     _byte_size: usize,
-    _memory_type: triton_sys::TRITONSERVER_MemoryType,
+    _memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
     _memory_type_id: i64,
-) -> *mut triton_sys::TRITONSERVER_Error {
+) -> *mut triton_ng_sys::TRITONSERVER_Error {
     // Null buffer means it was a zero-size allocation — nothing to free.
     if buffer.is_null() {
         return ptr::null_mut();
@@ -124,10 +125,10 @@ unsafe extern "C" fn release_fn(
 /// Falls back to CPU when the requested kind is unavailable.
 fn allocate(
     byte_size: usize,
-    requested: triton_sys::TRITONSERVER_MemoryType,
+    requested: triton_ng_sys::TRITONSERVER_MemoryType,
     device_id: i64,
-) -> (*mut c_void, triton_sys::TRITONSERVER_MemoryType, i64) {
-    use triton_sys::{
+) -> (*mut c_void, triton_ng_sys::TRITONSERVER_MemoryType, i64) {
+    use triton_ng_sys::{
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU as CPU,
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
@@ -163,8 +164,8 @@ fn allocate(
     }
 }
 
-fn free_buffer(buf: *mut c_void, kind: triton_sys::TRITONSERVER_MemoryType) {
-    use triton_sys::{
+fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
+    use triton_ng_sys::{
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
     };

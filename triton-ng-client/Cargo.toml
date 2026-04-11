@@ -1,10 +1,11 @@
 [package]
-name = "triton-grpc-client"
+name = "triton-ng-client"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 prost = { workspace = true }
+thiserror = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 

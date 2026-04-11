@@ -8,7 +8,7 @@ use std::slice;
 use triton_ng_macros::triton_call;
 
 pub struct Response {
-    ptr: *mut triton_sys::TRITONBACKEND_Response,
+    ptr: *mut triton_ng_sys::TRITONBACKEND_Response,
     /// Set to true after a successful `send()` so Drop doesn't double-delete.
     /// `TRITONBACKEND_ResponseSend` transfers ownership to Triton.
     sent: bool,
@@ -16,7 +16,7 @@ pub struct Response {
 
 impl Response {
     pub fn new(request: &Request) -> Result<Self, TritonError> {
-        let ptr = triton_call!(triton_sys::TRITONBACKEND_ResponseNew(
+        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
             &mut _,
             request.as_ptr()
         ))?;
@@ -30,7 +30,7 @@ impl Response {
         shape: &[i64],
     ) -> Result<Output, TritonError> {
         let name_cstr = cstring_from_str(name)?;
-        let ptr = triton_call!(triton_sys::TRITONBACKEND_ResponseOutput(
+        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseOutput(
             self.ptr,
             &mut _,
             name_cstr.as_ptr(),
@@ -43,9 +43,9 @@ impl Response {
 
     pub fn send(mut self) -> Result<(), TritonError> {
         let send_flags =
-            triton_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL;
+            triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL;
 
-        let result = triton_call!(triton_sys::TRITONBACKEND_ResponseSend(
+        let result = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
             self.ptr,
             send_flags,
             ptr::null_mut(),
@@ -64,18 +64,18 @@ impl Drop for Response {
     fn drop(&mut self) {
         if !self.ptr.is_null() && !self.sent {
             unsafe {
-                triton_sys::TRITONBACKEND_ResponseDelete(self.ptr);
+                triton_ng_sys::TRITONBACKEND_ResponseDelete(self.ptr);
             }
         }
     }
 }
 
 pub struct Output {
-    ptr: *mut triton_sys::TRITONBACKEND_Output,
+    ptr: *mut triton_ng_sys::TRITONBACKEND_Output,
 }
 
 impl Output {
-    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Output) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Output) -> Self {
         Self { ptr }
     }
 
@@ -87,10 +87,10 @@ impl Output {
 
     pub fn write_bytes(&mut self, data: &[u8]) -> Result<(), TritonError> {
         let buffer_byte_size = data.len() as u64;
-        let mut memory_type: triton_sys::TRITONSERVER_MemoryType = 0;
+        let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType = 0;
         let mut memory_type_id = 0;
 
-        let buffer = triton_call!(triton_sys::TRITONBACKEND_OutputBuffer(
+        let buffer = triton_call!(triton_ng_sys::TRITONBACKEND_OutputBuffer(
             self.ptr,
             &mut _,
             buffer_byte_size,

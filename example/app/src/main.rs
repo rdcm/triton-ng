@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use app::app_config::AppConfig;
 use app::error::{Error, Result};
 use tracing::info;
-use triton_client::{InferInput, InferOptions, TritonClient, TritonClientConfig};
+use triton_ng_client::{InferInput, InferOptions, TritonClient, TritonClientConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use triton_grpc_client::inference::{log_settings_request, log_settings_response};
+use crate::generated::inference::{log_settings_request, log_settings_response};
 
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
@@ -51,7 +51,7 @@ pub struct ModelIndex {
 /// The underlying structure is a proto message from the Triton gRPC schema.
 /// Call [`into_proto`](Self::into_proto) for detailed field access.
 #[derive(Clone)]
-pub struct ModelConfig(pub(crate) triton_grpc_client::inference::ModelConfig);
+pub struct ModelConfig(pub(crate) crate::generated::inference::ModelConfig);
 
 impl ModelConfig {
     /// Returns the model name.
@@ -65,7 +65,7 @@ impl ModelConfig {
     }
 
     /// Consumes the wrapper and returns the underlying proto value.
-    pub fn into_proto(self) -> triton_grpc_client::inference::ModelConfig {
+    pub fn into_proto(self) -> crate::generated::inference::ModelConfig {
         self.0
     }
 }
@@ -84,7 +84,7 @@ impl fmt::Debug for ModelConfig {
 ///
 /// Call [`into_proto`](Self::into_proto) for detailed timing breakdowns.
 #[derive(Clone)]
-pub struct ModelStatistics(pub(crate) triton_grpc_client::inference::ModelStatistics);
+pub struct ModelStatistics(pub(crate) crate::generated::inference::ModelStatistics);
 
 impl ModelStatistics {
     /// Returns the model name.
@@ -113,7 +113,7 @@ impl ModelStatistics {
     }
 
     /// Consumes the wrapper and returns the underlying proto value.
-    pub fn into_proto(self) -> triton_grpc_client::inference::ModelStatistics {
+    pub fn into_proto(self) -> crate::generated::inference::ModelStatistics {
         self.0
     }
 }

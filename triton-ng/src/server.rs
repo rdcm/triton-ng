@@ -28,11 +28,13 @@ pub struct InferenceContext {
 }
 
 pub struct Server {
-    ptr: *mut triton_sys::TRITONSERVER_Server,
+    ptr: *mut triton_ng_sys::TRITONSERVER_Server,
 }
 
 impl Server {
-    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONSERVER_Server) -> Result<Self, TritonError> {
+    pub(crate) fn from_ptr(
+        ptr: *mut triton_ng_sys::TRITONSERVER_Server,
+    ) -> Result<Self, TritonError> {
         if ptr.is_null() {
             return Err(TritonError::from_message(
                 "TRITONBACKEND_ModelServer returned null",
@@ -41,7 +43,7 @@ impl Server {
         Ok(Self { ptr })
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_Server {
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_Server {
         self.ptr
     }
 
@@ -49,7 +51,9 @@ impl Server {
         let mut major: u32 = 0;
         let mut minor: u32 = 0;
 
-        triton_call!(triton_sys::TRITONSERVER_ApiVersion(&mut major, &mut minor))?;
+        triton_call!(triton_ng_sys::TRITONSERVER_ApiVersion(
+            &mut major, &mut minor
+        ))?;
 
         Ok((major, minor))
     }
@@ -57,7 +61,9 @@ impl Server {
     pub fn is_ready(&self) -> Result<bool, TritonError> {
         let mut ready = false;
 
-        triton_call!(triton_sys::TRITONSERVER_ServerIsReady(self.ptr, &mut ready))?;
+        triton_call!(triton_ng_sys::TRITONSERVER_ServerIsReady(
+            self.ptr, &mut ready
+        ))?;
 
         Ok(ready)
     }
@@ -66,7 +72,7 @@ impl Server {
         let model_name_cstr = cstring_from_str(model_name)?;
         let mut ready = false;
 
-        triton_call!(triton_sys::TRITONSERVER_ServerModelIsReady(
+        triton_call!(triton_ng_sys::TRITONSERVER_ServerModelIsReady(
             self.ptr,
             model_name_cstr.as_ptr(),
             version,
@@ -78,7 +84,7 @@ impl Server {
 
     pub fn model_metadata(&self, model_name: &str, version: i64) -> Result<String, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
-        let metadata_ptr = triton_call!(triton_sys::TRITONSERVER_ServerModelMetadata(
+        let metadata_ptr = triton_call!(triton_ng_sys::TRITONSERVER_ServerModelMetadata(
             self.ptr,
             model_name_cstr.as_ptr(),
             version,
@@ -88,7 +94,7 @@ impl Server {
         let mut base: *const i8 = std::ptr::null();
         let mut byte_size: usize = 0;
 
-        triton_call!(triton_sys::TRITONSERVER_MessageSerializeToJson(
+        triton_call!(triton_ng_sys::TRITONSERVER_MessageSerializeToJson(
             metadata_ptr,
             &mut base,
             &mut byte_size
@@ -98,7 +104,7 @@ impl Server {
         let result = String::from_utf8_lossy(json_bytes).to_string();
 
         unsafe {
-            triton_sys::TRITONSERVER_MessageDelete(metadata_ptr);
+            triton_ng_sys::TRITONSERVER_MessageDelete(metadata_ptr);
         }
 
         Ok(result)
@@ -119,11 +125,13 @@ impl Server {
         // Register the release callback before handing the request to Triton.
         // If this call fails, `request` is still owned by us and Drop will
         // call `TRITONSERVER_InferenceRequestDelete` normally.
-        triton_call!(triton_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
-            request.as_ptr(),
-            Some(inference_request_release),
-            ptr::null_mut(),
-        ))?;
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
+                request.as_ptr(),
+                Some(inference_request_release),
+                ptr::null_mut(),
+            )
+        )?;
 
         let context = Box::new(InferenceContext {
             tx,
@@ -134,7 +142,7 @@ impl Server {
         let context_ptr = Box::into_raw(context) as *mut c_void;
 
         if let Err(e) = triton_call!(
-            triton_sys::TRITONSERVER_InferenceRequestSetResponseCallback(
+            triton_ng_sys::TRITONSERVER_InferenceRequestSetResponseCallback(
                 request.as_ptr(),
                 (*context_ptr.cast::<InferenceContext>()).allocator.as_ptr(),
                 ptr::null_mut(),
@@ -153,14 +161,14 @@ impl Server {
         let raw = request.as_ptr();
         std::mem::forget(request);
 
-        if let Err(e) = triton_call!(triton_sys::TRITONSERVER_ServerInferAsync(
+        if let Err(e) = triton_call!(triton_ng_sys::TRITONSERVER_ServerInferAsync(
             self.ptr,
             raw,
             ptr::null_mut(),
         )) {
             // Triton guarantees it will NOT call the release callback on failure,
             // so we must delete manually.
-            unsafe { triton_sys::TRITONSERVER_InferenceRequestDelete(raw) };
+            unsafe { triton_ng_sys::TRITONSERVER_InferenceRequestDelete(raw) };
             return Err(e);
         }
 
@@ -182,13 +190,13 @@ impl Server {
 /// The header says RELEASE_ALL should always be set today, but recommends
 /// checking explicitly in case future versions add new flags.
 unsafe extern "C" fn inference_request_release(
-    request: *mut triton_sys::TRITONSERVER_InferenceRequest,
+    request: *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
     flags: u32,
     _userp: *mut std::os::raw::c_void,
 ) {
-    use triton_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL as RELEASE_ALL;
+    use triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL as RELEASE_ALL;
     if flags & RELEASE_ALL != 0 && !request.is_null() {
-        unsafe { triton_sys::TRITONSERVER_InferenceRequestDelete(request) };
+        unsafe { triton_ng_sys::TRITONSERVER_InferenceRequestDelete(request) };
     }
 }
 
@@ -200,11 +208,11 @@ unsafe extern "C" fn inference_request_release(
 /// accumulate outputs across all non-final callbacks and only send the
 /// collected result (and drop the context) when FINAL arrives.
 unsafe extern "C" fn inference_response_complete(
-    response_ptr: *mut triton_sys::TRITONSERVER_InferenceResponse,
+    response_ptr: *mut triton_ng_sys::TRITONSERVER_InferenceResponse,
     flags: u32,
     userp: *mut std::os::raw::c_void,
 ) {
-    use triton_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL as FINAL;
+    use triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL as FINAL;
     let is_final = flags & FINAL != 0;
 
     // Borrow context without taking ownership — we only own it on the final call.

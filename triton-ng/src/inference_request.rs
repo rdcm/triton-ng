@@ -6,13 +6,13 @@ use std::ffi::c_void;
 use triton_ng_macros::triton_call;
 
 pub struct InferenceRequest {
-    ptr: *mut triton_sys::TRITONSERVER_InferenceRequest,
+    ptr: *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
 }
 
 impl InferenceRequest {
     pub fn new(server: &Server, model_name: &str, model_version: i64) -> Result<Self, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
-        let ptr = triton_call!(triton_sys::TRITONSERVER_InferenceRequestNew(
+        let ptr = triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestNew(
             &mut _,
             server.as_ptr(),
             model_name_cstr.as_ptr(),
@@ -21,7 +21,7 @@ impl InferenceRequest {
         Ok(Self { ptr })
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_InferenceRequest {
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_InferenceRequest {
         self.ptr
     }
 
@@ -33,7 +33,7 @@ impl InferenceRequest {
     ) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
 
-        triton_call!(triton_sys::TRITONSERVER_InferenceRequestAddInput(
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestAddInput(
             self.ptr,
             name_cstr.as_ptr(),
             datatype.to_sys(),
@@ -45,12 +45,12 @@ impl InferenceRequest {
     pub fn append_input_data(&mut self, name: &str, data: &[u8]) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
 
-        triton_call!(triton_sys::TRITONSERVER_InferenceRequestAppendInputData(
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestAppendInputData(
             self.ptr,
             name_cstr.as_ptr(),
             data.as_ptr() as *const c_void,
             data.len(),
-            triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU,
+            triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU,
             0, // device_id
         ))
     }
@@ -58,10 +58,12 @@ impl InferenceRequest {
     pub fn add_requested_output(&mut self, name: &str) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
 
-        triton_call!(triton_sys::TRITONSERVER_InferenceRequestAddRequestedOutput(
-            self.ptr,
-            name_cstr.as_ptr(),
-        ))
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestAddRequestedOutput(
+                self.ptr,
+                name_cstr.as_ptr(),
+            )
+        )
     }
 }
 
@@ -69,7 +71,7 @@ impl Drop for InferenceRequest {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe {
-                triton_sys::TRITONSERVER_InferenceRequestDelete(self.ptr);
+                triton_ng_sys::TRITONSERVER_InferenceRequestDelete(self.ptr);
             }
         }
     }

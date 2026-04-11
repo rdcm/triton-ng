@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use triton_grpc_client::inference::ModelInferResponse;
+use crate::generated::inference::ModelInferResponse;
 
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};

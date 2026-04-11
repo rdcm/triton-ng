@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use tonic::Request;
-use tonic::transport::{Channel, ClientTlsConfig};
-use triton_grpc_client::inference::grpc_inference_service_client::GrpcInferenceServiceClient;
-use triton_grpc_client::inference::model_infer_request::{
+use crate::generated::inference::grpc_inference_service_client::GrpcInferenceServiceClient;
+use crate::generated::inference::model_infer_request::{
     InferInputTensor, InferRequestedOutputTensor,
 };
-use triton_grpc_client::inference::{
+use crate::generated::inference::{
     CudaSharedMemoryRegisterRequest, CudaSharedMemoryStatusRequest,
     CudaSharedMemoryUnregisterRequest, LogSettingsRequest, ModelConfigRequest, ModelInferRequest,
     ModelMetadataRequest, ModelReadyRequest, ModelStatisticsRequest, RepositoryIndexRequest,
@@ -16,6 +14,8 @@ use triton_grpc_client::inference::{
     SystemSharedMemoryStatusRequest, SystemSharedMemoryUnregisterRequest, TraceSettingRequest,
     trace_setting_request,
 };
+use tonic::Request;
+use tonic::transport::{Channel, ClientTlsConfig};
 
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
@@ -36,7 +36,10 @@ pub struct TritonClientConfig {
 
 impl TritonClientConfig {
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into(), tls: None }
+        Self {
+            url: url.into(),
+            tls: None,
+        }
     }
 
     /// Enables TLS. Pass `ClientTlsConfig::new()` for system roots, or configure
@@ -187,7 +190,7 @@ impl TritonClient {
             |tensors: Vec<_>| {
                 tensors
                 .into_iter()
-                .map(|t: triton_grpc_client::inference::model_metadata_response::TensorMetadata| {
+                .map(|t: crate::generated::inference::model_metadata_response::TensorMetadata| {
                     Ok(TensorMetadata {
                         name: t.name,
                         datatype: Datatype::try_from(t.datatype.as_str())?,

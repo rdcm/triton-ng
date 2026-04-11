@@ -4,18 +4,18 @@ pub type Error = Box<dyn std::error::Error>;
 
 #[derive(Debug)]
 pub struct TritonError {
-    ptr: *mut triton_sys::TRITONSERVER_Error,
+    ptr: *mut triton_ng_sys::TRITONSERVER_Error,
     message: String,
 }
 
 impl TritonError {
-    pub(crate) unsafe fn new(ptr: *mut triton_sys::TRITONSERVER_Error) -> Self {
+    pub(crate) unsafe fn new(ptr: *mut triton_ng_sys::TRITONSERVER_Error) -> Self {
         let message = if ptr.is_null() {
             "Unknown Triton error".to_string()
         } else {
             // SAFETY: ptr not null
             unsafe {
-                let msg_ptr = triton_sys::TRITONSERVER_ErrorMessage(ptr);
+                let msg_ptr = triton_ng_sys::TRITONSERVER_ErrorMessage(ptr);
                 if msg_ptr.is_null() {
                     "Unknown Triton error".to_string()
                 } else {
@@ -47,7 +47,7 @@ impl Drop for TritonError {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe {
-                triton_sys::TRITONSERVER_ErrorDelete(self.ptr);
+                triton_ng_sys::TRITONSERVER_ErrorDelete(self.ptr);
             }
         }
     }

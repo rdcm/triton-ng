@@ -3,11 +3,10 @@ resolver = "2"
 members = [
     "example/app",
     "example/custom-backend",
-    "triton-client",
-    "triton-grpc-client",
     "triton-ng",
+    "triton-ng-client",
     "triton-ng-macros",
-    "triton-sys",
+    "triton-ng-sys",
 ]
 
 [workspace.lints.clippy]
@@ -40,8 +39,7 @@ tonic-prost = { version = "0.14.2" }
 tonic-prost-build = { version = "0.14.2" }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-triton-client = { path = "triton-client", version = "0.1.0" }
-triton-grpc-client = { path = "triton-grpc-client", version = "0.1.0" }
 triton-ng = { path = "triton-ng", version = "0.1.0" }
+triton-ng-client = { path = "triton-ng-client", version = "0.1.0" }
 triton-ng-macros = { path = "triton-ng-macros", version = "0.1.0" }
-triton-sys = { path = "triton-sys", version = "0.1.0" }
+triton-ng-sys = { path = "triton-ng-sys", version = "0.1.0" }

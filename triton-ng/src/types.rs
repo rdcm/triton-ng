@@ -19,8 +19,8 @@ pub enum DataType {
 }
 
 impl DataType {
-    pub(crate) fn to_sys(self) -> triton_sys::TRITONSERVER_DataType {
-        use triton_sys::*;
+    pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_DataType {
+        use triton_ng_sys::*;
         match self {
             Self::Invalid => TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_INVALID,
             Self::Bool => TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_BOOL,
@@ -41,8 +41,8 @@ impl DataType {
     }
 
     #[allow(non_upper_case_globals)]
-    pub(crate) fn from_sys(v: triton_sys::TRITONSERVER_DataType) -> Self {
-        use triton_sys::*;
+    pub(crate) fn from_sys(v: triton_ng_sys::TRITONSERVER_DataType) -> Self {
+        use triton_ng_sys::*;
         match v {
             TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_BOOL => Self::Bool,
             TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_UINT8 => Self::Uint8,
@@ -74,8 +74,8 @@ pub enum InstanceKind {
 
 impl InstanceKind {
     #[allow(non_upper_case_globals)]
-    pub(crate) fn from_sys(v: triton_sys::TRITONSERVER_InstanceGroupKind) -> Self {
-        use triton_sys::*;
+    pub(crate) fn from_sys(v: triton_ng_sys::TRITONSERVER_InstanceGroupKind) -> Self {
+        use triton_ng_sys::*;
         match v {
             TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_CPU => Self::Cpu,
             TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_GPU => Self::Gpu,

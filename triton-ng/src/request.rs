@@ -6,27 +6,27 @@ use std::slice;
 use triton_ng_macros::triton_call;
 
 pub struct Request {
-    ptr: *mut triton_sys::TRITONBACKEND_Request,
+    ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
 }
 
 impl Request {
-    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Request) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Request) -> Self {
         Self { ptr }
     }
 
-    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Request {
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONBACKEND_Request {
         self.ptr
     }
 
     pub fn input_names(&self) -> Result<Vec<String>, TritonError> {
         let mut count = 0u32;
-        triton_call!(triton_sys::TRITONBACKEND_RequestInputCount(
+        triton_call!(triton_ng_sys::TRITONBACKEND_RequestInputCount(
             self.ptr, &mut count
         ))?;
         (0..count)
             .map(|i| {
                 let mut name: *const c_char = std::ptr::null();
-                triton_call!(triton_sys::TRITONBACKEND_RequestInputName(
+                triton_call!(triton_ng_sys::TRITONBACKEND_RequestInputName(
                     self.ptr, i, &mut name,
                 ))?;
                 Ok(unsafe { cstr_to_string(name) })
@@ -36,13 +36,13 @@ impl Request {
 
     pub fn output_names(&self) -> Result<Vec<String>, TritonError> {
         let mut count = 0u32;
-        triton_call!(triton_sys::TRITONBACKEND_RequestOutputCount(
+        triton_call!(triton_ng_sys::TRITONBACKEND_RequestOutputCount(
             self.ptr, &mut count
         ))?;
         (0..count)
             .map(|i| {
                 let mut name: *const c_char = std::ptr::null();
-                triton_call!(triton_sys::TRITONBACKEND_RequestOutputName(
+                triton_call!(triton_ng_sys::TRITONBACKEND_RequestOutputName(
                     self.ptr, i, &mut name,
                 ))?;
                 Ok(unsafe { cstr_to_string(name) })
@@ -52,7 +52,7 @@ impl Request {
 
     pub fn get_input(&self, name: &str) -> Result<Input, TritonError> {
         let name = cstring_from_str(name)?;
-        let ptr = triton_call!(triton_sys::TRITONBACKEND_RequestInput(
+        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_RequestInput(
             self.ptr,
             name.as_ptr(),
             &mut _
@@ -62,21 +62,21 @@ impl Request {
 }
 
 pub struct Input {
-    ptr: *mut triton_sys::TRITONBACKEND_Input,
+    ptr: *mut triton_ng_sys::TRITONBACKEND_Input,
 }
 
 impl Input {
-    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Input) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Input) -> Self {
         Self { ptr }
     }
 
     fn buffer(&self) -> Result<Vec<u8>, Error> {
         let mut buffer: *const c_void = std::ptr::null_mut();
         let index = 0;
-        let mut memory_type: triton_sys::TRITONSERVER_MemoryType = 0;
+        let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType = 0;
         let mut memory_type_id = 0;
         let mut buffer_byte_size = 0;
-        triton_call!(triton_sys::TRITONBACKEND_InputBuffer(
+        triton_call!(triton_ng_sys::TRITONBACKEND_InputBuffer(
             self.ptr,
             index,
             &mut buffer,
@@ -132,7 +132,7 @@ impl Input {
         let mut byte_size = 0u64;
         let mut buffer_count = 0u32;
 
-        triton_call!(triton_sys::TRITONBACKEND_InputProperties(
+        triton_call!(triton_ng_sys::TRITONBACKEND_InputProperties(
             self.ptr,
             &mut name,
             &mut datatype,
