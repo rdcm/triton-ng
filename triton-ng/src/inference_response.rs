@@ -1,5 +1,6 @@
 use crate::TritonError;
 use crate::server::OutputTensor;
+use crate::types::DataType;
 use crate::utils::cstr_to_string;
 use std::ffi::{c_char, c_void};
 use std::ptr;
@@ -91,25 +92,13 @@ impl InferenceResponse {
 
             let shape: Vec<i64> = slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec();
             let data = slice::from_raw_parts(base as *const u8, byte_size).to_vec();
-            let datatype_str = Self::datatype_to_string(datatype);
 
             Ok(OutputTensor {
                 name,
                 data,
                 shape,
-                datatype: datatype_str,
+                datatype: DataType::from_sys(datatype),
             })
-        }
-    }
-
-    fn datatype_to_string(datatype: triton_sys::TRITONSERVER_DataType) -> String {
-        match datatype {
-            triton_sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_FP32 => "FP32".into(),
-            triton_sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_FP64 => "FP64".into(),
-            triton_sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_INT32 => "INT32".into(),
-            triton_sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_INT64 => "INT64".into(),
-            triton_sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_BYTES => "BYTES".into(),
-            _ => "UNKNOWN".into(),
         }
     }
 }

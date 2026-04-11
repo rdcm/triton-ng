@@ -1,4 +1,5 @@
 use crate::error::{Error, TritonError};
+use crate::types::DataType;
 use crate::utils::{cstr_to_string, cstring_from_str, decode_string};
 use crate::{ensure_ptr, ffi_call};
 use libc::{c_char, c_void};
@@ -155,7 +156,7 @@ impl Input {
 
         Ok(InputProperties {
             name,
-            datatype,
+            datatype: DataType::from_sys(datatype),
             shape,
             dims_count,
             byte_size,
@@ -167,7 +168,7 @@ impl Input {
 #[derive(Debug)]
 pub struct InputProperties {
     pub name: String,
-    pub datatype: u32,
+    pub datatype: DataType,
     pub shape: Vec<i64>,
     pub dims_count: u32,
     pub byte_size: u64,

@@ -1,5 +1,6 @@
 use crate::TritonError;
 use crate::server::Server;
+use crate::types::DataType;
 use crate::utils::cstring_from_str;
 use std::ffi::c_void;
 use std::ptr;
@@ -32,7 +33,7 @@ impl InferenceRequest {
     pub fn add_input(
         &mut self,
         name: &str,
-        datatype: triton_sys::TRITONSERVER_DataType,
+        datatype: DataType,
         shape: &[i64],
     ) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
@@ -40,7 +41,7 @@ impl InferenceRequest {
         ffi_call!(triton_sys::TRITONSERVER_InferenceRequestAddInput(
             self.ptr,
             name_cstr.as_ptr(),
-            datatype,
+            datatype.to_sys(),
             shape.as_ptr(),
             shape.len() as u64,
         ))

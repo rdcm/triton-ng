@@ -11,7 +11,7 @@ pub struct OutputTensor {
     pub name: String,
     pub data: Vec<u8>,
     pub shape: Vec<i64>,
-    pub datatype: String,
+    pub datatype: crate::types::DataType,
 }
 
 pub struct InferenceResult {

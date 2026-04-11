@@ -1,5 +1,7 @@
 #[path = "backend.rs"]
 pub mod backend;
+#[path = "types.rs"]
+pub mod types;
 #[path = "backend_handle.rs"]
 pub mod backend_handle;
 #[path = "model.rs"]
@@ -28,6 +30,7 @@ pub mod utils;
 
 pub use backend::*;
 pub use backend_handle::*;
+pub use types::*;
 pub use error::*;
 pub use inference_request::*;
 pub use inference_response::*;

@@ -1,6 +1,7 @@
 use crate::Error;
 use crate::error::TritonError;
 use crate::request::Request;
+use crate::types::DataType;
 use crate::utils::{cstring_from_str, encode_string};
 use std::ffi::c_void;
 use std::ptr;
@@ -37,7 +38,7 @@ impl Response {
     pub fn create_output(
         &mut self,
         name: &str,
-        datatype: triton_sys::TRITONSERVER_DataType,
+        datatype: DataType,
         shape: &[i64],
     ) -> Result<Output, TritonError> {
         let mut output: *mut triton_sys::TRITONBACKEND_Output = ptr::null_mut();
@@ -47,7 +48,7 @@ impl Response {
             self.ptr,
             &mut output,
             name_cstr.as_ptr(),
-            datatype,
+            datatype.to_sys(),
             shape.as_ptr(),
             shape.len() as u32,
         ))?;

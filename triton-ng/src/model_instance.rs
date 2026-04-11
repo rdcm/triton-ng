@@ -1,5 +1,6 @@
 use crate::error::TritonError;
 use crate::ffi_call;
+use crate::types::InstanceKind;
 use crate::utils::cstr_to_string;
 use libc::c_char;
 
@@ -29,12 +30,12 @@ impl ModelInstance {
         Ok(device_id)
     }
 
-    pub fn kind(&self) -> Result<triton_sys::TRITONSERVER_InstanceGroupKind, TritonError> {
+    pub fn kind(&self) -> Result<InstanceKind, TritonError> {
         let mut kind: triton_sys::TRITONSERVER_InstanceGroupKind = 0;
         ffi_call!(triton_sys::TRITONBACKEND_ModelInstanceKind(
             self.ptr, &mut kind
         ))?;
-        Ok(kind)
+        Ok(InstanceKind::from_sys(kind))
     }
 
     pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_ModelInstance {

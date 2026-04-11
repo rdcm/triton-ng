@@ -1,5 +1,5 @@
 use triton_ng::backend::Backend;
-use triton_ng::{BackendHandle, Error, InferenceRequest, Response, sys};
+use triton_ng::{BackendHandle, DataType, Error, InferenceRequest, Response};
 
 struct MnistBackend;
 
@@ -36,11 +36,7 @@ impl Backend for MnistBackend {
                     .flat_map(|&f| f.to_le_bytes())
                     .collect();
 
-                inference_req.add_input(
-                    name,
-                    sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_FP32,
-                    &props.shape,
-                )?;
+                inference_req.add_input(name, DataType::Fp32, &props.shape)?;
                 inference_req.append_input_data(name, &input_bytes)?;
             }
 
@@ -59,11 +55,7 @@ impl Backend for MnistBackend {
                     .collect();
 
                 response
-                    .create_output(
-                        name,
-                        sys::TRITONSERVER_datatype_enum_TRITONSERVER_TYPE_FP32,
-                        &output_tensor.shape,
-                    )?
+                    .create_output(name, DataType::Fp32, &output_tensor.shape)?
                     .write_fp32_vec(&predictions)?;
             }
             response.send()?;
