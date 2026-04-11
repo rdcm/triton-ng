@@ -5,7 +5,8 @@ use tonic::Request;
 use tonic::transport::Channel;
 use triton_grpc_client::inference::grpc_inference_service_client::GrpcInferenceServiceClient;
 use triton_grpc_client::inference::{
-    ModelInferRequest, ModelInferResponse, ModelReadyRequest, ServerReadyRequest,
+    ModelInferRequest, ModelInferResponse, ModelMetadataRequest, ModelMetadataResponse,
+    ModelReadyRequest, ServerReadyRequest,
 };
 
 #[derive(Debug)]
@@ -115,6 +116,19 @@ impl TritonClient {
         });
         let response = self.client.model_ready(request).await?;
         Ok(response.into_inner().ready)
+    }
+
+    pub async fn model_metadata(
+        &mut self,
+        model_name: &str,
+        model_version: &str,
+    ) -> Result<ModelMetadataResponse> {
+        let request = Request::new(ModelMetadataRequest {
+            name: model_name.to_string(),
+            version: model_version.to_string(),
+        });
+        let response = self.client.model_metadata(request).await?;
+        Ok(response.into_inner())
     }
 
     pub async fn infer(&mut self, request: ModelInferRequest) -> Result<ModelInferResponse> {

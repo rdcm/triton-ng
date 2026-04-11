@@ -17,3 +17,8 @@ output [
     dims: [ 1, 10 ]
   }
 ]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}

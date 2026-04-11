@@ -1,7 +1,7 @@
 use crate::error::{Error, TritonError};
 use crate::utils::{cstr_to_string, cstring_from_str, decode_string};
 use crate::{ensure_ptr, ffi_call};
-use libc::c_void;
+use libc::{c_char, c_void};
 use std::slice;
 
 pub struct Request {
@@ -15,6 +15,38 @@ impl Request {
 
     pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Request {
         self.ptr
+    }
+
+    pub fn input_names(&self) -> Result<Vec<String>, TritonError> {
+        let mut count = 0u32;
+        ffi_call!(triton_sys::TRITONBACKEND_RequestInputCount(
+            self.ptr, &mut count
+        ))?;
+        (0..count)
+            .map(|i| {
+                let mut name: *const c_char = std::ptr::null();
+                ffi_call!(triton_sys::TRITONBACKEND_RequestInputName(
+                    self.ptr, i, &mut name
+                ))?;
+                Ok(unsafe { cstr_to_string(name) })
+            })
+            .collect()
+    }
+
+    pub fn output_names(&self) -> Result<Vec<String>, TritonError> {
+        let mut count = 0u32;
+        ffi_call!(triton_sys::TRITONBACKEND_RequestOutputCount(
+            self.ptr, &mut count
+        ))?;
+        (0..count)
+            .map(|i| {
+                let mut name: *const c_char = std::ptr::null();
+                ffi_call!(triton_sys::TRITONBACKEND_RequestOutputName(
+                    self.ptr, i, &mut name
+                ))?;
+                Ok(unsafe { cstr_to_string(name) })
+            })
+            .collect()
     }
 
     pub fn get_input(&self, name: &str) -> Result<Input, TritonError> {
