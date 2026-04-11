@@ -1183,7 +1183,17 @@ dependencies = [
  "crossbeam",
  "libc",
  "serde_json",
+ "triton-ng-macros",
  "triton-sys",
+]
+
+[[package]]
+name = "triton-ng-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

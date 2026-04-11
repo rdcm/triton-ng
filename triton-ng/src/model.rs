@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::ptr;
-
+use triton_ng_macros::triton_call;
 
 pub struct Model {
     ptr: *mut triton_sys::TRITONBACKEND_Model,
@@ -19,7 +19,7 @@ impl Model {
 
     pub fn name(&self) -> Result<String, TritonError> {
         let mut model_name: *const c_char = std::ptr::null_mut();
-        ffi_call!(triton_sys::TRITONBACKEND_ModelName(
+        triton_call!(triton_sys::TRITONBACKEND_ModelName(
             self.ptr,
             &mut model_name
         ))?;
@@ -29,7 +29,7 @@ impl Model {
 
     pub fn version(&self) -> Result<u64, TritonError> {
         let mut version = 0u64;
-        ffi_call!(triton_sys::TRITONBACKEND_ModelVersion(
+        triton_call!(triton_sys::TRITONBACKEND_ModelVersion(
             self.ptr,
             &mut version
         ))?;
@@ -40,10 +40,10 @@ impl Model {
     pub fn location(&self) -> Result<String, TritonError> {
         let mut artifact_type: triton_sys::TRITONBACKEND_ArtifactType = 0u32;
         let mut location: *const c_char = std::ptr::null_mut();
-        ffi_call!(triton_sys::TRITONBACKEND_ModelRepository(
+        triton_call!(triton_sys::TRITONBACKEND_ModelRepository(
             self.ptr,
             &mut artifact_type,
-            &mut location
+            &mut location,
         ))?;
 
         Ok(unsafe { cstr_to_string(location) })
@@ -69,32 +69,20 @@ impl Model {
     }
 
     pub fn get_server(&self) -> Result<Server, TritonError> {
-        let mut server_ptr: *mut triton_sys::TRITONSERVER_Server = ptr::null_mut();
-
-        ffi_call!(
-            triton_sys::TRITONBACKEND_ModelServer(self.ptr, &mut server_ptr),
-            server_ptr
-        )?;
-
-        Server::from_ptr(server_ptr)
+        let ptr = triton_call!(triton_sys::TRITONBACKEND_ModelServer(self.ptr, &mut _))?;
+        Server::from_ptr(ptr)
     }
 
     /// Returns the model configuration as a JSON string (ModelConfig protobuf format).
     pub fn config_json(&self) -> Result<String, TritonError> {
-        let mut config_ptr: *mut triton_sys::TRITONSERVER_Message = ptr::null_mut();
-        ffi_call!(triton_sys::TRITONBACKEND_ModelConfig(
-            self.ptr,
-            1, // config version
-            &mut config_ptr
-        ))?;
-        ensure_ptr!(config_ptr)?;
+        let config_ptr = triton_call!(triton_sys::TRITONBACKEND_ModelConfig(self.ptr, 1, &mut _))?;
 
         let mut base: *const i8 = ptr::null();
         let mut byte_size: usize = 0;
-        ffi_call!(triton_sys::TRITONSERVER_MessageSerializeToJson(
+        triton_call!(triton_sys::TRITONSERVER_MessageSerializeToJson(
             config_ptr,
             &mut base,
-            &mut byte_size
+            &mut byte_size,
         ))?;
 
         let json = unsafe {

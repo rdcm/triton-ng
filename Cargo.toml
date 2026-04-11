@@ -6,6 +6,7 @@ members = [
     "triton-client",
     "triton-grpc-client",
     "triton-ng",
+    "triton-ng-macros",
     "triton-sys",
 ]
 
@@ -36,4 +37,5 @@ tonic-prost-build = { version = "0.14.2" }
 triton-client = { path = "triton-client", version = "0.1.0" }
 triton-grpc-client = { path = "triton-grpc-client", version = "0.1.0" }
 triton-ng = { path = "triton-ng", version = "0.1.0" }
+triton-ng-macros = { path = "triton-ng-macros", version = "0.1.0" }
 triton-sys = { path = "triton-sys", version = "0.1.0" }

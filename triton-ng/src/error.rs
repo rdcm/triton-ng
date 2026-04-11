@@ -52,4 +52,3 @@ impl Drop for TritonError {
         }
     }
 }
-

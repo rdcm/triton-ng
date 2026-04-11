@@ -1,36 +1,32 @@
-#[macro_use]
-#[path = "macros.rs"]
-pub(crate) mod macros;
 #[path = "backend.rs"]
 pub mod backend;
-#[path = "types.rs"]
-pub mod types;
 #[path = "backend_handle.rs"]
 pub mod backend_handle;
-#[path = "model.rs"]
-pub mod model;
-#[path = "model_instance.rs"]
-pub mod model_instance;
-#[path = "request.rs"]
-pub mod request;
 #[path = "error.rs"]
 pub mod error;
 #[path = "inference_request.rs"]
 pub mod inference_request;
 #[path = "inference_response.rs"]
 pub mod inference_response;
+#[path = "model.rs"]
+pub mod model;
+#[path = "model_instance.rs"]
+pub mod model_instance;
+#[path = "request.rs"]
+pub mod request;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
 pub mod response_allocator;
 #[path = "server.rs"]
 pub mod server;
+#[path = "types.rs"]
+pub mod types;
 #[path = "utils.rs"]
 pub(crate) mod utils;
 
 pub use backend::*;
 pub use backend_handle::*;
-pub use types::*;
 pub use error::*;
 pub use inference_request::*;
 pub use inference_response::*;
@@ -40,6 +36,7 @@ pub use request::*;
 pub use response::*;
 pub use response_allocator::*;
 pub use server::*;
+pub use types::*;
 
 /// Support module for `declare_backend!` macro expansion in external crates.
 /// Not part of the public API.
@@ -57,9 +54,7 @@ pub mod __macro_support {
         // Replace null bytes: CString cannot contain them.
         let sanitized = msg.replace('\0', "?");
         // SAFETY: replace('\0') guarantees no null bytes remain.
-        let c_str = unsafe {
-            std::ffi::CString::from_vec_unchecked(sanitized.into_bytes())
-        };
+        let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
         unsafe {
             triton_sys::TRITONSERVER_ErrorNew(
                 triton_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,

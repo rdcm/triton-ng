@@ -76,36 +76,36 @@ macro_rules! declare_backend {
         extern "C" fn TRITONBACKEND_Initialize(
             backend: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::initialize(
-                &unsafe { triton_ng::__macro_support::backend_handle(backend) }
-            ))
+            triton_ng::call_checked!($class::initialize(&unsafe {
+                triton_ng::__macro_support::backend_handle(backend)
+            }))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_Finalize(
             backend: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::finalize(
-                &unsafe { triton_ng::__macro_support::backend_handle(backend) }
-            ))
+            triton_ng::call_checked!($class::finalize(&unsafe {
+                triton_ng::__macro_support::backend_handle(backend)
+            }))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
             instance: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_instance_initialize(
-                &unsafe { triton_ng::__macro_support::model_instance(instance) }
-            ))
+            triton_ng::call_checked!($class::model_instance_initialize(&unsafe {
+                triton_ng::__macro_support::model_instance(instance)
+            }))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceFinalize(
             instance: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_instance_finalize(
-                &unsafe { triton_ng::__macro_support::model_instance(instance) }
-            ))
+            triton_ng::call_checked!($class::model_instance_finalize(&unsafe {
+                triton_ng::__macro_support::model_instance(instance)
+            }))
         }
 
         #[unsafe(no_mangle)]
@@ -115,17 +115,11 @@ macro_rules! declare_backend {
             request_count: u32,
         ) -> triton_ng::__macro_support::ErrorPtr {
             match unsafe {
-                triton_ng::__macro_support::model_and_requests(
-                    instance,
-                    requests,
-                    request_count,
-                )
+                triton_ng::__macro_support::model_and_requests(instance, requests, request_count)
             } {
                 Err(err) => err,
                 Ok((model, requests)) => {
-                    triton_ng::call_checked!(
-                        $class::model_instance_execute(model, &requests)
-                    )
+                    triton_ng::call_checked!($class::model_instance_execute(model, &requests))
                 }
             }
         }

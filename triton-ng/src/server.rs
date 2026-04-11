@@ -6,6 +6,7 @@ use crate::utils::cstring_from_str;
 use crossbeam::channel::{Sender, bounded};
 use std::ffi::c_void;
 use std::ptr;
+use triton_ng_macros::triton_call;
 
 pub struct OutputTensor {
     pub name: String,
@@ -32,7 +33,11 @@ pub struct Server {
 
 impl Server {
     pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONSERVER_Server) -> Result<Self, TritonError> {
-        ensure_ptr!(ptr)?;
+        if ptr.is_null() {
+            return Err(TritonError::from_message(
+                "TRITONBACKEND_ModelServer returned null",
+            ));
+        }
         Ok(Self { ptr })
     }
 
@@ -44,7 +49,7 @@ impl Server {
         let mut major: u32 = 0;
         let mut minor: u32 = 0;
 
-        ffi_call!(triton_sys::TRITONSERVER_ApiVersion(&mut major, &mut minor))?;
+        triton_call!(triton_sys::TRITONSERVER_ApiVersion(&mut major, &mut minor))?;
 
         Ok((major, minor))
     }
@@ -52,7 +57,7 @@ impl Server {
     pub fn is_ready(&self) -> Result<bool, TritonError> {
         let mut ready = false;
 
-        ffi_call!(triton_sys::TRITONSERVER_ServerIsReady(self.ptr, &mut ready))?;
+        triton_call!(triton_sys::TRITONSERVER_ServerIsReady(self.ptr, &mut ready))?;
 
         Ok(ready)
     }
@@ -61,7 +66,7 @@ impl Server {
         let model_name_cstr = cstring_from_str(model_name)?;
         let mut ready = false;
 
-        ffi_call!(triton_sys::TRITONSERVER_ServerModelIsReady(
+        triton_call!(triton_sys::TRITONSERVER_ServerModelIsReady(
             self.ptr,
             model_name_cstr.as_ptr(),
             version,
@@ -73,21 +78,17 @@ impl Server {
 
     pub fn model_metadata(&self, model_name: &str, version: i64) -> Result<String, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
-        let mut metadata_ptr: *mut triton_sys::TRITONSERVER_Message = std::ptr::null_mut();
-
-        ffi_call!(triton_sys::TRITONSERVER_ServerModelMetadata(
+        let metadata_ptr = triton_call!(triton_sys::TRITONSERVER_ServerModelMetadata(
             self.ptr,
             model_name_cstr.as_ptr(),
             version,
-            &mut metadata_ptr
+            &mut _,
         ))?;
-
-        ensure_ptr!(metadata_ptr)?;
 
         let mut base: *const i8 = std::ptr::null();
         let mut byte_size: usize = 0;
 
-        ffi_call!(triton_sys::TRITONSERVER_MessageSerializeToJson(
+        triton_call!(triton_sys::TRITONSERVER_MessageSerializeToJson(
             metadata_ptr,
             &mut base,
             &mut byte_size
@@ -118,7 +119,7 @@ impl Server {
         // Register the release callback before handing the request to Triton.
         // If this call fails, `request` is still owned by us and Drop will
         // call `TRITONSERVER_InferenceRequestDelete` normally.
-        ffi_call!(triton_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
+        triton_call!(triton_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
             request.as_ptr(),
             Some(inference_request_release),
             ptr::null_mut(),
@@ -132,7 +133,7 @@ impl Server {
         });
         let context_ptr = Box::into_raw(context) as *mut c_void;
 
-        if let Err(e) = ffi_call!(
+        if let Err(e) = triton_call!(
             triton_sys::TRITONSERVER_InferenceRequestSetResponseCallback(
                 request.as_ptr(),
                 (*context_ptr.cast::<InferenceContext>()).allocator.as_ptr(),
@@ -152,7 +153,7 @@ impl Server {
         let raw = request.as_ptr();
         std::mem::forget(request);
 
-        if let Err(e) = ffi_call!(triton_sys::TRITONSERVER_ServerInferAsync(
+        if let Err(e) = triton_call!(triton_sys::TRITONSERVER_ServerInferAsync(
             self.ptr,
             raw,
             ptr::null_mut(),

@@ -1,6 +1,7 @@
 use crate::TritonError;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use triton_ng_macros::triton_call;
 
 // CUDA runtime functions — available when `cuda` feature is enabled.
 // libcudart is linked via build.rs.
@@ -21,17 +22,12 @@ pub struct ResponseAllocator {
 
 impl ResponseAllocator {
     pub fn new() -> Result<Self, TritonError> {
-        let mut ptr: *mut triton_sys::TRITONSERVER_ResponseAllocator = ptr::null_mut();
-
-        ffi_call!(triton_sys::TRITONSERVER_ResponseAllocatorNew(
-            &mut ptr,
+        let ptr = triton_call!(triton_sys::TRITONSERVER_ResponseAllocatorNew(
+            &mut _,
             Some(alloc_fn),
             Some(release_fn),
             None,
         ))?;
-
-        ensure_ptr!(ptr)?;
-
         Ok(Self { ptr })
     }
 
