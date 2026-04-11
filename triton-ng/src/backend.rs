@@ -84,18 +84,18 @@ macro_rules! declare_backend {
         extern "C" fn TRITONBACKEND_Initialize(
             backend: *mut triton_ng::sys::TRITONBACKEND_Backend,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::initialize(
-                &triton_ng::BackendHandle::from_ptr(backend)
-            ))
+            triton_ng::call_checked!($class::initialize(&triton_ng::BackendHandle::from_ptr(
+                backend
+            )))
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_Finalize(
             backend: *mut triton_ng::sys::TRITONBACKEND_Backend,
         ) -> *const triton_ng::sys::TRITONSERVER_Error {
-            triton_ng::call_checked!($class::finalize(
-                &triton_ng::BackendHandle::from_ptr(backend)
-            ))
+            triton_ng::call_checked!($class::finalize(&triton_ng::BackendHandle::from_ptr(
+                backend
+            )))
         }
 
         #[unsafe(no_mangle)]

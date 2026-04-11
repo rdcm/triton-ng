@@ -1,5 +1,5 @@
 use triton_ng::backend::Backend;
-use triton_ng::{InferenceRequest, Response, sys};
+use triton_ng::{BackendHandle, Error, InferenceRequest, Response, sys};
 
 struct MnistBackend;
 
@@ -7,6 +7,11 @@ const MODEL_NAME: &str = "mnist_onnx";
 const MODEL_VERSION: i64 = 1;
 
 impl Backend for MnistBackend {
+    fn initialize(backend: &BackendHandle) -> Result<(), Error> {
+        println!("Initializing model {}", backend.name()?);
+        Ok(())
+    }
+
     fn model_instance_execute(
         model: triton_ng::Model,
         requests: &[triton_ng::Request],
@@ -18,7 +23,8 @@ impl Backend for MnistBackend {
             let properties = input.properties()?;
 
             // Must stay alive until infer_async returns — Triton holds a pointer, not a copy.
-            let input_bytes: Vec<u8> = input.as_fp32_vec()?
+            let input_bytes: Vec<u8> = input
+                .as_fp32_vec()?
                 .iter()
                 .flat_map(|&f| f.to_le_bytes())
                 .collect();
@@ -33,9 +39,10 @@ impl Backend for MnistBackend {
             inference_req.add_requested_output("Plus214_Output_0")?;
 
             let result = server.infer_async(inference_req)?;
-            let predictions: Vec<f32> = result.outputs[0].data
+            let predictions: Vec<f32> = result.outputs[0]
+                .data
                 .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .filter_map(|c| c.try_into().ok().map(f32::from_le_bytes))
                 .collect();
 
             let mut response = Response::new(request)?;

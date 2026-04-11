@@ -18,7 +18,7 @@ impl Request {
     }
 
     pub fn get_input(&self, name: &str) -> Result<Input, TritonError> {
-        let name = cstring_from_str(name);
+        let name = cstring_from_str(name)?;
 
         let mut input: *mut triton_sys::TRITONBACKEND_Input = std::ptr::null_mut();
         ffi_call!(triton_sys::TRITONBACKEND_RequestInput(

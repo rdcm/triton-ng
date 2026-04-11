@@ -1,4 +1,6 @@
 use anyhow::Result;
+use byteorder::{LE, ReadBytesExt};
+use std::io::Cursor;
 use tonic::Request;
 use tonic::transport::Channel;
 use triton_grpc_client::inference::grpc_inference_service_client::GrpcInferenceServiceClient;
@@ -55,29 +57,37 @@ impl InferenceOutput {
     }
 }
 
-fn decode_string_tensor(_data: &[u8]) -> Vec<String> {
-    todo!()
+fn decode_string_tensor(data: &[u8]) -> Vec<String> {
+    // Triton BYTES tensors: each element is a 4-byte LE length prefix + UTF-8 bytes.
+    let mut cur = Cursor::new(data);
+    std::iter::from_fn(|| {
+        let len = cur.read_u32::<LE>().ok()? as usize;
+        let pos = cur.position() as usize;
+        let s = String::from_utf8_lossy(data.get(pos..pos + len)?).into_owned();
+        cur.set_position((pos + len) as u64);
+        Some(s)
+    })
+    .collect()
 }
 
-fn decode_int64_tensor(_data: &[u8]) -> Vec<i64> {
-    todo!()
+fn decode_int32_tensor(data: &[u8]) -> Vec<i32> {
+    let mut cur = Cursor::new(data);
+    std::iter::from_fn(|| cur.read_i32::<LE>().ok()).collect()
 }
 
-fn decode_int32_tensor(_data: &[u8]) -> Vec<i32> {
-    todo!()
-}
-
-fn decode_fp64_tensor(_data: &[u8]) -> Vec<f64> {
-    todo!()
+fn decode_int64_tensor(data: &[u8]) -> Vec<i64> {
+    let mut cur = Cursor::new(data);
+    std::iter::from_fn(|| cur.read_i64::<LE>().ok()).collect()
 }
 
 fn decode_fp32_tensor(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(|chunk| {
-            let bytes: [u8; 4] = chunk.try_into().unwrap();
-            f32::from_le_bytes(bytes)
-        })
-        .collect()
+    let mut cur = Cursor::new(data);
+    std::iter::from_fn(|| cur.read_f32::<LE>().ok()).collect()
+}
+
+fn decode_fp64_tensor(data: &[u8]) -> Vec<f64> {
+    let mut cur = Cursor::new(data);
+    std::iter::from_fn(|| cur.read_f64::<LE>().ok()).collect()
 }
 
 pub struct TritonClient {

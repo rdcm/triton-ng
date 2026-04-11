@@ -3,26 +3,36 @@ resolver = "2"
 members = [
     "example/app",
     "example/custom-backend",
-    "triton-ng",
-    "triton-sys",
     "triton-client",
     "triton-grpc-client",
+    "triton-ng",
+    "triton-sys",
 ]
 
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+disallowed_methods = "deny"
+disallowed_macros = "deny"
+
 [workspace.dependencies]
-triton-ng = { path = "triton-ng", version = "0.1.0" }
-triton-sys = { path = "triton-sys", version = "0.1.0" }
-triton-client = { path = "triton-client", version = "0.1.0" }
-triton-grpc-client = { path = "triton-grpc-client", version = "0.1.0" }
-custom-backend = { path = "example/custom-backend", version = "0.1.0" }
-app = { path = "example/app", version = "0.1.0" }
 anyhow = { version = "1.0.100" }
-byteorder = { version = "1.5.0" }
+app = { path = "example/app", version = "0.1.0" }
 bindgen = { version = "0.72.1" }
+byteorder = { version = "1.5.0" }
 crossbeam = { version = "0.8.4" }
+custom-backend = { path = "example/custom-backend", version = "0.1.0" }
 libc = { version = "0.2.177" }
 prost = { version = "0.14.1" }
+tokio = { version = "1.48.0", features = ["full"] }
 tonic = { version = "0.14.2", features = ["gzip"] }
 tonic-prost = { version = "0.14.2" }
 tonic-prost-build = { version = "0.14.2" }
-tokio = { version = "1.48.0", features = ["full"] }
+triton-client = { path = "triton-client", version = "0.1.0" }
+triton-grpc-client = { path = "triton-grpc-client", version = "0.1.0" }
+triton-ng = { path = "triton-ng", version = "0.1.0" }
+triton-sys = { path = "triton-sys", version = "0.1.0" }

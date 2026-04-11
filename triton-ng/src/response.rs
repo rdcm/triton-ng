@@ -24,7 +24,10 @@ impl Response {
 
         ensure_ptr!(response)?;
 
-        Ok(Self { ptr: response, sent: false })
+        Ok(Self {
+            ptr: response,
+            sent: false,
+        })
     }
 
     pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Response {
@@ -38,7 +41,7 @@ impl Response {
         shape: &[i64],
     ) -> Result<Output, TritonError> {
         let mut output: *mut triton_sys::TRITONBACKEND_Output = ptr::null_mut();
-        let name_cstr = cstring_from_str(name);
+        let name_cstr = cstring_from_str(name)?;
 
         ffi_call!(triton_sys::TRITONBACKEND_ResponseOutput(
             self.ptr,

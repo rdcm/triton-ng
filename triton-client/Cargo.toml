@@ -5,5 +5,9 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-triton-grpc-client = { workspace = true }
+byteorder = { workspace = true }
 tonic = { workspace = true }
+triton-grpc-client = { workspace = true }
+
+[lints]
+workspace = true

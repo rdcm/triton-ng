@@ -28,7 +28,6 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "byteorder",
  "tokio",
  "triton-client",
  "triton-grpc-client",
@@ -1131,6 +1130,7 @@ name = "triton-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder",
  "tonic",
  "triton-grpc-client",
 ]

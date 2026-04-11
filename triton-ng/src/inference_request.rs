@@ -11,7 +11,7 @@ pub struct InferenceRequest {
 impl InferenceRequest {
     pub fn new(server: &Server, model_name: &str, model_version: i64) -> Result<Self, TritonError> {
         let mut request_ptr: *mut triton_sys::TRITONSERVER_InferenceRequest = ptr::null_mut();
-        let model_name_cstr = cstring_from_str(model_name);
+        let model_name_cstr = cstring_from_str(model_name)?;
 
         ffi_call!(triton_sys::TRITONSERVER_InferenceRequestNew(
             &mut request_ptr,
@@ -35,7 +35,7 @@ impl InferenceRequest {
         datatype: triton_sys::TRITONSERVER_DataType,
         shape: &[i64],
     ) -> Result<(), TritonError> {
-        let name_cstr = cstring_from_str(name);
+        let name_cstr = cstring_from_str(name)?;
 
         ffi_call!(triton_sys::TRITONSERVER_InferenceRequestAddInput(
             self.ptr,
@@ -47,7 +47,7 @@ impl InferenceRequest {
     }
 
     pub fn append_input_data(&mut self, name: &str, data: &[u8]) -> Result<(), TritonError> {
-        let name_cstr = cstring_from_str(name);
+        let name_cstr = cstring_from_str(name)?;
 
         ffi_call!(triton_sys::TRITONSERVER_InferenceRequestAppendInputData(
             self.ptr,
@@ -60,7 +60,7 @@ impl InferenceRequest {
     }
 
     pub fn add_requested_output(&mut self, name: &str) -> Result<(), TritonError> {
-        let name_cstr = cstring_from_str(name);
+        let name_cstr = cstring_from_str(name)?;
 
         ffi_call!(triton_sys::TRITONSERVER_InferenceRequestAddRequestedOutput(
             self.ptr,

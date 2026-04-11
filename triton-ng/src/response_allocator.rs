@@ -71,15 +71,13 @@ unsafe extern "C" fn alloc_fn(
         unsafe {
             *buffer = ptr::null_mut();
             *buffer_userp = ptr::null_mut();
-            *actual_memory_type =
-                triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
+            *actual_memory_type = triton_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
             *actual_memory_type_id = 0;
         }
         return ptr::null_mut();
     }
 
-    let (buf, actual_kind, actual_id) =
-        allocate(byte_size, memory_type, memory_type_id);
+    let (buf, actual_kind, actual_id) = allocate(byte_size, memory_type, memory_type_id);
 
     if buf.is_null() {
         return unsafe {
@@ -217,11 +215,7 @@ fn cpu_free(ptr: *mut c_void) {
 fn gpu_alloc(size: usize) -> *mut c_void {
     let mut ptr: *mut c_void = ptr::null_mut();
     let rc = unsafe { cudaMalloc(&mut ptr, size) };
-    if rc != 0 {
-        ptr::null_mut()
-    } else {
-        ptr
-    }
+    if rc != 0 { ptr::null_mut() } else { ptr }
 }
 
 #[cfg(feature = "cuda")]
@@ -235,11 +229,7 @@ fn gpu_free(ptr: *mut c_void) {
 fn pinned_alloc(size: usize) -> *mut c_void {
     let mut ptr: *mut c_void = ptr::null_mut();
     let rc = unsafe { cudaMallocHost(&mut ptr, size) };
-    if rc != 0 {
-        ptr::null_mut()
-    } else {
-        ptr
-    }
+    if rc != 0 { ptr::null_mut() } else { ptr }
 }
 
 #[cfg(feature = "cuda")]

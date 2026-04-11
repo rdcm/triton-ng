@@ -14,7 +14,9 @@ impl ModelInstance {
 
     pub fn name(&self) -> Result<String, TritonError> {
         let mut name: *const c_char = std::ptr::null();
-        ffi_call!(triton_sys::TRITONBACKEND_ModelInstanceName(self.ptr, &mut name))?;
+        ffi_call!(triton_sys::TRITONBACKEND_ModelInstanceName(
+            self.ptr, &mut name
+        ))?;
         Ok(unsafe { cstr_to_string(name) })
     }
 
@@ -30,8 +32,7 @@ impl ModelInstance {
     pub fn kind(&self) -> Result<triton_sys::TRITONSERVER_InstanceGroupKind, TritonError> {
         let mut kind: triton_sys::TRITONSERVER_InstanceGroupKind = 0;
         ffi_call!(triton_sys::TRITONBACKEND_ModelInstanceKind(
-            self.ptr,
-            &mut kind
+            self.ptr, &mut kind
         ))?;
         Ok(kind)
     }

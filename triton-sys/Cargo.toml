@@ -8,3 +8,6 @@ edition = "2024"
 [build-dependencies]
 anyhow = { workspace = true }
 bindgen = { workspace = true }
+
+[lints]
+workspace = true

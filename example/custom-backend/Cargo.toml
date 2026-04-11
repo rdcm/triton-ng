@@ -8,3 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 triton-ng = { workspace = true }
+
+[lints]
+workspace = true

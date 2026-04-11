@@ -58,7 +58,7 @@ impl Server {
     }
 
     pub fn is_model_ready(&self, model_name: &str, version: i64) -> Result<bool, TritonError> {
-        let model_name_cstr = cstring_from_str(model_name);
+        let model_name_cstr = cstring_from_str(model_name)?;
         let mut ready = false;
 
         ffi_call!(triton_sys::TRITONSERVER_ServerModelIsReady(
@@ -72,7 +72,7 @@ impl Server {
     }
 
     pub fn model_metadata(&self, model_name: &str, version: i64) -> Result<String, TritonError> {
-        let model_name_cstr = cstring_from_str(model_name);
+        let model_name_cstr = cstring_from_str(model_name)?;
         let mut metadata_ptr: *mut triton_sys::TRITONSERVER_Message = std::ptr::null_mut();
 
         ffi_call!(triton_sys::TRITONSERVER_ServerModelMetadata(
@@ -186,7 +186,7 @@ unsafe extern "C" fn inference_request_release(
     _userp: *mut std::os::raw::c_void,
 ) {
     use triton_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL as RELEASE_ALL;
-    if flags & (RELEASE_ALL as u32) != 0 && !request.is_null() {
+    if flags & RELEASE_ALL != 0 && !request.is_null() {
         unsafe { triton_sys::TRITONSERVER_InferenceRequestDelete(request) };
     }
 }
@@ -204,7 +204,7 @@ unsafe extern "C" fn inference_response_complete(
     userp: *mut std::os::raw::c_void,
 ) {
     use triton_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL as FINAL;
-    let is_final = flags & (FINAL as u32) != 0;
+    let is_final = flags & FINAL != 0;
 
     // Borrow context without taking ownership — we only own it on the final call.
     let context = unsafe { &mut *(userp as *mut InferenceContext) };

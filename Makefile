@@ -13,7 +13,8 @@ docker-env-clean:
 	docker compose down -v
 
 format:
-	cargo fmt
+	cargo sort --workspace
+	cargo fmt --all
 
 lint:
 	cargo clippy

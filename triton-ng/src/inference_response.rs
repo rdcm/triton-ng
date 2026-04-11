@@ -22,8 +22,7 @@ impl InferenceResponse {
     }
 
     pub fn error(&self) -> Option<TritonError> {
-        let error_ptr =
-            unsafe { triton_sys::TRITONSERVER_InferenceResponseError(self.ptr) };
+        let error_ptr = unsafe { triton_sys::TRITONSERVER_InferenceResponseError(self.ptr) };
 
         if error_ptr.is_null() {
             None
