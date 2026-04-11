@@ -11,16 +11,13 @@ pub struct InferenceResponse {
 }
 
 impl InferenceResponse {
-    pub fn from_ptr(
+    pub(crate) fn from_ptr(
         ptr: *mut triton_sys::TRITONSERVER_InferenceResponse,
     ) -> Result<Self, TritonError> {
         ensure_ptr!(ptr)?;
         Ok(Self { ptr })
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_InferenceResponse {
-        self.ptr
-    }
 
     pub fn error(&self) -> Option<TritonError> {
         let error_ptr = unsafe { triton_sys::TRITONSERVER_InferenceResponseError(self.ptr) };

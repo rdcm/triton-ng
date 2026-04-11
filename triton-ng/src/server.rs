@@ -31,12 +31,12 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONSERVER_Server) -> Result<Self, TritonError> {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONSERVER_Server) -> Result<Self, TritonError> {
         ensure_ptr!(ptr)?;
         Ok(Self { ptr })
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_Server {
+    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_Server {
         self.ptr
     }
 

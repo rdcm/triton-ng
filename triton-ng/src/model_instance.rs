@@ -1,5 +1,4 @@
 use crate::error::TritonError;
-use crate::ffi_call;
 use crate::types::InstanceKind;
 use crate::utils::cstr_to_string;
 use libc::c_char;
@@ -9,7 +8,7 @@ pub struct ModelInstance {
 }
 
 impl ModelInstance {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_ModelInstance) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_ModelInstance) -> Self {
         Self { ptr }
     }
 
@@ -36,9 +35,5 @@ impl ModelInstance {
             self.ptr, &mut kind
         ))?;
         Ok(InstanceKind::from_sys(kind))
-    }
-
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_ModelInstance {
-        self.ptr
     }
 }

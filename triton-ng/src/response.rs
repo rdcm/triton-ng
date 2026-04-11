@@ -31,9 +31,6 @@ impl Response {
         })
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Response {
-        self.ptr
-    }
 
     pub fn create_output(
         &mut self,
@@ -92,13 +89,10 @@ pub struct Output {
 }
 
 impl Output {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Output) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Output) -> Self {
         Self { ptr }
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Output {
-        self.ptr
-    }
 
     pub fn write_string(&mut self, value: &str) -> Result<(), Error> {
         let encoded = encode_string(value)?;

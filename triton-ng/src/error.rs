@@ -9,8 +9,7 @@ pub struct TritonError {
 }
 
 impl TritonError {
-    #[allow(clippy::missing_safety_doc)]
-    pub unsafe fn new(ptr: *mut triton_sys::TRITONSERVER_Error) -> Self {
+    pub(crate) unsafe fn new(ptr: *mut triton_sys::TRITONSERVER_Error) -> Self {
         let message = if ptr.is_null() {
             "Unknown Triton error".to_string()
         } else {
@@ -54,9 +53,3 @@ impl Drop for TritonError {
     }
 }
 
-impl From<*mut triton_sys::TRITONSERVER_Error> for TritonError {
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn from(ptr: *mut triton_sys::TRITONSERVER_Error) -> Self {
-        unsafe { TritonError::new(ptr) }
-    }
-}

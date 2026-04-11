@@ -35,7 +35,7 @@ impl ResponseAllocator {
         Ok(Self { ptr })
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_ResponseAllocator {
+    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_ResponseAllocator {
         self.ptr
     }
 }

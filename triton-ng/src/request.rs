@@ -1,7 +1,6 @@
 use crate::error::{Error, TritonError};
 use crate::types::DataType;
 use crate::utils::{cstr_to_string, cstring_from_str, decode_string};
-use crate::{ensure_ptr, ffi_call};
 use libc::{c_char, c_void};
 use std::slice;
 
@@ -10,11 +9,11 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Request) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Request) -> Self {
         Self { ptr }
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Request {
+    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Request {
         self.ptr
     }
 
@@ -70,7 +69,7 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Input) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Input) -> Self {
         Self { ptr }
     }
 

@@ -1,5 +1,4 @@
 use crate::error::{Error, TritonError};
-use crate::ffi_call;
 use crate::server::Server;
 use crate::utils::cstr_to_string;
 use libc::c_char;
@@ -8,14 +7,13 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 use std::ptr;
 
-use crate::ensure_ptr;
 
 pub struct Model {
     ptr: *mut triton_sys::TRITONBACKEND_Model,
 }
 
 impl Model {
-    pub fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Model) -> Self {
+    pub(crate) fn from_ptr(ptr: *mut triton_sys::TRITONBACKEND_Model) -> Self {
         Self { ptr }
     }
 
@@ -117,9 +115,5 @@ impl Model {
         Ok(value["parameters"][key]["string_value"]
             .as_str()
             .map(str::to_owned))
-    }
-
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONBACKEND_Model {
-        self.ptr
     }
 }

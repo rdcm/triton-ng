@@ -1,4 +1,3 @@
-#[macro_export]
 macro_rules! ffi_call {
     ($expr: expr) => {{
         #[allow(clippy::macro_metavars_in_unsafe)]
@@ -7,7 +6,9 @@ macro_rules! ffi_call {
         if res.is_null() {
             std::result::Result::<(), $crate::error::TritonError>::Ok(())
         } else {
-            std::result::Result::<(), $crate::error::TritonError>::Err(res.into())
+            std::result::Result::<(), $crate::error::TritonError>::Err(
+                unsafe { $crate::error::TritonError::new(res) },
+            )
         }
     }};
     ($expr: expr, $val: expr) => {{
@@ -17,12 +18,13 @@ macro_rules! ffi_call {
         if res.is_null() {
             std::result::Result::<_, $crate::error::TritonError>::Ok($val)
         } else {
-            std::result::Result::<_, $crate::error::TritonError>::Err(res.into())
+            std::result::Result::<_, $crate::error::TritonError>::Err(
+                unsafe { $crate::error::TritonError::new(res) },
+            )
         }
     }};
 }
 
-#[macro_export]
 macro_rules! ensure_ptr {
     ($ptr:expr) => {{
         if $ptr.is_null() {

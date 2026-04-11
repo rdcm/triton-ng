@@ -26,7 +26,7 @@ impl InferenceRequest {
         Ok(Self { ptr: request_ptr })
     }
 
-    pub fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_InferenceRequest {
+    pub(crate) fn as_ptr(&self) -> *mut triton_sys::TRITONSERVER_InferenceRequest {
         self.ptr
     }
 
