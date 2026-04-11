@@ -10,12 +10,13 @@ struct OutputSlotReplacer {
 
 impl VisitMut for OutputSlotReplacer {
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
-        if let Expr::Reference(r) = expr {
-            if r.mutability.is_some() && matches!(*r.expr, Expr::Infer(_)) {
-                self.found = true;
-                *expr = syn::parse_quote!(&mut __triton_out);
-                return;
-            }
+        if let Expr::Reference(r) = expr
+            && r.mutability.is_some()
+            && matches!(*r.expr, Expr::Infer(_))
+        {
+            self.found = true;
+            *expr = syn::parse_quote!(&mut __triton_out);
+            return;
         }
         syn::visit_mut::visit_expr_mut(self, expr);
     }

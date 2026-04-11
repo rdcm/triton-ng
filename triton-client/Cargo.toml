@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-byteorder = { workspace = true }
+thiserror = { workspace = true }
 tonic = { workspace = true }
 triton-grpc-client = { workspace = true }
 

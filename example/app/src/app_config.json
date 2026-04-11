@@ -1,0 +1,5 @@
+{
+  "triton_url": "http://localhost:8001",
+  "model_name": "mnist",
+  "model_version": "1"
+}
