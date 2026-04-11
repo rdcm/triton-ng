@@ -22,6 +22,9 @@ lint:
 logs:
 	docker logs triton
 
+tests:
+	cargo nextest run --workspace --no-fail-fast
+
 update-submodules:
 	git submodule update --init --recursive
 	git submodule update --remote

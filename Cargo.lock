@@ -1771,8 +1771,13 @@ dependencies = [
 name = "triton-ng-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "libc",
  "prost",
+ "serde",
+ "serde_json",
  "thiserror",
+ "tokio",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

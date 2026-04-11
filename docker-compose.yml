@@ -10,7 +10,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    shm_size: "1g"
+    ipc: host
     ulimits:
       memlock: -1
       stack: 67108864
@@ -18,6 +18,9 @@ services:
       tritonserver
       --model-repository=/models
       --log-verbose=1
+      --model-control-mode=explicit
+      --load-model=mnist
+      --load-model=mnist_onnx
     volumes:
       - ./models:/models
       - ./backends/custom_backend:/opt/tritonserver/backends/custom_backend
