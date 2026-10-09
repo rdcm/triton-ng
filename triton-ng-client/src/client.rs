@@ -32,6 +32,8 @@ use crate::types::{
 pub struct TritonClientConfig {
     url: String,
     tls: Option<ClientTlsConfig>,
+    lazy: bool,
+    max_message_size: Option<usize>,
 }
 
 impl TritonClientConfig {
@@ -39,6 +41,8 @@ impl TritonClientConfig {
         Self {
             url: url.into(),
             tls: None,
+            lazy: false,
+            max_message_size: None,
         }
     }
 
@@ -46,6 +50,20 @@ impl TritonClientConfig {
     /// a custom CA / client identity for mTLS.
     pub fn with_tls(mut self, tls: ClientTlsConfig) -> Self {
         self.tls = Some(tls);
+        self
+    }
+
+    /// Defers connecting until the first request, so the client can be created
+    /// before the server is up. The channel reconnects transparently.
+    pub fn with_lazy_connect(mut self) -> Self {
+        self.lazy = true;
+        self
+    }
+
+    /// Limits both encoded and decoded gRPC message sizes (tonic decodes at
+    /// most 4 MiB by default).
+    pub fn with_max_message_size(mut self, bytes: usize) -> Self {
+        self.max_message_size = Some(bytes);
         self
     }
 
@@ -87,11 +105,20 @@ impl TritonClient {
             endpoint = endpoint.tls_config(tls)?;
         }
 
-        let channel = endpoint.connect().await?;
-        Ok(Self {
-            config,
-            client: GrpcInferenceServiceClient::new(channel),
-        })
+        let channel = if config.lazy {
+            endpoint.connect_lazy()
+        } else {
+            endpoint.connect().await?
+        };
+
+        let mut client = GrpcInferenceServiceClient::new(channel);
+        if let Some(bytes) = config.max_message_size {
+            client = client
+                .max_decoding_message_size(bytes)
+                .max_encoding_message_size(bytes);
+        }
+
+        Ok(Self { config, client })
     }
 
     /// Returns the configuration this client was created with.

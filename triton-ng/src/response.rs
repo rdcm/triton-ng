@@ -3,7 +3,9 @@ use crate::error::TritonError;
 use crate::request::Request;
 use crate::types::DataType;
 use crate::utils::{cstring_from_str, encode_string};
+use std::cell::Cell;
 use std::ptr;
+use std::rc::Rc;
 use std::slice;
 use triton_ng_macros::triton_call;
 
@@ -12,6 +14,8 @@ pub struct Response {
     /// Set to true after a successful `send()` so Drop doesn't double-delete.
     /// `TRITONBACKEND_ResponseSend` transfers ownership to Triton.
     sent: bool,
+    /// Shared with the originating [`Request`], marks it as answered.
+    responded: Rc<Cell<bool>>,
 }
 
 impl Response {
@@ -20,7 +24,11 @@ impl Response {
             &mut _,
             request.as_ptr()
         ))?;
-        Ok(Self { ptr, sent: false })
+        Ok(Self {
+            ptr,
+            sent: false,
+            responded: request.responded_flag(),
+        })
     }
 
     pub fn create_output(
@@ -54,6 +62,7 @@ impl Response {
         if result.is_ok() {
             // Triton now owns the response object.
             self.sent = true;
+            self.responded.set(true);
         }
 
         result
@@ -85,10 +94,25 @@ impl Output {
         Ok(())
     }
 
+    /// Writes every element of a BYTES tensor.
+    pub fn write_strings<S: AsRef<str>>(&mut self, values: &[S]) -> Result<(), Error> {
+        let mut encoded = Vec::new();
+        for value in values {
+            encoded.extend(encode_string(value.as_ref())?);
+        }
+        self.write_bytes(&encoded)?;
+        Ok(())
+    }
+
     pub fn write_bytes(&mut self, data: &[u8]) -> Result<(), TritonError> {
         let buffer_byte_size = data.len() as u64;
-        let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType = 0;
+        let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType =
+            triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
         let mut memory_type_id = 0;
+
+        if data.is_empty() {
+            return Ok(());
+        }
 
         let buffer = triton_call!(triton_ng_sys::TRITONBACKEND_OutputBuffer(
             self.ptr,
@@ -97,6 +121,12 @@ impl Output {
             &mut memory_type,
             &mut memory_type_id,
         ))?;
+
+        if memory_type == triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU {
+            return Err(TritonError::from_message(
+                "output buffer was allocated in GPU memory, only host memory is supported",
+            ));
+        }
 
         let mem: &mut [u8] =
             unsafe { slice::from_raw_parts_mut(buffer as *mut u8, buffer_byte_size as usize) };
@@ -108,6 +138,30 @@ impl Output {
 
     pub fn write_fp32_vec(&mut self, data: &[f32]) -> Result<(), TritonError> {
         let bytes: Vec<u8> = data.iter().flat_map(|&f| f.to_le_bytes()).collect();
+
+        self.write_bytes(&bytes)
+    }
+
+    pub fn write_fp64_vec(&mut self, data: &[f64]) -> Result<(), TritonError> {
+        let bytes: Vec<u8> = data.iter().flat_map(|&f| f.to_le_bytes()).collect();
+
+        self.write_bytes(&bytes)
+    }
+
+    pub fn write_i32_vec(&mut self, data: &[i32]) -> Result<(), TritonError> {
+        let bytes: Vec<u8> = data.iter().flat_map(|&v| v.to_le_bytes()).collect();
+
+        self.write_bytes(&bytes)
+    }
+
+    pub fn write_i64_vec(&mut self, data: &[i64]) -> Result<(), TritonError> {
+        let bytes: Vec<u8> = data.iter().flat_map(|&v| v.to_le_bytes()).collect();
+
+        self.write_bytes(&bytes)
+    }
+
+    pub fn write_bool_vec(&mut self, data: &[bool]) -> Result<(), TritonError> {
+        let bytes: Vec<u8> = data.iter().map(|&v| v as u8).collect();
 
         self.write_bytes(&bytes)
     }

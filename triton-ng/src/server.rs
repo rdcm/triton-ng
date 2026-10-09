@@ -1,8 +1,10 @@
-use crate::TritonError;
 use crate::inference_request::InferenceRequest;
 use crate::inference_response::InferenceResponse;
+use crate::request::decode_le;
 use crate::response_allocator::ResponseAllocator;
+use crate::types::DataType;
 use crate::utils::cstring_from_str;
+use crate::{Error, TritonError};
 use crossbeam::channel::{Sender, bounded};
 use std::ffi::c_void;
 use std::ptr;
@@ -15,9 +17,58 @@ pub struct OutputTensor {
     pub datatype: crate::types::DataType,
 }
 
+impl OutputTensor {
+    pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
+        self.expect_datatype(DataType::Fp32)?;
+        decode_le(&self.data, f32::from_le_bytes)
+    }
+
+    pub fn as_i32_vec(&self) -> Result<Vec<i32>, Error> {
+        self.expect_datatype(DataType::Int32)?;
+        decode_le(&self.data, i32::from_le_bytes)
+    }
+
+    pub fn as_i64_vec(&self) -> Result<Vec<i64>, Error> {
+        self.expect_datatype(DataType::Int64)?;
+        decode_le(&self.data, i64::from_le_bytes)
+    }
+
+    /// Integer tensor widened to `i64`, accepts both INT32 and INT64.
+    pub fn as_index_vec(&self) -> Result<Vec<i64>, Error> {
+        match self.datatype {
+            DataType::Int32 => Ok(decode_le(&self.data, i32::from_le_bytes)?
+                .into_iter()
+                .map(i64::from)
+                .collect()),
+            _ => self.as_i64_vec(),
+        }
+    }
+
+    fn expect_datatype(&self, expected: DataType) -> Result<(), Error> {
+        if self.datatype != expected {
+            return Err(format!(
+                "output '{}' has datatype {:?}, expected {:?}",
+                self.name, self.datatype, expected
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
 pub struct InferenceResult {
     pub outputs: Vec<OutputTensor>,
     pub error: Option<String>,
+}
+
+impl InferenceResult {
+    /// Returns the output tensor named `name`.
+    pub fn output(&self, name: &str) -> Result<&OutputTensor, Error> {
+        self.outputs
+            .iter()
+            .find(|o| o.name == name)
+            .ok_or_else(|| format!("missing output '{name}'").into())
+    }
 }
 
 pub struct InferenceContext {
@@ -118,20 +169,29 @@ impl Server {
     /// where `InferenceRequest::Drop` frees the object while Triton's backend
     /// thread still holds a pointer (which causes a SIGSEGV in
     /// `TRITONBACKEND_RequestRelease`).
+    ///
+    /// The input buffers owned by the request are freed by the same callback:
+    /// Triton may read them until the request is released, which can happen
+    /// after the final response has already been delivered.
     pub fn infer_async(&self, request: InferenceRequest) -> Result<InferenceResult, TritonError> {
         let (tx, rx) = bounded(1);
         let allocator = ResponseAllocator::new()?;
 
+        let (raw, buffers) = request.into_raw_parts();
+        let buffers_ptr = Box::into_raw(Box::new(buffers)) as *mut c_void;
+
         // Register the release callback before handing the request to Triton.
-        // If this call fails, `request` is still owned by us and Drop will
-        // call `TRITONSERVER_InferenceRequestDelete` normally.
-        triton_call!(
+        if let Err(e) = triton_call!(
             triton_ng_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
-                request.as_ptr(),
+                raw,
                 Some(inference_request_release),
-                ptr::null_mut(),
+                buffers_ptr,
             )
-        )?;
+        ) {
+            // Triton never saw this request, release everything ourselves.
+            unsafe { inference_request_release(raw, RELEASE_ALL, buffers_ptr) };
+            return Err(e);
+        }
 
         let context = Box::new(InferenceContext {
             tx,
@@ -143,32 +203,32 @@ impl Server {
 
         if let Err(e) = triton_call!(
             triton_ng_sys::TRITONSERVER_InferenceRequestSetResponseCallback(
-                request.as_ptr(),
+                raw,
                 (*context_ptr.cast::<InferenceContext>()).allocator.as_ptr(),
                 ptr::null_mut(),
                 Some(inference_response_complete),
                 context_ptr,
             )
         ) {
-            unsafe { drop(Box::from_raw(context_ptr as *mut InferenceContext)) };
+            unsafe {
+                drop(Box::from_raw(context_ptr as *mut InferenceContext));
+                inference_request_release(raw, RELEASE_ALL, buffers_ptr);
+            }
             return Err(e);
-            // `request` drops here — Drop calls Delete (correct: Triton never saw
-            // this request so the release callback will not fire).
         }
 
-        // Transfer ownership to Triton. The release callback now owns deletion;
-        // prevent Drop from running a second `InferenceRequestDelete`.
-        let raw = request.as_ptr();
-        std::mem::forget(request);
-
+        // Transfer ownership to Triton. The release callback now owns deletion.
         if let Err(e) = triton_call!(triton_ng_sys::TRITONSERVER_ServerInferAsync(
             self.ptr,
             raw,
             ptr::null_mut(),
         )) {
-            // Triton guarantees it will NOT call the release callback on failure,
-            // so we must delete manually.
-            unsafe { triton_ng_sys::TRITONSERVER_InferenceRequestDelete(raw) };
+            // Triton guarantees it will NOT call neither the release nor the
+            // response callback on failure, so we must clean up manually.
+            unsafe {
+                drop(Box::from_raw(context_ptr as *mut InferenceContext));
+                inference_request_release(raw, RELEASE_ALL, buffers_ptr);
+            }
             return Err(e);
         }
 
@@ -187,18 +247,31 @@ impl Server {
 /// Called by Triton after the backend has fully released the inference request.
 /// At this point it is safe to delete the request object.
 ///
+/// `userp` is the boxed `Vec<Vec<u8>>` of input buffers referenced by the
+/// request, they are freed only after the request itself is deleted.
+///
 /// The header says RELEASE_ALL should always be set today, but recommends
 /// checking explicitly in case future versions add new flags.
 unsafe extern "C" fn inference_request_release(
     request: *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
     flags: u32,
-    _userp: *mut std::os::raw::c_void,
+    userp: *mut std::os::raw::c_void,
 ) {
-    use triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL as RELEASE_ALL;
-    if flags & RELEASE_ALL != 0 && !request.is_null() {
+    if flags & RELEASE_ALL == 0 {
+        return;
+    }
+
+    if !request.is_null() {
         unsafe { triton_ng_sys::TRITONSERVER_InferenceRequestDelete(request) };
     }
+
+    if !userp.is_null() {
+        unsafe { drop(Box::from_raw(userp as *mut Vec<Vec<u8>>)) };
+    }
 }
+
+const RELEASE_ALL: u32 =
+    triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL;
 
 /// Called by Triton for each response (and once more with a null response when
 /// RESPONSE_COMPLETE_FINAL is set, to signal end-of-stream).

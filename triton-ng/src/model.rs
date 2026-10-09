@@ -2,11 +2,17 @@ use crate::error::{Error, TritonError};
 use crate::server::Server;
 use crate::utils::cstr_to_string;
 use libc::c_char;
+use std::any::Any;
+use std::ffi::c_void;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::ptr;
+use std::str::FromStr;
 use triton_ng_macros::triton_call;
+
+/// Type-erased model state stored behind `TRITONBACKEND_ModelSetState`.
+type BoxedState = Box<dyn Any + Send + Sync>;
 
 pub struct Model {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Model,
@@ -15,6 +21,67 @@ pub struct Model {
 impl Model {
     pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Model) -> Self {
         Self { ptr }
+    }
+
+    /// Stores backend-defined state for this model, replacing the previous one.
+    ///
+    /// Typically called from `Backend::model_initialize`; the state is shared
+    /// by all instances of the model and dropped when the model is finalized.
+    pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
+        self.clear_state()?;
+
+        let boxed: Box<BoxedState> = Box::new(Box::new(state));
+        let state_ptr = Box::into_raw(boxed) as *mut c_void;
+
+        if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_ModelSetState(
+            self.ptr, state_ptr
+        )) {
+            unsafe { drop(Box::from_raw(state_ptr as *mut BoxedState)) };
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    /// Returns the state previously stored with [`Model::set_state`].
+    pub fn state<T: Any>(&self) -> Result<&T, Error> {
+        let state_ptr = self.raw_state()?;
+        if state_ptr.is_null() {
+            return Err("model state is not initialized".into());
+        }
+
+        // SAFETY: the pointer was produced by `set_state` from a `Box<BoxedState>`
+        // and stays valid until `clear_state`, which only runs on model finalize.
+        let state = unsafe { &*(state_ptr as *const BoxedState) };
+
+        state
+            .downcast_ref::<T>()
+            .ok_or_else(|| "model state has unexpected type".into())
+    }
+
+    /// Drops the state stored with [`Model::set_state`], if any.
+    pub(crate) fn clear_state(&self) -> Result<(), TritonError> {
+        let state_ptr = self.raw_state()?;
+        if state_ptr.is_null() {
+            return Ok(());
+        }
+
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelSetState(
+            self.ptr,
+            ptr::null_mut()
+        ))?;
+        unsafe { drop(Box::from_raw(state_ptr as *mut BoxedState)) };
+
+        Ok(())
+    }
+
+    fn raw_state(&self) -> Result<*mut c_void, TritonError> {
+        let mut state_ptr: *mut c_void = ptr::null_mut();
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelState(
+            self.ptr,
+            &mut state_ptr
+        ))?;
+        Ok(state_ptr)
     }
 
     pub fn name(&self) -> Result<String, TritonError> {
@@ -107,5 +174,26 @@ impl Model {
         Ok(value["parameters"][key]["string_value"]
             .as_str()
             .map(str::to_owned))
+    }
+
+    /// Reads and parses a parameter from the model configuration, falling back
+    /// to `default` when the parameter is absent.
+    pub fn config_parameter_or<T>(&self, key: &str, default: T) -> Result<T, Error>
+    where
+        T: FromStr,
+        T::Err: std::fmt::Display,
+    {
+        match self.config_parameter(key)? {
+            None => Ok(default),
+            Some(raw) => raw.trim().parse::<T>().map_err(|e| {
+                format!("invalid value '{raw}' of config parameter '{key}': {e}").into()
+            }),
+        }
+    }
+
+    /// Reads a required string parameter from the model configuration.
+    pub fn required_config_parameter(&self, key: &str) -> Result<String, Error> {
+        self.config_parameter(key)?
+            .ok_or_else(|| format!("missing '{key}' config parameter").into())
     }
 }

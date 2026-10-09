@@ -8,6 +8,8 @@ pub mod error;
 pub mod inference_request;
 #[path = "inference_response.rs"]
 pub mod inference_response;
+#[path = "log.rs"]
+pub mod log;
 #[path = "model.rs"]
 pub mod model;
 #[path = "model_instance.rs"]
@@ -68,6 +70,53 @@ pub mod __macro_support {
         crate::backend_handle::BackendHandle::from_ptr(
             ptr as *mut triton_ng_sys::TRITONBACKEND_Backend,
         )
+    }
+
+    /// Wraps a raw model pointer. Called from `declare_backend!`.
+    pub unsafe fn model(ptr: *mut c_void) -> crate::model::Model {
+        crate::model::Model::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Model)
+    }
+
+    /// Drops the model state on finalize. Called from `declare_backend!`.
+    pub fn clear_model_state(model: &crate::model::Model) {
+        if let Err(e) = model.clear_state() {
+            crate::log::error(&format!("failed to clear model state: {e}"));
+        }
+    }
+
+    /// Answers every request that has no final response yet and returns all
+    /// requests to Triton. Called from `declare_backend!` after
+    /// `model_instance_execute`.
+    ///
+    /// Always reports success to Triton: once a backend has started sending
+    /// responses, returning an error would make Triton respond (and release)
+    /// the same requests a second time.
+    pub fn complete_requests(
+        requests: &[crate::request::Request],
+        result: Result<(), crate::error::Error>,
+    ) -> ErrorPtr {
+        let message = match &result {
+            Ok(()) => "backend did not produce a response for the request".to_string(),
+            Err(e) => e.to_string(),
+        };
+
+        if let Err(e) = &result {
+            crate::log::error(&format!("model instance execute failed: {e}"));
+        }
+
+        for request in requests {
+            if !request.is_responded()
+                && let Err(e) = request.respond_error(&message)
+            {
+                crate::log::error(&format!("failed to send error response: {e}"));
+            }
+
+            if let Err(e) = request.release() {
+                crate::log::error(&format!("failed to release request: {e}"));
+            }
+        }
+
+        NULL_ERROR
     }
 
     /// Wraps a raw model instance pointer. Called from `declare_backend!`.

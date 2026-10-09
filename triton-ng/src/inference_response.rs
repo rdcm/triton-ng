@@ -72,8 +72,22 @@ impl InferenceResponse {
             unsafe { cstr_to_string(name_ptr) }
         };
 
-        let shape = unsafe { slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec() };
-        let data = unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() };
+        if memory_type == triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU {
+            return Err(TritonError::from_message(format!(
+                "output '{name}' is in GPU memory, only host memory is supported"
+            )));
+        }
+
+        let shape = if shape_ptr.is_null() || dim_count == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec() }
+        };
+        let data = if base.is_null() || byte_size == 0 {
+            Vec::new()
+        } else {
+            unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
+        };
 
         Ok(OutputTensor {
             name,

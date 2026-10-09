@@ -27,6 +27,26 @@ pub trait Backend {
         Ok(())
     }
 
+    /// Initialize for a model. This function is optional, a backend is not
+    /// required to implement it. This function is called once when a model
+    /// that uses the backend is loaded, before any of its instances is
+    /// created. Use [`Model::set_state`] to keep state shared by all
+    /// instances of the model (tokenizers, vocabularies, parsed parameters).
+    ///
+    /// Corresponds to TRITONBACKEND_ModelInitialize.
+    fn model_initialize(_model: &Model) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Finalize for a model. This function is optional, a backend is not
+    /// required to implement it. The state stored with [`Model::set_state`]
+    /// is dropped automatically right after this function returns.
+    ///
+    /// Corresponds to TRITONBACKEND_ModelFinalize.
+    fn model_finalize(_model: &Model) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Initialize for a model instance. This function is optional, a
     /// backend is not required to implement it. This function is called
     /// once when a model instance is created to allow the backend to
@@ -54,6 +74,12 @@ pub trait Backend {
     /// simultaneous calls to this function for a given model 'instance';
     /// however, there may be simultaneous calls for different model
     /// instances (for the same or different models).
+    ///
+    /// Every request should get exactly one final response, either via
+    /// [`crate::Response::send`] or [`Request::respond_error`]. Requests left
+    /// without a response get an error response carrying the returned error
+    /// (or a generic one on success). Requests are released by the
+    /// `declare_backend!` glue, implementations must not release them.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceExecute.
     fn model_instance_execute(model: Model, requests: &[Request]) -> Result<(), Error>;
@@ -91,6 +117,25 @@ macro_rules! declare_backend {
         }
 
         #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelInitialize(
+            model: *mut std::ffi::c_void,
+        ) -> triton_ng::__macro_support::ErrorPtr {
+            triton_ng::call_checked!($class::model_initialize(&unsafe {
+                triton_ng::__macro_support::model(model)
+            }))
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelFinalize(
+            model: *mut std::ffi::c_void,
+        ) -> triton_ng::__macro_support::ErrorPtr {
+            let model = unsafe { triton_ng::__macro_support::model(model) };
+            let result = $class::model_finalize(&model);
+            triton_ng::__macro_support::clear_model_state(&model);
+            triton_ng::call_checked!(result)
+        }
+
+        #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
             instance: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
@@ -119,7 +164,8 @@ macro_rules! declare_backend {
             } {
                 Err(err) => err,
                 Ok((model, requests)) => {
-                    triton_ng::call_checked!($class::model_instance_execute(model, &requests))
+                    let result = $class::model_instance_execute(model, &requests);
+                    triton_ng::__macro_support::complete_requests(&requests, result)
                 }
             }
         }
