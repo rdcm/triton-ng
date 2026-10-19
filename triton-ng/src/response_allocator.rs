@@ -4,8 +4,9 @@ use std::ptr;
 use triton_ng_macros::triton_call;
 
 // CUDA runtime functions — available when `cuda` feature is enabled.
-// libcudart is linked via build.rs.
-#[cfg(feature = "cuda")]
+// Direct libcudart linkage is used only in linked mode. The host-result
+// API retains its CPU fallback in dynamic mode; DeviceInference owns GPU outputs.
+#[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
 unsafe extern "C" {
     fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
     fn cudaFree(dev_ptr: *mut c_void) -> i32;
@@ -29,6 +30,33 @@ impl ResponseAllocator {
             None,
         ))?;
         Ok(Self { ptr })
+    }
+
+    /// CPU-only outputs for the owned-byte-vector inference API, even when
+    /// another backend enables the workspace-wide `cuda` feature.
+    pub fn new_host() -> Result<Self, TritonError> {
+        Self::with_callbacks(Some(host_alloc_fn), Some(release_fn), None)
+    }
+
+    /// Internal constructor: callbacks and their ownership policy stay inside the SDK.
+    pub(crate) fn with_callbacks(
+        allocate: triton_ng_sys::TRITONSERVER_ResponseAllocatorAllocFn_t,
+        release: triton_ng_sys::TRITONSERVER_ResponseAllocatorReleaseFn_t,
+        query: triton_ng_sys::TRITONSERVER_ResponseAllocatorQueryFn_t,
+    ) -> Result<Self, TritonError> {
+        let ptr = triton_call!(triton_ng_sys::TRITONSERVER_ResponseAllocatorNew(
+            &mut _,
+            allocate,
+            release,
+            None
+        ))?;
+        let allocator = Self { ptr };
+        if query.is_some() {
+            triton_call!(
+                triton_ng_sys::TRITONSERVER_ResponseAllocatorSetQueryFunction(ptr, query)
+            )?;
+        }
+        Ok(allocator)
     }
 
     pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_ResponseAllocator {
@@ -97,6 +125,36 @@ unsafe extern "C" fn alloc_fn(
     ptr::null_mut()
 }
 
+// Legacy Server::infer_async returns host Vec<u8>. Force host placement so
+// enabling GPU tensor support cannot change other models' BLS behavior.
+unsafe extern "C" fn host_alloc_fn(
+    allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
+    name: *const c_char,
+    bytes: usize,
+    _: triton_ng_sys::TRITONSERVER_MemoryType,
+    _: i64,
+    user: *mut c_void,
+    buffer: *mut *mut c_void,
+    tag: *mut *mut c_void,
+    actual: *mut triton_ng_sys::TRITONSERVER_MemoryType,
+    device: *mut i64,
+) -> *mut triton_ng_sys::TRITONSERVER_Error {
+    unsafe {
+        alloc_fn(
+            allocator,
+            name,
+            bytes,
+            triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU,
+            0,
+            user,
+            buffer,
+            tag,
+            actual,
+            device,
+        )
+    }
+}
+
 /// Triton calls this when it is done with a buffer allocated by `alloc_fn`.
 unsafe extern "C" fn release_fn(
     _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
@@ -138,7 +196,7 @@ fn allocate(
         CPU => (cpu_alloc(byte_size), CPU, 0),
 
         CPU_PINNED => {
-            #[cfg(feature = "cuda")]
+            #[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
             {
                 let ptr = pinned_alloc(byte_size);
                 if !ptr.is_null() {
@@ -149,7 +207,7 @@ fn allocate(
         }
 
         GPU => {
-            #[cfg(feature = "cuda")]
+            #[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
             {
                 let ptr = gpu_alloc(byte_size);
                 if !ptr.is_null() {
@@ -172,22 +230,20 @@ fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
 
     match kind {
         CPU_PINNED => {
-            #[cfg(feature = "cuda")]
+            #[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
             {
                 pinned_free(buf);
-                return;
             }
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(any(not(feature = "cuda"), feature = "cuda-dynamic"))]
             cpu_free(buf);
         }
 
         GPU => {
-            #[cfg(feature = "cuda")]
+            #[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
             {
                 gpu_free(buf);
-                return;
             }
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(any(not(feature = "cuda"), feature = "cuda-dynamic"))]
             cpu_free(buf);
         }
 
@@ -207,7 +263,7 @@ fn cpu_free(ptr: *mut c_void) {
     unsafe { libc::free(ptr) }
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
 #[inline]
 fn gpu_alloc(size: usize) -> *mut c_void {
     let mut ptr: *mut c_void = ptr::null_mut();
@@ -215,13 +271,13 @@ fn gpu_alloc(size: usize) -> *mut c_void {
     if rc != 0 { ptr::null_mut() } else { ptr }
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
 #[inline]
 fn gpu_free(ptr: *mut c_void) {
     unsafe { cudaFree(ptr) };
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
 #[inline]
 fn pinned_alloc(size: usize) -> *mut c_void {
     let mut ptr: *mut c_void = ptr::null_mut();
@@ -229,8 +285,13 @@ fn pinned_alloc(size: usize) -> *mut c_void {
     if rc != 0 { ptr::null_mut() } else { ptr }
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", not(feature = "cuda-dynamic")))]
 #[inline]
 fn pinned_free(ptr: *mut c_void) {
     unsafe { cudaFreeHost(ptr) };
 }
+
+// Allocators contain no mutable Rust state. Custom callbacks are SDK-owned and
+// synchronize their per-request allocations. Triton permits concurrent use.
+unsafe impl Send for ResponseAllocator {}
+unsafe impl Sync for ResponseAllocator {}

@@ -175,7 +175,7 @@ impl Server {
     /// after the final response has already been delivered.
     pub fn infer_async(&self, request: InferenceRequest) -> Result<InferenceResult, TritonError> {
         let (tx, rx) = bounded(1);
-        let allocator = ResponseAllocator::new()?;
+        let allocator = ResponseAllocator::new_host()?;
 
         let (raw, buffers) = request.into_raw_parts();
         let buffers_ptr = Box::into_raw(Box::new(buffers)) as *mut c_void;

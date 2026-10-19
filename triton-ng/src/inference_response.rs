@@ -27,7 +27,11 @@ impl InferenceResponse {
         if error_ptr.is_null() {
             None
         } else {
-            Some(unsafe { TritonError::new(error_ptr) })
+            // InferenceResponseError borrows the error from the response. Copy
+            // its message; wrapping it as an owned pointer would double-delete.
+            let message =
+                unsafe { cstr_to_string(triton_ng_sys::TRITONSERVER_ErrorMessage(error_ptr)) };
+            Some(TritonError::from_message(message))
         }
     }
 

@@ -157,3 +157,6 @@ pub mod __macro_support {
         Ok((model, requests))
     }
 }
+
+#[cfg(any(feature = "cuda", feature = "cuda-dynamic"))]
+pub mod device_inference;

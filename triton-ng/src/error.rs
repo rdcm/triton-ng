@@ -52,3 +52,8 @@ impl Drop for TritonError {
         }
     }
 }
+
+// Triton error objects are immutable and owned. No response-borrowed error
+// pointer is stored here; it is safe to move/drop owned errors on any thread.
+unsafe impl Send for TritonError {}
+unsafe impl Sync for TritonError {}

@@ -1,12 +1,16 @@
 [package]
 name = "triton-ng"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [features]
-cuda = []
+cuda = ["dep:anyhow", "dep:half"]
+cuda-dynamic = ["dep:anyhow", "dep:half", "dep:libloading"]
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+half = { version = "2.7", optional = true }
+libloading = { version = "0.8", optional = true }
 byteorder = { workspace = true }
 crossbeam = { workspace = true }
 libc = { workspace = true }
