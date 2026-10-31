@@ -6,31 +6,14 @@ instance has its own multi-threaded runtime owned by triton-ng. `model_instance_
 to Triton at once, so an instance works on several batches at the same time. `.await` on a BLS
 call frees the thread for the other batches of the instance; no thread waits for a model.
 
-| Model parameter | Default | What it sets |
-|---|---|---|
-| `worker_threads` | 1 | Threads of the runtime of every instance: how many batches of one instance run backend code at the same moment |
-| `max_batches_in_flight` | unlimited | Batches one instance works on at once. When they are all in progress, the instance takes the next batch only after one of them has finished, and Triton keeps the requests in its queue |
-
-```
-instance_group [ { count: 2, kind: KIND_CPU } ]
-
-parameters: { key: "worker_threads"        value: { string_value: "4" } }
-parameters: { key: "max_batches_in_flight" value: { string_value: "8" } }
-```
-
-So `count` sets how many independent runtimes there are, and `worker_threads` how parallel each
-of them is.
+The model parameters `worker_threads` and `max_batches_in_flight` set the threads of every
+runtime and how many batches an instance works on at once, see
+[model-parameters.md](model-parameters.md).
 
 **Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
 scheduler collected, and the backend should process it as a whole, sending it to the downstream
 models as batched BLS calls. Never split it into tasks per request: every downstream call would
 run with batch size one.
-
-**Limit on batches in progress.** Without `max_batches_in_flight`, requests leave Triton's queue as
-soon as they arrive, so batches are formed only by `max_queue_delay_microseconds`, and queue
-policies (`max_queue_size`, timeouts, priorities) see an empty queue. Bound the load before Triton
-(e.g. by the consumers of a message queue), or set `max_batches_in_flight` to keep the requests in
-Triton's queue, where they are batched and its policies apply.
 
 **State.** `Backend::model_initialize` stores the state of the model (tokenizers, vocabularies,
 parsed parameters) with `Model::set_state`. It is shared by all instances and reaches every batch
