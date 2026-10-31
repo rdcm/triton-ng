@@ -75,14 +75,30 @@ pub trait Backend {
     /// however, there may be simultaneous calls for different model
     /// instances (for the same or different models).
     ///
-    /// Every request should get exactly one final response, either via
-    /// [`crate::Response::send`] or [`Request::respond_error`]. Requests left
-    /// without a response get an error response carrying the returned error
-    /// (or a generic one on success). Requests are released by the
-    /// `declare_backend!` glue, implementations must not release them.
+    /// The backend owns `requests`. A request can be answered right away or
+    /// kept and answered after this function returns, from any thread, see
+    /// [`Request`]. A request dropped without a response, including when this
+    /// function returns an error or panics, gets a generic error response. The
+    /// returned error is only logged: answer requests with
+    /// [`Request::respond_error`] to give clients the reason.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceExecute.
-    fn model_instance_execute(model: Model, requests: &[Request]) -> Result<(), Error>;
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
+    ///     for request in requests {
+    ///         let mut response = Response::new(request)?;
+    ///         response
+    ///             .create_output("OUTPUT", DataType::Int64, &[1])?
+    ///             .write_i64_vec(&[42])?;
+    ///         response.send()?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error>;
 }
 
 #[macro_export]
@@ -164,10 +180,9 @@ macro_rules! declare_backend {
             } {
                 Err(err) => err,
                 Ok((model, requests)) => {
-                    let result = triton_ng::__macro_support::catch(|| {
-                        $class::model_instance_execute(model, &requests)
-                    });
-                    triton_ng::__macro_support::complete_requests(&requests, result)
+                    triton_ng::__macro_support::execute_result(triton_ng::__macro_support::catch(
+                        || $class::model_instance_execute(model, requests),
+                    ))
                 }
             }
         }

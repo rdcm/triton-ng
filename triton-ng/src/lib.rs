@@ -99,38 +99,15 @@ pub mod __macro_support {
         }
     }
 
-    /// Answers every request that has no final response yet and returns all
-    /// requests to Triton. Called from `declare_backend!` after
-    /// `model_instance_execute`.
+    /// Logs the result of `model_instance_execute`. Called from `declare_backend!`.
     ///
-    /// Always reports success to Triton: once a backend has started sending
-    /// responses, returning an error would make Triton respond (and release)
-    /// the same requests a second time.
-    pub fn complete_requests(
-        requests: &[crate::request::Request],
-        result: Result<(), crate::error::Error>,
-    ) -> ErrorPtr {
-        let message = match &result {
-            Ok(()) => "backend did not produce a response for the request".to_string(),
-            Err(e) => e.to_string(),
-        };
-
-        if let Err(e) = &result {
+    /// Always reports success to Triton: the requests are owned by the backend
+    /// from the start of the call, returning an error would make Triton respond
+    /// to (and release) them a second time.
+    pub fn execute_result(result: Result<(), crate::error::Error>) -> ErrorPtr {
+        if let Err(e) = result {
             crate::log::error(&format!("model instance execute failed: {e}"));
         }
-
-        for request in requests {
-            if !request.is_responded()
-                && let Err(e) = request.respond_error(&message)
-            {
-                crate::log::error(&format!("failed to send error response: {e}"));
-            }
-
-            if let Err(e) = request.release() {
-                crate::log::error(&format!("failed to release request: {e}"));
-            }
-        }
-
         NULL_ERROR
     }
 

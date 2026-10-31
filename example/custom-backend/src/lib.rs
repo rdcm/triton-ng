@@ -22,7 +22,7 @@ impl Backend for MnistBackend {
 
     fn model_instance_execute(
         model: triton_ng::Model,
-        requests: &[triton_ng::Request],
+        requests: Vec<triton_ng::Request>,
     ) -> Result<(), Error> {
         let server = model.get_server()?;
         let version = model.version()? as i64;
@@ -60,8 +60,10 @@ impl Backend for MnistBackend {
 
         runtime()?.block_on(async {
             for (request, output_names, inference) in pending {
-                let result = inference.await?;
-                respond(request, &output_names, &result)?;
+                match inference.await {
+                    Ok(result) => respond(request, &output_names, &result)?,
+                    Err(e) => request.respond_error(&e.to_string())?,
+                }
             }
             Ok(())
         })
@@ -69,7 +71,7 @@ impl Backend for MnistBackend {
 }
 
 fn respond(
-    request: &triton_ng::Request,
+    request: triton_ng::Request,
     output_names: &[String],
     result: &triton_ng::InferenceResult,
 ) -> Result<(), Error> {
