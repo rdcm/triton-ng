@@ -79,10 +79,45 @@ impl Request {
         Ok(Input::from_ptr(ptr))
     }
 
+    /// Returns `true` if the client cancelled the request.
+    ///
+    /// A cancelled request should stop being processed and be answered with
+    /// [`Request::respond_cancelled`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// for request in requests {
+    ///     if request.is_cancelled()? {
+    ///         request.respond_cancelled()?;
+    ///         continue;
+    ///     }
+    ///     // ... process the request ...
+    /// }
+    /// ```
+    pub fn is_cancelled(&self) -> Result<bool, TritonError> {
+        let mut cancelled = false;
+        triton_call!(triton_ng_sys::TRITONBACKEND_RequestIsCancelled(
+            self.ptr,
+            &mut cancelled
+        ))?;
+        Ok(cancelled)
+    }
+
     /// Sends a final response carrying `message` as an internal error.
     ///
     /// Use it to fail a single request of a batch without failing the others.
     pub fn respond_error(&self, message: &str) -> Result<(), TritonError> {
+        self.respond_with(TritonError::internal(message))
+    }
+
+    /// Sends a final response with the CANCELLED status, see
+    /// [`Request::is_cancelled`].
+    pub fn respond_cancelled(&self) -> Result<(), TritonError> {
+        self.respond_with(TritonError::cancelled("request was cancelled"))
+    }
+
+    fn respond_with(&self, error: TritonError) -> Result<(), TritonError> {
         if self.is_responded() {
             return Err(TritonError::from_message(
                 "the request already has a final response",
@@ -91,7 +126,6 @@ impl Request {
 
         // The caller keeps ownership of the error object passed to ResponseSend,
         // it is deleted on drop.
-        let error = TritonError::internal(message);
         if error.as_ptr().is_null() {
             return Err(TritonError::from_message("failed to create error object"));
         }
