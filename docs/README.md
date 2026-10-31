@@ -1,0 +1,53 @@
+# Execution model and thread safety
+
+**Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>` and may
+answer the requests right away or keep them and answer later, after it returns, from any thread.
+Triton calls `model_instance_execute` again as soon as it returns, so a single model instance can
+work on several batches at once.
+
+**Exactly one final response.** `Response::new`, `Request::respond_error` and
+`Request::respond_cancelled` consume the request, so it cannot be answered twice. A request dropped
+without a response, including when `model_instance_execute` returns an error or panics, gets a
+generic error response. Every request is released to Triton when it is dropped. The error returned
+by `model_instance_execute` is only logged: answer a request with `respond_error` to give the
+client the reason.
+
+**BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
+`InferenceFuture`. Triton wakes it from its own threads, so it works with any executor and no
+thread is blocked while it waits. Dropping the future does not cancel the request: Triton finishes
+it and the result is discarded.
+
+**What can move to another thread:**
+
+| Type | `Send` | `Sync` | Notes |
+|---|---|---|---|
+| `Request`, `Response` | yes | no | one request is used by one thread at a time |
+| `InferenceRequest`, `InferenceFuture` | yes | no | |
+| `Server` | yes | yes | `Clone`, one copy per task |
+| `Model` | no | no | valid only while its requests are alive |
+
+**Lifetimes.** A model is not finalized while the backend holds any of its requests, and the
+server is not destroyed while any model is loaded. So `Server` stays valid as long as a task holds
+its `Request`: keep the request until the task is done. `Model` and `Model::state` do not leave
+`model_instance_execute`; put the state a task needs in an `Arc` (`model.set_state(Arc::new(..))`)
+and clone it into the task.
+
+**Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
+with `Request::respond_cancelled`.
+
+**Shutdown.** Triton waits for in-flight requests and model unloads before it finalizes the backend.
+Tasks that outlive their requests, and the runtime itself, must be stopped in `Backend::finalize`.
+
+**Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
+scheduler collected, and the backend should process it as a whole, sending it to the downstream
+models as batched BLS calls. Run one task per call of `model_instance_execute`, never one task per
+request: per-request tasks split the batch into single rows and every downstream call runs with
+batch size one.
+
+**No limit on batches in progress.** Triton does not bound what a backend keeps after
+`model_instance_execute` returns. Requests leave Triton's queue right away, so batches are formed
+only by `max_queue_delay_microseconds`, and queue policies (`max_queue_size`, timeouts, priorities)
+see an empty queue. Bound the load before Triton (e.g. by the consumers of a message queue), or make
+`model_instance_execute` wait while too many batches are in progress.
+
+[`example/custom-backend`](../example/custom-backend/src/lib.rs) runs every batch as a tokio task and stops the runtime in `finalize`.
