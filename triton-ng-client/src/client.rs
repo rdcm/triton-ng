@@ -25,8 +25,6 @@ use crate::types::{
     ServerInfo, SharedMemoryRegion, TensorMetadata,
 };
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
 /// Configuration for [`TritonClient`].
 #[derive(Debug, Clone)]
 pub struct TritonClientConfig {
@@ -71,8 +69,6 @@ impl TritonClientConfig {
         &self.url
     }
 }
-
-// ── Client ────────────────────────────────────────────────────────────────────
 
 fn ver(v: Option<&str>) -> String {
     v.unwrap_or("").to_string()
@@ -126,8 +122,6 @@ impl TritonClient {
         &self.config
     }
 
-    // ── Server ────────────────────────────────────────────────────────────────
-
     /// Returns `true` if the server is live (able to receive requests).
     pub async fn server_live(&self, timeout: Option<Duration>) -> Result<bool> {
         let r = self
@@ -165,8 +159,6 @@ impl TritonClient {
             extensions: m.extensions,
         })
     }
-
-    // ── Model ─────────────────────────────────────────────────────────────────
 
     /// Returns `true` if the specified model is ready for inference.
     ///
@@ -287,8 +279,6 @@ impl TritonClient {
             .collect())
     }
 
-    // ── Inference ─────────────────────────────────────────────────────────────
-
     /// Runs inference on the specified model.
     ///
     /// `version`: `None` uses the latest version.
@@ -338,8 +328,6 @@ impl TritonClient {
             .await?;
         InferResponse::from_proto(r.into_inner())
     }
-
-    // ── Repository ────────────────────────────────────────────────────────────
 
     /// Returns the index of all models across all repositories.
     ///
@@ -411,8 +399,6 @@ impl TritonClient {
             .await?;
         Ok(())
     }
-
-    // ── System shared memory ──────────────────────────────────────────────────
 
     /// Returns the status of registered system shared-memory regions, keyed by region name.
     ///
@@ -492,8 +478,6 @@ impl TritonClient {
         Ok(())
     }
 
-    // ── CUDA shared memory ────────────────────────────────────────────────────
-
     /// Returns the status of registered CUDA shared-memory regions, keyed by region name.
     ///
     /// `name`: `None` returns status for all registered regions.
@@ -571,8 +555,6 @@ impl TritonClient {
         Ok(())
     }
 
-    // ── Trace settings ────────────────────────────────────────────────────────
-
     /// Gets or updates trace settings. Pass an empty map to only read current settings.
     ///
     /// `model`: `None` applies settings globally.
@@ -602,8 +584,6 @@ impl TritonClient {
             .map(|(k, v)| (k, v.value))
             .collect())
     }
-
-    // ── Log settings ──────────────────────────────────────────────────────────
 
     /// Gets or updates log settings. Pass an empty map to only read current settings.
     pub async fn log_settings(

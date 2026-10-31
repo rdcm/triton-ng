@@ -7,8 +7,6 @@ use crate::generated::inference::{InferParameter, ModelInferResponse};
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
 
-// ── Input ─────────────────────────────────────────────────────────────────────
-
 /// Typed tensor data for an inference input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputData {
@@ -205,8 +203,6 @@ impl InferInput {
     }
 }
 
-// ── Output ────────────────────────────────────────────────────────────────────
-
 /// Decoded tensor data from an inference response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputData {
@@ -297,8 +293,6 @@ impl InferResponse {
     }
 }
 
-// ── Options ───────────────────────────────────────────────────────────────────
-
 /// Per-request options for [`crate::TritonClient::infer`].
 #[derive(Debug, Default)]
 pub struct InferOptions {
@@ -309,8 +303,6 @@ pub struct InferOptions {
     /// Request parameters, read by the model next to the inputs.
     pub parameters: HashMap<String, Parameter>,
 }
-
-// ── Parameters ────────────────────────────────────────────────────────────────
 
 /// Value of a request or response parameter.
 ///
@@ -375,8 +367,6 @@ impl Parameter {
             .collect()
     }
 }
-
-// ── Decode helpers ────────────────────────────────────────────────────────────
 
 fn check_elem_size(data: &[u8], elem_size: usize, typename: &str) -> Result<()> {
     if !data.len().is_multiple_of(elem_size) {
