@@ -30,11 +30,6 @@ output [
 ]
 
 parameters: {
-  key: "mode"
-  value: { string_value: "wait_for_cancel" }
-}
-
-parameters: {
   key: "worker_threads"
   value: { string_value: "2" }
 }

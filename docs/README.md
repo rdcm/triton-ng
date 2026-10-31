@@ -70,4 +70,4 @@ with `Request::respond_cancelled`. Triton reports a client that drops a gRPC cal
 instance and stops its runtime.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) forwards batches to another model
-over BLS (`mode: proxy`) and holds requests until they are cancelled (`mode: wait_for_cancel`).
+over BLS (models with `target_model`) and holds requests until they are cancelled (`cancellable`).
