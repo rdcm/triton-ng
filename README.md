@@ -107,9 +107,13 @@ models as batched BLS calls. Run one task per call of `model_instance_execute`, 
 request: per-request tasks split the batch into single rows and every downstream call runs with
 batch size one.
 
-`example/custom-backend` runs every batch as a tokio task, bounds the number of batches in progress
-with a semaphore (`model_instance_execute` waits when all permits are taken, and Triton keeps
-collecting the next batch), and waits for all tasks in `finalize`.
+**No limit on batches in progress.** Triton does not bound what a backend keeps after
+`model_instance_execute` returns. Requests leave Triton's queue right away, so batches are formed
+only by `max_queue_delay_microseconds`, and queue policies (`max_queue_size`, timeouts, priorities)
+see an empty queue. Bound the load before Triton (e.g. by the consumers of a message queue), or make
+`model_instance_execute` wait while too many batches are in progress.
+
+`example/custom-backend` runs every batch as a tokio task and stops the runtime in `finalize`.
 
 ## Using the gRPC client
 

@@ -1,31 +1,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::Semaphore;
 use triton_ng::backend::Backend;
 use triton_ng::{
     BackendHandle, DataType, Error, InferenceFuture, InferenceRequest, InferenceResult, Model,
     Request, Response, Server, log,
 };
 
-/// Batches processed at once by the backend. When all of them are busy,
-/// `model_instance_execute` waits and Triton keeps collecting the next batch.
-const MAX_BATCHES_IN_FLIGHT: usize = 4;
+static RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
 
-struct Executor {
-    runtime: Runtime,
-    permits: Arc<Semaphore>,
-}
-
-static EXECUTOR: Mutex<Option<Executor>> = Mutex::new(None);
-
-fn executor() -> Result<(Handle, Arc<Semaphore>), Error> {
-    let executor = EXECUTOR.lock().map_err(|_| "executor lock is poisoned")?;
-    let executor = executor.as_ref().ok_or("backend is not initialized")?;
-    Ok((
-        executor.runtime.handle().clone(),
-        Arc::clone(&executor.permits),
-    ))
+fn runtime() -> Result<Handle, Error> {
+    let runtime = RUNTIME.lock().map_err(|_| "runtime lock is poisoned")?;
+    let runtime = runtime.as_ref().ok_or("backend is not initialized")?;
+    Ok(runtime.handle().clone())
 }
 
 struct Target {
@@ -42,27 +29,20 @@ impl Backend for MnistBackend {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .build()?;
-        *EXECUTOR.lock().map_err(|_| "executor lock is poisoned")? = Some(Executor {
-            runtime,
-            permits: Arc::new(Semaphore::new(MAX_BATCHES_IN_FLIGHT)),
-        });
+        *RUNTIME.lock().map_err(|_| "runtime lock is poisoned")? = Some(runtime);
         Ok(())
     }
 
     fn finalize(_backend: &BackendHandle) -> Result<(), Error> {
-        let Some(executor) = EXECUTOR
+        // Triton finalizes the backend after every model is unloaded, and a model is not
+        // unloaded while a task holds its requests, so only finished tasks are left here.
+        if let Some(runtime) = RUNTIME
             .lock()
-            .map_err(|_| "executor lock is poisoned")?
+            .map_err(|_| "runtime lock is poisoned")?
             .take()
-        else {
-            return Ok(());
-        };
-        // Every task holds a permit until it ends, so all permits back means no task is left.
-        executor
-            .runtime
-            .block_on(executor.permits.acquire_many(MAX_BATCHES_IN_FLIGHT as u32))?
-            .forget();
-        executor.runtime.shutdown_timeout(Duration::from_secs(5));
+        {
+            runtime.shutdown_timeout(Duration::from_secs(5));
+        }
         Ok(())
     }
 
@@ -74,15 +54,9 @@ impl Backend for MnistBackend {
                 .ok_or("missing 'target_model' config parameter")?,
             version: model.version()? as i64,
         });
-        let (handle, permits) = executor()?;
-
         // One task per batch: the batch Triton collected is processed as a whole, while
         // this instance returns and accepts the next one.
-        let permit = handle.block_on(Arc::clone(&permits).acquire_owned())?;
-        handle.spawn(async move {
-            process_batch(requests, &target).await;
-            drop(permit);
-        });
+        runtime()?.spawn(async move { process_batch(requests, &target).await });
 
         Ok(())
     }
