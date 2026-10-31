@@ -166,30 +166,46 @@ async fn mnist_onnx_inference_returns_ten_class_scores() -> Result<()> {
 }
 
 #[tokio::test]
-async fn custom_backend_returns_target_model_result() -> Result<()> {
+async fn custom_backend_returns_the_digit_with_the_highest_target_model_score() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
-    let output_name = config.output_name.clone();
-    let mut scores = Vec::new();
-    for model in [&config.backend_model, &config.mnist_model] {
-        let result = sut
-            .infer(
-                model,
-                None,
-                vec![config.mnist_blank_input()],
-                &[&output_name],
-                None,
-            )
-            .await?;
-        let output = result
-            .outputs
-            .into_iter()
-            .find(|o| o.name == output_name)
-            .context("output tensor not found in response")?;
-        assert_eq!(output.shape, vec![1, 10]);
-        scores.push(output.data_f32);
-    }
-    assert_eq!(scores[0], scores[1]);
+
+    let scores = sut
+        .infer(
+            &config.mnist_model,
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.output_name],
+            None,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.output_name)
+        .context("scores not found in response")?
+        .data_f32;
+    let expected = scores
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(digit, _)| digit as i32)
+        .context("no scores")?;
+
+    let digit = sut
+        .infer(
+            &config.backend_model,
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            None,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.backend_output_name)
+        .context("digit not found in response")?;
+    assert_eq!(digit.shape, vec![1, 1]);
+    assert_eq!(digit.data_i32, vec![expected]);
     Ok(())
 }
 
@@ -200,7 +216,7 @@ async fn custom_backend_answers_concurrent_requests() -> Result<()> {
         tasks.spawn(async {
             let config = Config::load()?;
             let sut = Sut::new(&config.triton_url).await?;
-            let output_name = config.output_name.clone();
+            let output_name = config.backend_output_name.clone();
             let result = sut
                 .infer(
                     &config.backend_model,
@@ -222,7 +238,7 @@ async fn custom_backend_answers_concurrent_requests() -> Result<()> {
 
 /// `held_requests` and `cancelled_requests` reported by the custom backend.
 async fn backend_counters(sut: &Sut, config: &Config) -> Result<(i64, i64)> {
-    let output_name = config.output_name.clone();
+    let output_name = config.backend_output_name.clone();
     let result = sut
         .infer_with_parameters(
             &config.backend_model,
@@ -261,7 +277,7 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
     let held = tokio::spawn(async {
         let config = Config::load()?;
         let sut = Sut::new(&config.triton_url).await?;
-        let output_name = config.output_name.clone();
+        let output_name = config.backend_output_name.clone();
         sut.infer_with_parameters(
             &config.backend_model,
             vec![config.mnist_blank_input()],

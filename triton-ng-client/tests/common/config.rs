@@ -9,6 +9,7 @@ pub struct Config {
     pub backend_model: String,
     pub input_name: String,
     pub output_name: String,
+    pub backend_output_name: String,
 }
 
 impl Config {

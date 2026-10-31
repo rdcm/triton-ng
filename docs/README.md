@@ -69,5 +69,6 @@ with `Request::respond_cancelled`. Triton reports a client that drops a gRPC cal
 **Shutdown.** Before `Backend::model_instance_finalize`, triton-ng waits for every batch of the
 instance and stops its runtime.
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) forwards batches to another model
-over BLS and holds a request with the `hold_until_cancelled` parameter until the client cancels it.
+[`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
+`mnist_onnx` over BLS and answers with the recognized digit. A request with the
+`hold_until_cancelled` parameter is held until the client cancels it.

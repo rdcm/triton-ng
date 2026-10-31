@@ -169,14 +169,16 @@ impl Sut {
                 .outputs
                 .into_iter()
                 .map(|o| {
-                    let data_f32 = match o.data {
-                        client::OutputData::Fp32(v) => v,
-                        _ => vec![],
+                    let (data_f32, data_i32) = match o.data {
+                        client::OutputData::Fp32(v) => (v, vec![]),
+                        client::OutputData::Int32(v) => (vec![], v),
+                        _ => (vec![], vec![]),
                     };
                     OutputTensor {
                         name: o.name,
                         shape: o.shape,
                         data_f32,
+                        data_i32,
                     }
                 })
                 .collect(),

@@ -52,6 +52,7 @@ pub struct OutputTensor {
     pub name: String,
     pub shape: Vec<i64>,
     pub data_f32: Vec<f32>,
+    pub data_i32: Vec<i32>,
 }
 
 pub struct ShmRegion {
