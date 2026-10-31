@@ -5,8 +5,6 @@ use crate::generated::inference::{log_settings_request, log_settings_response};
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
 
-// ── Server ────────────────────────────────────────────────────────────────────
-
 /// Server name, version, and supported extensions.
 #[derive(Debug, Clone)]
 pub struct ServerInfo {
@@ -14,8 +12,6 @@ pub struct ServerInfo {
     pub version: String,
     pub extensions: Vec<String>,
 }
-
-// ── Model ─────────────────────────────────────────────────────────────────────
 
 /// Metadata for a single tensor (input or output).
 #[derive(Debug, Clone)]
@@ -128,8 +124,6 @@ impl fmt::Debug for ModelStatistics {
     }
 }
 
-// ── Shared memory ─────────────────────────────────────────────────────────────
-
 /// A registered system shared-memory region.
 #[derive(Debug, Clone)]
 pub struct SharedMemoryRegion {
@@ -144,8 +138,6 @@ pub struct CudaMemoryRegion {
     pub device_id: u64,
     pub byte_size: u64,
 }
-
-// ── Log settings ──────────────────────────────────────────────────────────────
 
 /// A single log setting value.
 #[derive(Debug, Clone)]

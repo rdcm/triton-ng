@@ -1,5 +1,3 @@
- > **WIP** — work in progress, API is unstable
-
 # triton-ng
 
 Rust SDK for [NVIDIA Triton Inference Server](https://github.com/triton-inference-server/server).
@@ -21,40 +19,34 @@ Provides two things:
 
 ## Writing a custom backend
 
-Implement the `Backend` trait and register it with `declare_backend!`:
+Implement the `Backend` trait and register it with `#[triton_ng::backend]`:
 
 ```rust
 use triton_ng::backend::Backend;
-use triton_ng::{BackendHandle, DataType, Error, InferenceRequest, Response};
+use triton_ng::{Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
 
+#[triton_ng::backend]
 impl Backend for MyBackend {
-    fn initialize(backend: &BackendHandle) -> Result<(), Error> {
-        Ok(())
-    }
-
-    fn model_instance_execute(
-        model: triton_ng::Model,
-        requests: &[triton_ng::Request],
-    ) -> Result<(), Error> {
+    async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
-            let input = request.get_input("INPUT")?;
-            let data = input.as_fp32_vec()?;
+            let data = request.get_input("INPUT")?.as_bytes()?;
 
-            // ... run inference ...
+            let mut inference = InferenceRequest::new(ctx.server(), "my_model", -1)?;
+            inference.add_input_with_data("INPUT", DataType::Fp32, &[1, 10], data)?;
+            inference.add_requested_output("OUTPUT")?;
+            let result = ctx.server().infer_async(inference).await?;
 
             let mut response = Response::new(request)?;
             response
                 .create_output("OUTPUT", DataType::Fp32, &[1, 10])?
-                .write_fp32_vec(&result)?;
+                .write_fp32_vec(&result.output("OUTPUT")?.as_fp32_vec()?)?;
             response.send()?;
         }
         Ok(())
     }
 }
-
-triton_ng::declare_backend!(MyBackend);
 ```
 
 Build as a `cdylib`:
@@ -63,7 +55,14 @@ Build as a `cdylib`:
 # Cargo.toml
 [lib]
 crate-type = ["cdylib"]
+
+[dependencies]
+triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 ```
+
+See [Execution model and thread safety](docs/README.md) for instances and their runtimes, the
+`worker_threads` and `max_batches_in_flight` parameters, request ownership, BLS futures, threads,
+cancellation, shutdown and batching.
 
 ## Using the gRPC client
 

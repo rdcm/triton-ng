@@ -9,43 +9,18 @@ use super::dto::{
     OutputTensor, ServerInfo, ShmRegion, TensorMeta,
 };
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
-#[derive(serde::Deserialize)]
-pub struct Config {
-    pub triton_url: String,
-    pub mnist_model: String,
-    pub input_name: String,
-    pub output_name: String,
-}
-
-fn load_config() -> Result<Config> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("config.json");
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read test config from {}", path.display()))?;
-    serde_json::from_str(&content).context("Failed to parse test config")
-}
-
-// ── Sut ───────────────────────────────────────────────────────────────────────
-
 pub struct Sut {
     inner: client::TritonClient,
-    pub config: Config,
 }
 
 impl Sut {
-    pub async fn new() -> Result<Sut> {
-        let config = load_config()?;
-        let triton_config = client::TritonClientConfig::new(&config.triton_url);
+    pub async fn new(triton_url: &str) -> Result<Sut> {
+        let triton_config = client::TritonClientConfig::new(triton_url);
         let inner = client::TritonClient::new(triton_config)
             .await
             .context("Failed to connect to Triton")?;
-        Ok(Sut { inner, config })
+        Ok(Sut { inner })
     }
-
-    // ── Server ────────────────────────────────────────────────────────────────
 
     pub async fn server_live(&self) -> Result<bool> {
         self.inner
@@ -69,8 +44,6 @@ impl Sut {
             extensions: info.extensions,
         })
     }
-
-    // ── Model ─────────────────────────────────────────────────────────────────
 
     pub async fn model_ready(&self, model: &str, version: Option<&str>) -> Result<bool> {
         self.inner
@@ -134,8 +107,6 @@ impl Sut {
             .collect())
     }
 
-    // ── Inference ─────────────────────────────────────────────────────────────
-
     pub async fn infer(
         &self,
         model: &str,
@@ -144,12 +115,41 @@ impl Sut {
         output_names: &[&str],
         id: Option<String>,
     ) -> Result<InferResult> {
+        let options = client::InferOptions {
+            id,
+            ..Default::default()
+        };
+        self.infer_with_options(model, version, inputs, output_names, options)
+            .await
+    }
+
+    pub async fn infer_with_parameters(
+        &self,
+        model: &str,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let options = client::InferOptions {
+            parameters,
+            ..Default::default()
+        };
+        self.infer_with_options(model, None, inputs, output_names, options)
+            .await
+    }
+
+    async fn infer_with_options(
+        &self,
+        model: &str,
+        version: Option<&str>,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        options: client::InferOptions,
+    ) -> Result<InferResult> {
         let proto_inputs: Vec<client::InferInput> = inputs
             .into_iter()
             .map(|i| client::InferInput::fp32(i.name, i.shape, i.data))
             .collect();
-
-        let options = client::InferOptions { id, timeout: None };
 
         let response = self
             .inner
@@ -164,25 +164,26 @@ impl Sut {
 
         Ok(InferResult {
             id: response.id,
+            parameters: response.parameters,
             outputs: response
                 .outputs
                 .into_iter()
                 .map(|o| {
-                    let data_f32 = match o.data {
-                        client::OutputData::Fp32(v) => v,
-                        _ => vec![],
+                    let (data_f32, data_i32) = match o.data {
+                        client::OutputData::Fp32(v) => (v, vec![]),
+                        client::OutputData::Int32(v) => (vec![], v),
+                        _ => (vec![], vec![]),
                     };
                     OutputTensor {
                         name: o.name,
                         shape: o.shape,
                         data_f32,
+                        data_i32,
                     }
                 })
                 .collect(),
         })
     }
-
-    // ── Repository ────────────────────────────────────────────────────────────
 
     pub async fn repository_index(&self, ready_only: bool) -> Result<Vec<ModelEntry>> {
         let idx = self.inner.repository_index(ready_only, None).await?;
@@ -208,8 +209,6 @@ impl Sut {
             .await
             .context("repository_model_unload failed")
     }
-
-    // ── System shared memory ──────────────────────────────────────────────────
 
     pub async fn system_shared_memory_status(
         &self,
@@ -251,8 +250,6 @@ impl Sut {
             .context("system_shared_memory_unregister failed")
     }
 
-    // ── CUDA shared memory ────────────────────────────────────────────────────
-
     pub async fn cuda_shared_memory_status(
         &self,
         name: Option<&str>,
@@ -292,8 +289,6 @@ impl Sut {
             .context("cuda_shared_memory_unregister failed")
     }
 
-    // ── Settings ──────────────────────────────────────────────────────────────
-
     pub async fn trace_settings(
         &self,
         settings: HashMap<String, Vec<String>>,
@@ -319,17 +314,7 @@ impl Sut {
             .map(|(k, v)| (k, log_value_from(v)))
             .collect())
     }
-
-    pub fn mnist_blank_input(&self) -> InferInput {
-        InferInput {
-            name: self.config.input_name.clone(),
-            shape: vec![1, 1, 28, 28],
-            data: vec![0.0_f32; 784],
-        }
-    }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub fn create_posix_shm(name: &str, size: i64) -> Result<()> {
     let cname = CString::new(name).context("invalid shared memory name")?;

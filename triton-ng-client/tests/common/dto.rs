@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
@@ -43,12 +45,14 @@ pub struct InferInput {
 pub struct InferResult {
     pub id: String,
     pub outputs: Vec<OutputTensor>,
+    pub parameters: HashMap<String, triton_ng_client::Parameter>,
 }
 
 pub struct OutputTensor {
     pub name: String,
     pub shape: Vec<i64>,
     pub data_f32: Vec<f32>,
+    pub data_i32: Vec<i32>,
 }
 
 pub struct ShmRegion {

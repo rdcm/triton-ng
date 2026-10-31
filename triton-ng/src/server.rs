@@ -5,9 +5,12 @@ use crate::response_allocator::ResponseAllocator;
 use crate::types::DataType;
 use crate::utils::{Message, cstring_from_str};
 use crate::{Error, TritonError};
-use crossbeam::channel::{Sender, bounded};
 use std::ffi::c_void;
+use std::future::Future;
+use std::pin::Pin;
 use std::ptr;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll, Waker};
 use triton_ng_macros::triton_call;
 
 pub struct OutputTensor {
@@ -71,16 +74,150 @@ impl InferenceResult {
     }
 }
 
+impl InferenceResult {
+    fn failed(message: impl Into<String>) -> Self {
+        Self {
+            outputs: vec![],
+            error: Some(message.into()),
+        }
+    }
+}
+
 pub struct InferenceContext {
-    tx: Sender<InferenceResult>,
+    completion: Arc<Completion>,
     allocator: ResponseAllocator,
     pending_outputs: Vec<OutputTensor>,
     error: Option<String>,
 }
 
+/// Slot shared by the response callback, which fills it once, and
+/// [`InferenceFuture`], which takes the result out of it.
+struct Completion {
+    state: Mutex<CompletionState>,
+}
+
+#[derive(Default)]
+struct CompletionState {
+    result: Option<InferenceResult>,
+    waker: Option<Waker>,
+    taken: bool,
+}
+
+impl Completion {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(CompletionState::default()),
+        })
+    }
+
+    fn failed(message: impl Into<String>) -> Arc<Self> {
+        let completion = Self::new();
+        completion.complete(InferenceResult::failed(message));
+        completion
+    }
+
+    fn lock(&self) -> MutexGuard<'_, CompletionState> {
+        // The state stays consistent even if a holder panicked: every update is a single assignment.
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stores the result and wakes the waiting task. Only the first result is kept.
+    fn complete(&self, result: InferenceResult) {
+        let waker = {
+            let mut state = self.lock();
+            if state.result.is_some() || state.taken {
+                return;
+            }
+            state.result = Some(result);
+            state.waker.take()
+        };
+        // Woken outside the lock: an executor may poll the future right away.
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn take(state: &mut CompletionState) -> Option<Result<InferenceResult, String>> {
+        if let Some(result) = state.result.take() {
+            state.taken = true;
+            return Some(match result.error {
+                Some(error) => Err(error),
+                None => Ok(result),
+            });
+        }
+        if state.taken {
+            return Some(Err("inference result was already taken".to_string()));
+        }
+        None
+    }
+}
+
+/// Inference running in Triton, resolves to its result.
+///
+/// The request is already submitted when the future is created, so it runs
+/// whether the future is polled or not. Dropping the future does not cancel
+/// the request: Triton finishes it and the result is discarded.
+///
+/// The future holds no Triton pointers, it is `Send + 'static` and works
+/// with any executor. Triton wakes it from its own threads.
+pub struct InferenceFuture {
+    completion: Arc<Completion>,
+}
+
+impl InferenceFuture {
+    fn poll_result(&self, cx: &mut Context<'_>) -> Poll<Result<InferenceResult, String>> {
+        let mut state = self.completion.lock();
+        if let Some(result) = Completion::take(&mut state) {
+            return Poll::Ready(result);
+        }
+        match &state.waker {
+            Some(waker) if waker.will_wake(cx.waker()) => {}
+            _ => state.waker = Some(cx.waker().clone()),
+        }
+        Poll::Pending
+    }
+}
+
+impl Future for InferenceFuture {
+    type Output = Result<InferenceResult, TritonError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.poll_result(cx).map_err(TritonError::from_message)
+    }
+}
+
+/// The Triton server the backend runs in, used for BLS: inference of other
+/// models from a backend. Batches get it from [`crate::Context::server`].
+///
+/// `Server` is `Send + Sync + Clone`. The server stays valid while any model
+/// is loaded, and a model stays loaded while any of its [`crate::Request`]s
+/// is alive.
+///
+/// # Examples
+///
+/// ```ignore
+/// async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+///     let state = ctx.state::<State>()?;
+///     let mut inference = InferenceRequest::new(ctx.server(), &state.encoder, -1)?;
+///     // ... add the inputs of all `requests` as one batch ...
+///     let result = ctx.server().infer_async(inference).await?;
+///     // ... answer every request from its rows of `result` ...
+///     Ok(())
+/// }
+/// ```
+#[derive(Clone)]
 pub struct Server {
     ptr: *mut triton_ng_sys::TRITONSERVER_Server,
 }
+
+// SAFETY: the pointer is the TRITONSERVER_Server, which the frontends call
+// from many threads at once. TRITONSERVER_ServerDelete waits for in-flight
+// requests and for every model to unload before freeing it (InferenceServer::Stop),
+// and a model is not unloaded while any of its requests is alive, so the
+// pointer outlives every `Request` the backend holds. Only an expired
+// --exit-timeout-secs on shutdown breaks this, when the process is exiting.
+unsafe impl Send for Server {}
+unsafe impl Sync for Server {}
 
 impl Server {
     pub(crate) fn from_ptr(
@@ -147,7 +284,19 @@ impl Server {
         metadata.to_json()
     }
 
-    /// Run inference synchronously.
+    /// Submits inference and returns a future of its result, see
+    /// [`InferenceFuture`]. Submission errors are reported by the future.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut inference = InferenceRequest::new(&server, "encoder", -1)?;
+    /// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples.len() as i64], bytes)?;
+    /// inference.add_requested_output("EMBEDDING")?;
+    ///
+    /// let result = server.infer_async(inference).await?;
+    /// let embedding = result.output("EMBEDDING")?.as_fp32_vec()?;
+    /// ```
     ///
     /// Takes ownership of `request`. The request is freed by the
     /// `inference_request_release` callback, which Triton calls only *after* the
@@ -159,8 +308,21 @@ impl Server {
     /// The input buffers owned by the request are freed by the same callback:
     /// Triton may read them until the request is released, which can happen
     /// after the final response has already been delivered.
-    pub fn infer_async(&self, request: InferenceRequest) -> Result<InferenceResult, TritonError> {
-        let (tx, rx) = bounded(1);
+    pub fn infer_async(&self, request: InferenceRequest) -> InferenceFuture {
+        let completion = Completion::new();
+        match self.submit(request, Arc::clone(&completion)) {
+            Ok(()) => InferenceFuture { completion },
+            Err(e) => InferenceFuture {
+                completion: Completion::failed(e.to_string()),
+            },
+        }
+    }
+
+    fn submit(
+        &self,
+        request: InferenceRequest,
+        completion: Arc<Completion>,
+    ) -> Result<(), TritonError> {
         let allocator = ResponseAllocator::new()?;
 
         let (raw, buffers) = request.into_raw_parts();
@@ -180,7 +342,7 @@ impl Server {
         }
 
         let context = Box::new(InferenceContext {
-            tx,
+            completion,
             allocator,
             pending_outputs: Vec::new(),
             error: None,
@@ -218,15 +380,7 @@ impl Server {
             return Err(e);
         }
 
-        let result = rx
-            .recv()
-            .map_err(|_| TritonError::from_message("inference channel closed"))?;
-
-        if let Some(error) = result.error {
-            return Err(TritonError::from_message(&error));
-        }
-
-        Ok(result)
+        Ok(())
     }
 }
 
@@ -307,17 +461,119 @@ unsafe extern "C" fn inference_response_complete(
 
     if is_final {
         let context = unsafe { Box::from_raw(userp as *mut InferenceContext) };
-        let result = if let Some(error) = context.error {
-            InferenceResult {
-                outputs: vec![],
-                error: Some(error),
-            }
-        } else {
-            InferenceResult {
+        let result = match context.error {
+            Some(error) => InferenceResult::failed(error),
+            None => InferenceResult {
                 outputs: context.pending_outputs,
                 error: None,
-            }
+            },
         };
-        let _ = context.tx.send(result);
+        context.completion.complete(result);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Completion, InferenceFuture, InferenceResult};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct CountingWaker(AtomicUsize);
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn poll(future: &InferenceFuture, waker: &Waker) -> Poll<Result<usize, String>> {
+        future
+            .poll_result(&mut Context::from_waker(waker))
+            .map(|r| r.map(|result| result.outputs.len()))
+    }
+
+    fn succeeded() -> InferenceResult {
+        InferenceResult {
+            outputs: vec![],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn handles_can_move_to_tasks() {
+        fn assert_send<T: Send + 'static>() {}
+        fn assert_shared<T: Send + Sync + Clone + 'static>() {}
+        assert_send::<InferenceFuture>();
+        assert_send::<crate::InferenceRequest>();
+        assert_shared::<super::Server>();
+    }
+
+    #[test]
+    fn completion_wakes_pending_future() {
+        let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&counter));
+        let completion = Completion::new();
+        let future = InferenceFuture {
+            completion: Arc::clone(&completion),
+        };
+
+        assert_eq!(poll(&future, &waker), Poll::Pending);
+        completion.complete(succeeded());
+
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        assert_eq!(poll(&future, &waker), Poll::Ready(Ok(0)));
+    }
+
+    #[test]
+    fn completion_from_another_thread() {
+        let completion = Completion::new();
+        let future = InferenceFuture {
+            completion: Arc::clone(&completion),
+        };
+
+        std::thread::spawn(move || completion.complete(succeeded()))
+            .join()
+            .unwrap();
+
+        assert_eq!(poll(&future, Waker::noop()), Poll::Ready(Ok(0)));
+    }
+
+    #[test]
+    fn failed_completion_resolves_to_error() {
+        let future = InferenceFuture {
+            completion: Completion::failed("submit failed"),
+        };
+
+        assert_eq!(
+            poll(&future, Waker::noop()),
+            Poll::Ready(Err("submit failed".to_string()))
+        );
+    }
+
+    #[test]
+    fn only_first_result_is_kept() {
+        let completion = Completion::new();
+        let future = InferenceFuture {
+            completion: Arc::clone(&completion),
+        };
+
+        completion.complete(succeeded());
+        completion.complete(InferenceResult::failed("late"));
+
+        assert_eq!(poll(&future, Waker::noop()), Poll::Ready(Ok(0)));
+    }
+
+    #[test]
+    fn polling_after_completion_is_an_error() {
+        let future = InferenceFuture {
+            completion: Completion::failed("first"),
+        };
+
+        assert!(poll(&future, Waker::noop()).is_ready());
+        assert_eq!(
+            poll(&future, Waker::noop()),
+            Poll::Ready(Err("inference result was already taken".to_string()))
+        );
     }
 }

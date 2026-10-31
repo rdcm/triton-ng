@@ -95,3 +95,151 @@ impl InstanceKind {
         }
     }
 }
+
+/// Value of a request or response parameter, see [`crate::Request::parameter`]
+/// and [`crate::Response::set_parameter`].
+///
+/// # Examples
+///
+/// ```ignore
+/// if request.parameter("verbose")? == Some(Parameter::Bool(true)) {
+///     // ...
+/// }
+/// response.set_parameter("tokens", 42)?;
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub enum Parameter {
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    String(String),
+}
+
+impl Parameter {
+    /// Reads a parameter value returned by Triton.
+    ///
+    /// # Safety
+    ///
+    /// `value` must point to the value of a parameter of type `kind`: a
+    /// NUL-terminated string, an `i64`, a `bool` or an `f64`.
+    #[allow(non_upper_case_globals)]
+    pub(crate) unsafe fn from_sys(
+        kind: triton_ng_sys::TRITONSERVER_ParameterType,
+        value: *const std::ffi::c_void,
+    ) -> Result<Self, String> {
+        use triton_ng_sys::*;
+        if value.is_null() {
+            return Err("parameter value is null".to_string());
+        }
+        unsafe {
+            match kind {
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BOOL => {
+                    Ok(Self::Bool(*(value as *const bool)))
+                }
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_INT => {
+                    Ok(Self::Int(*(value as *const i64)))
+                }
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_DOUBLE => {
+                    Ok(Self::Double(*(value as *const f64)))
+                }
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_STRING => Ok(Self::String(
+                    crate::utils::cstr_to_string(value as *const libc::c_char),
+                )),
+                other => Err(format!("unsupported parameter type {other}")),
+            }
+        }
+    }
+}
+
+impl From<bool> for Parameter {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<i64> for Parameter {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<f64> for Parameter {
+    fn from(value: f64) -> Self {
+        Self::Double(value)
+    }
+}
+
+impl From<&str> for Parameter {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_string())
+    }
+}
+
+impl From<String> for Parameter {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Parameter;
+    use std::ffi::{CString, c_void};
+    use triton_ng_sys::*;
+
+    fn read<T>(kind: TRITONSERVER_ParameterType, value: &T) -> Result<Parameter, String> {
+        unsafe { Parameter::from_sys(kind, value as *const T as *const c_void) }
+    }
+
+    #[test]
+    fn reads_every_supported_type() {
+        assert_eq!(
+            read(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BOOL,
+                &true
+            ),
+            Ok(Parameter::Bool(true))
+        );
+        assert_eq!(
+            read(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_INT,
+                &-7i64
+            ),
+            Ok(Parameter::Int(-7))
+        );
+        assert_eq!(
+            read(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_DOUBLE,
+                &0.5f64
+            ),
+            Ok(Parameter::Double(0.5))
+        );
+
+        let text = CString::new("hello").unwrap();
+        let string = unsafe {
+            Parameter::from_sys(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_STRING,
+                text.as_ptr() as *const c_void,
+            )
+        };
+        assert_eq!(string, Ok(Parameter::String("hello".to_string())));
+    }
+
+    #[test]
+    fn rejects_bytes_and_null() {
+        assert!(
+            read(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BYTES,
+                &0u8
+            )
+            .is_err()
+        );
+        let null = unsafe {
+            Parameter::from_sys(
+                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BOOL,
+                std::ptr::null(),
+            )
+        };
+        assert!(null.is_err());
+    }
+}

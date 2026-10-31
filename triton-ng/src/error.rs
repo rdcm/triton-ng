@@ -36,16 +36,26 @@ impl TritonError {
 
     /// Creates a Triton-side INTERNAL error object, deleted on drop.
     pub(crate) fn internal(message: &str) -> Self {
+        Self::with_code(
+            triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+            message,
+        )
+    }
+
+    /// Creates a Triton-side CANCELLED error object, deleted on drop.
+    pub(crate) fn cancelled(message: &str) -> Self {
+        Self::with_code(
+            triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_CANCELLED,
+            message,
+        )
+    }
+
+    fn with_code(code: triton_ng_sys::TRITONSERVER_Error_Code, message: &str) -> Self {
         let message = message.replace('\0', "?");
         let Ok(c_message) = std::ffi::CString::new(message.as_str()) else {
             return Self::from_message(message);
         };
-        let ptr = unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                c_message.as_ptr(),
-            )
-        };
+        let ptr = unsafe { triton_ng_sys::TRITONSERVER_ErrorNew(code, c_message.as_ptr()) };
         TritonError { ptr, message }
     }
 

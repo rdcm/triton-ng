@@ -176,8 +176,6 @@ unsafe extern "C" fn release_fn(
     ptr::null_mut()
 }
 
-// ── allocation helpers ────────────────────────────────────────────────────────
-
 /// Returns `(ptr, actual_kind, actual_device_id)`.
 /// Falls back to CPU when the requested kind is unavailable.
 fn allocate(
@@ -268,8 +266,6 @@ fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
         _ => cpu_free(buf),
     }
 }
-
-// ── low-level allocators ──────────────────────────────────────────────────────
 
 #[inline]
 fn cpu_alloc(size: usize) -> *mut c_void {

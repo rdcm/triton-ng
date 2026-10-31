@@ -1,43 +1,64 @@
 use crate::Error;
 use crate::error::TritonError;
 use crate::request::Request;
-use crate::types::DataType;
+use crate::types::{DataType, Parameter};
 use crate::utils::{count_strings, cstring_from_str, encode_string};
-use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
-use std::rc::Rc;
 use std::slice;
 use triton_ng_macros::triton_call;
 
+/// Final response of a [`Request`].
+///
+/// The response takes the request over and keeps it until it is sent, so the
+/// request gets no other response. A response dropped without being sent, or
+/// whose sending fails, is deleted and its request gets an error response.
+///
+/// # Examples
+///
+/// ```ignore
+/// let scores = request.get_input("SCORES")?.as_fp32_vec()?;
+///
+/// let mut response = Response::new(request)?;
+/// response
+///     .create_output("SCORES", DataType::Fp32, &[1, scores.len() as i64])?
+///     .write_fp32_vec(&scores)?;
+/// response.send()?;
+/// ```
 pub struct Response {
     /// Null once the response was handed over to `TRITONBACKEND_ResponseSend`,
     /// which takes ownership whatever it returns.
     ptr: *mut triton_ng_sys::TRITONBACKEND_Response,
-    /// Shared with the originating [`Request`], marks it as answered.
-    responded: Rc<Cell<bool>>,
+    /// Dropped after the response, see `Drop`: an unsent response must be
+    /// deleted before the request gets its error response.
+    request: Request,
     /// Outputs created but not written yet. Triton frontends read every
     /// output of a sent response, so one without a buffer crashes the server.
     pending_outputs: usize,
 }
 
-impl Response {
-    pub fn new(request: &Request) -> Result<Self, TritonError> {
-        if request.is_responded() {
-            return Err(TritonError::from_message(
-                "the request already has a final response",
-            ));
-        }
+// SAFETY: see `Request`. Outputs are created through `&mut self`, so they are
+// never added from several threads at once, as tritonbackend.h requires.
+unsafe impl Send for Response {}
 
+impl Response {
+    /// Creates the response of `request`. On error the request is dropped and
+    /// gets an error response.
+    pub fn new(request: Request) -> Result<Self, TritonError> {
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
             &mut _,
             request.as_ptr()
         ))?;
         Ok(Self {
             ptr,
-            responded: request.responded_flag(),
+            request,
             pending_outputs: 0,
         })
+    }
+
+    /// The request this response answers, e.g. to read its inputs.
+    pub fn request(&self) -> &Request {
+        &self.request
     }
 
     /// Creates an output tensor. It must be written exactly once before
@@ -78,14 +99,58 @@ impl Response {
         })
     }
 
+    /// Adds the parameter `name` to the response. Clients read it from
+    /// `parameters` of the gRPC `ModelInferResponse`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut response = Response::new(request)?;
+    /// response.set_parameter("tokens", 42)?;
+    /// response.set_parameter("language", "ru")?;
+    /// response.send()?;
+    /// ```
+    pub fn set_parameter(
+        &mut self,
+        name: &str,
+        value: impl Into<Parameter>,
+    ) -> Result<(), TritonError> {
+        let name_cstr = cstring_from_str(name)?;
+        match value.into() {
+            Parameter::Bool(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetBoolParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::Int(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetIntParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::Double(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetDoubleParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::String(value) => {
+                let value_cstr = cstring_from_str(&value)?;
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetStringParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value_cstr.as_ptr()
+                ))
+            }
+        }
+    }
+
     /// Sends the response as the final one for its request.
     pub fn send(mut self) -> Result<(), TritonError> {
-        if self.responded.get() {
-            return Err(TritonError::from_message(
-                "the request already has a final response",
-            ));
-        }
-
         if self.pending_outputs > 0 {
             return Err(TritonError::from_message(format!(
                 "{} output(s) of the response were created but not written",
@@ -101,7 +166,7 @@ impl Response {
             ptr::null_mut(),
         ))?;
 
-        self.responded.set(true);
+        self.request.mark_responded();
 
         Ok(())
     }
