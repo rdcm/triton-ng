@@ -1,11 +1,8 @@
 use crate::error::{Error, TritonError};
 use crate::server::Server;
 use crate::utils::{Message, cstr_to_string};
-use libc::c_char;
 use std::any::Any;
 use std::ffi::c_void;
-use std::fs::File;
-use std::io::prelude::*;
 use std::path::PathBuf;
 use std::ptr;
 use std::str::FromStr;
@@ -119,55 +116,73 @@ impl Model {
         Ok(state_ptr)
     }
 
+    /// Name of the model, as in its config.
     pub fn name(&self) -> Result<String, TritonError> {
-        let mut model_name: *const c_char = std::ptr::null_mut();
-        triton_call!(triton_ng_sys::TRITONBACKEND_ModelName(
-            self.ptr,
-            &mut model_name
-        ))?;
-
-        Ok(unsafe { cstr_to_string(model_name) })
+        let mut name = ptr::null();
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelName(self.ptr, &mut name))?;
+        Ok(unsafe { cstr_to_string(name) })
     }
 
+    /// Version of the model that is being served.
     pub fn version(&self) -> Result<u64, TritonError> {
-        let mut version = 0u64;
+        let mut version = 0;
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelVersion(
             self.ptr,
             &mut version
         ))?;
-
         Ok(version)
     }
 
-    pub fn location(&self) -> Result<String, TritonError> {
-        let mut artifact_type: triton_ng_sys::TRITONBACKEND_ArtifactType = 0u32;
-        let mut location: *const c_char = std::ptr::null_mut();
+    /// Directory of the model in the model repository, the one that holds its
+    /// `config.pbtxt` and version directories.
+    ///
+    /// Fails when Triton serves the model from somewhere other than the local
+    /// file system.
+    pub fn directory(&self) -> Result<PathBuf, TritonError> {
+        let mut artifact =
+            triton_ng_sys::TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM;
+        let mut directory = ptr::null();
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelRepository(
             self.ptr,
-            &mut artifact_type,
-            &mut location,
+            &mut artifact,
+            &mut directory
         ))?;
 
-        Ok(unsafe { cstr_to_string(location) })
+        if artifact
+            != triton_ng_sys::TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM
+        {
+            return Err(TritonError::from_message(
+                "the model repository is not on the local file system",
+            ));
+        }
+        Ok(PathBuf::from(unsafe { cstr_to_string(directory) }))
     }
 
-    pub fn path(&self, filename: &str) -> Result<PathBuf, Error> {
-        Ok(PathBuf::from(format!(
-            "{}/{}/{}",
-            self.location()?,
-            self.version()?,
-            filename
-        )))
+    /// Path of `file_name` in the directory of the served version of the model.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// // <repository>/punctuation/1/tokenizer.json
+    /// let tokenizer = model.path("tokenizer.json")?;
+    /// ```
+    pub fn path(&self, file_name: &str) -> Result<PathBuf, Error> {
+        Ok(self
+            .directory()?
+            .join(self.version()?.to_string())
+            .join(file_name))
     }
 
-    pub fn load_file(&self, filename: &str) -> Result<Vec<u8>, Error> {
-        let path = self.path(filename)?;
-        let mut f = File::open(path)?;
-
-        let mut buffer = Vec::new();
-        f.read_to_end(&mut buffer)?;
-
-        Ok(buffer)
+    /// Reads `file_name` from the directory of the served version of the
+    /// model, see [`Model::path`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let vocabulary = String::from_utf8(model.load_file("vocab.txt")?)?;
+    /// ```
+    pub fn load_file(&self, file_name: &str) -> Result<Vec<u8>, Error> {
+        Ok(std::fs::read(self.path(file_name)?)?)
     }
 
     pub fn get_server(&self) -> Result<Server, TritonError> {
