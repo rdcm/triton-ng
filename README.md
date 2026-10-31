@@ -1,5 +1,3 @@
- > **WIP** — work in progress, API is unstable
-
 # triton-ng
 
 Rust SDK for [NVIDIA Triton Inference Server](https://github.com/triton-inference-server/server).
