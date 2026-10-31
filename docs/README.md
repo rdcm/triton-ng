@@ -54,4 +54,6 @@ instance and stops its runtime.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
-`hold_until_cancelled` parameter is held until the client cancels it.
+`hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
+most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
+requests are answered.

@@ -274,18 +274,7 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
     let sut = Sut::new(&config.triton_url).await?;
     let (_, cancelled_before) = backend_counters(&sut, &config).await?;
 
-    let held = tokio::spawn(async {
-        let config = Config::load()?;
-        let sut = Sut::new(&config.triton_url).await?;
-        let output_name = config.backend_output_name.clone();
-        sut.infer_with_parameters(
-            &config.backend_model,
-            vec![config.mnist_blank_input()],
-            &[&output_name],
-            HashMap::from([("hold_until_cancelled".to_string(), Parameter::Bool(true))]),
-        )
-        .await
-    });
+    let held = tokio::spawn(hold_request_until_cancelled());
 
     wait_for_backend_counters(&sut, &config, |held, _| held == 1).await?;
     held.abort();
@@ -293,6 +282,48 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
         held == 0 && cancelled == cancelled_before + 1
     })
     .await
+}
+
+async fn hold_request_until_cancelled() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        HashMap::from([("hold_until_cancelled".to_string(), Parameter::Bool(true))]),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn wait_for_model_state(sut: &Sut, model: &str, state: &str) -> Result<()> {
+    for _ in 0..10_000 {
+        let models = sut.repository_index(false).await?;
+        if models.iter().any(|m| m.name == model && m.state == state) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("model {model} did not reach the {state} state")
+}
+
+#[tokio::test]
+async fn custom_backend_model_unloads_only_after_its_held_request_is_answered() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let held = tokio::spawn(hold_request_until_cancelled());
+    wait_for_backend_counters(&sut, &config, |held, _| held == 1).await?;
+
+    sut.repository_model_unload(&config.backend_model).await?;
+    let unloading = wait_for_model_state(&sut, &config.backend_model, "UNLOADING").await;
+    held.abort();
+    let unloaded = wait_for_model_state(&sut, &config.backend_model, "UNAVAILABLE").await;
+    sut.repository_model_load(&config.backend_model).await?;
+
+    unloading?;
+    unloaded?;
+    assert!(sut.model_ready(&config.backend_model, None).await?);
+    Ok(())
 }
 
 #[tokio::test]

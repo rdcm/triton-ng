@@ -26,3 +26,8 @@ parameters: {
   key: "target_model"
   value: { string_value: "mnist_onnx" }
 }
+
+parameters: {
+  key: "max_batches_in_flight"
+  value: { string_value: "4" }
+}

@@ -136,8 +136,13 @@ pub mod __macro_support {
 
         match prepared {
             Ok((executor, ctx)) => {
+                let batch = B::model_instance_execute(ctx, requests);
                 let result = catch(|| {
-                    executor.spawn(B::model_instance_execute(ctx, requests));
+                    executor.spawn(async move {
+                        if let Err(e) = batch.await {
+                            crate::log::error(&format!("model instance execute failed: {e}"));
+                        }
+                    })?;
                     Ok(())
                 });
                 if let Err(e) = result {

@@ -1,5 +1,4 @@
 use crate::error::Error;
-use crate::log;
 use crate::model::{Model, SharedState};
 use crate::server::Server;
 use std::any::Any;
@@ -7,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::sync::Semaphore;
+use tokio::sync::{AcquireError, Semaphore};
 use tokio_util::task::TaskTracker;
 
 /// Model parameter: worker threads of every instance's runtime.
@@ -80,7 +79,15 @@ impl InstanceExecutor {
             return Err(format!("{WORKER_THREADS} must be at least 1").into());
         }
         let max_in_flight = model.config_parameter_or(MAX_BATCHES_IN_FLIGHT, 0usize)?;
+        Ok(Self::with_limits(workers, max_in_flight, thread_name)?)
+    }
 
+    /// `workers` must be at least 1; `max_in_flight` 0 means unlimited.
+    fn with_limits(
+        workers: usize,
+        max_in_flight: usize,
+        thread_name: String,
+    ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(workers)
             .thread_name(thread_name)
@@ -96,24 +103,25 @@ impl InstanceExecutor {
 
     /// Runs the batch `future` on this instance. Waits for a free slot first
     /// when `max_batches_in_flight` batches are already in progress, so Triton
-    /// keeps the next requests in its queue.
-    pub(crate) fn spawn(&self, future: impl Future<Output = Result<(), Error>> + Send + 'static) {
-        let permit = self.slots.as_ref().and_then(|slots| {
-            self.runtime
-                .block_on(Arc::clone(slots).acquire_owned())
-                .inspect_err(|e| log::error(&format!("failed to wait for a free batch slot: {e}")))
-                .ok()
-        });
+    /// keeps the next requests in its queue. Fails, without running `future`,
+    /// only when the slots are closed, which never happens before shutdown.
+    pub(crate) fn spawn(
+        &self,
+        future: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<(), AcquireError> {
+        let permit = match &self.slots {
+            Some(slots) => Some(self.runtime.block_on(Arc::clone(slots).acquire_owned())?),
+            None => None,
+        };
 
         self.tasks.spawn_on(
             async move {
-                if let Err(e) = future.await {
-                    log::error(&format!("model instance execute failed: {e}"));
-                }
+                future.await;
                 drop(permit);
             },
             self.runtime.handle(),
         );
+        Ok(())
     }
 
     /// Waits for every batch of this instance and stops its runtime.
@@ -131,4 +139,91 @@ pub(crate) fn context(model: &Model, device_id: i32) -> Result<Context, Error> {
         state: model.shared_state()?,
         device_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InstanceExecutor;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use tokio::sync::oneshot;
+
+    fn hold(
+        executor: &InstanceExecutor,
+        active: &Arc<AtomicUsize>,
+        started: &mpsc::Sender<()>,
+    ) -> oneshot::Sender<()> {
+        let (release, released) = oneshot::channel();
+        let active = Arc::clone(active);
+        let started = started.clone();
+        executor
+            .spawn(async move {
+                active.fetch_add(1, Ordering::SeqCst);
+                started.send(()).unwrap();
+                released.await.unwrap();
+                active.fetch_sub(1, Ordering::SeqCst);
+            })
+            .unwrap();
+        release
+    }
+
+    #[test]
+    fn batch_starts_only_after_a_batch_in_progress_finishes_when_all_slots_are_busy() {
+        let executor = InstanceExecutor::with_limits(2, 2, "test".to_string()).unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let (started, started_rx) = mpsc::channel();
+        let first = hold(&executor, &active, &started);
+        let second = hold(&executor, &active, &started);
+        started_rx.recv().unwrap();
+        started_rx.recv().unwrap();
+
+        let (seen, seen_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let active = Arc::clone(&active);
+                executor
+                    .spawn(async move {
+                        seen.send(active.load(Ordering::SeqCst)).unwrap();
+                    })
+                    .unwrap();
+            });
+            first.send(()).unwrap();
+        });
+
+        assert_eq!(seen_rx.recv().unwrap(), 1);
+        second.send(()).unwrap();
+        executor.shutdown();
+    }
+
+    #[test]
+    fn batches_are_not_limited_without_max_batches_in_flight() {
+        let executor = InstanceExecutor::with_limits(1, 0, "test".to_string()).unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let (started, started_rx) = mpsc::channel();
+        let releases: Vec<_> = (0..8).map(|_| hold(&executor, &active, &started)).collect();
+        (0..8).for_each(|_| started_rx.recv().unwrap());
+
+        assert_eq!(active.load(Ordering::SeqCst), 8);
+        releases
+            .into_iter()
+            .for_each(|release| release.send(()).unwrap());
+        executor.shutdown();
+    }
+
+    #[test]
+    fn shutdown_waits_for_batches_in_progress() {
+        let executor = InstanceExecutor::with_limits(1, 0, "test".to_string()).unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let (started, started_rx) = mpsc::channel();
+        let release = hold(&executor, &active, &started);
+        started_rx.recv().unwrap();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| executor.shutdown());
+            release.send(()).unwrap();
+        });
+
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
 }
