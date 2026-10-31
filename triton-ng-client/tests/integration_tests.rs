@@ -153,6 +153,59 @@ async fn mnist_onnx_inference_returns_ten_class_scores() -> Result<()> {
 }
 
 #[tokio::test]
+async fn custom_backend_returns_target_model_result() -> Result<()> {
+    let sut = Sut::new().await?;
+    let output_name = sut.config.output_name.clone();
+    let mut scores = Vec::new();
+    for model in [&sut.config.backend_model, &sut.config.mnist_model] {
+        let result = sut
+            .infer(
+                model,
+                None,
+                vec![sut.mnist_blank_input()],
+                &[&output_name],
+                None,
+            )
+            .await?;
+        let output = result
+            .outputs
+            .into_iter()
+            .find(|o| o.name == output_name)
+            .context("output tensor not found in response")?;
+        assert_eq!(output.shape, vec![1, 10]);
+        scores.push(output.data_f32);
+    }
+    assert_eq!(scores[0], scores[1]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_answers_concurrent_requests() -> Result<()> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..200 {
+        tasks.spawn(async {
+            let sut = Sut::new().await?;
+            let output_name = sut.config.output_name.clone();
+            let result = sut
+                .infer(
+                    &sut.config.backend_model,
+                    None,
+                    vec![sut.mnist_blank_input()],
+                    &[&output_name],
+                    None,
+                )
+                .await?;
+            anyhow::ensure!(result.outputs.len() == 1, "expected one output");
+            Ok(())
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn inference_request_id_is_echoed_in_response() -> Result<()> {
     let sut = Sut::new().await?;
     let output_name = sut.config.output_name.clone();

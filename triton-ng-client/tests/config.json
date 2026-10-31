@@ -1,6 +1,7 @@
 {
   "triton_url": "http://localhost:8001",
   "mnist_model": "mnist_onnx",
+  "backend_model": "mnist",
   "input_name": "Input3",
   "output_name": "Plus214_Output_0"
 }

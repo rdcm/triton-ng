@@ -25,7 +25,7 @@ Implement the `Backend` trait and register it with `declare_backend!`:
 
 ```rust
 use triton_ng::backend::Backend;
-use triton_ng::{BackendHandle, DataType, Error, InferenceRequest, Response};
+use triton_ng::{BackendHandle, DataType, Error, Model, Request, Response};
 
 struct MyBackend;
 
@@ -34,13 +34,9 @@ impl Backend for MyBackend {
         Ok(())
     }
 
-    fn model_instance_execute(
-        model: triton_ng::Model,
-        requests: &[triton_ng::Request],
-    ) -> Result<(), Error> {
+    fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
-            let input = request.get_input("INPUT")?;
-            let data = input.as_fp32_vec()?;
+            let data = request.get_input("INPUT")?.as_fp32_vec()?;
 
             // ... run inference ...
 
@@ -64,6 +60,54 @@ Build as a `cdylib`:
 [lib]
 crate-type = ["cdylib"]
 ```
+
+## Execution model and thread safety
+
+**Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>` and may
+answer the requests right away or keep them and answer later, after it returns, from any thread.
+Triton calls `model_instance_execute` again as soon as it returns, so a single model instance can
+work on many requests at once.
+
+**Exactly one final response.** `Response::new`, `Request::respond_error` and
+`Request::respond_cancelled` consume the request, so it cannot be answered twice. A request dropped
+without a response, including when `model_instance_execute` returns an error or panics, gets a
+generic error response. Every request is released to Triton when it is dropped. The error returned
+by `model_instance_execute` is only logged: answer a request with `respond_error` to give the
+client the reason.
+
+**BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
+`InferenceFuture`. Triton wakes it from its own threads, so it works with any executor and no
+thread is blocked while it waits. Dropping the future does not cancel the request: Triton finishes
+it and the result is discarded.
+
+**What can move to another thread:**
+
+| Type | `Send` | `Sync` | Notes |
+|---|---|---|---|
+| `Request`, `Response` | yes | no | one request is used by one thread at a time |
+| `InferenceRequest`, `InferenceFuture` | yes | no | |
+| `Server` | yes | yes | `Clone`, one copy per task |
+| `Model` | no | no | valid only while its requests are alive |
+
+**Lifetimes.** A model is not finalized while the backend holds any of its requests, and the
+server is not destroyed while any model is loaded. So `Server` stays valid as long as a task holds
+its `Request`: keep the request until the task is done. `Model` and `Model::state` do not leave
+`model_instance_execute`; put the state a task needs in an `Arc` (`model.set_state(Arc::new(..))`)
+and clone it into the task.
+
+**Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
+with `Request::respond_cancelled`.
+
+**Shutdown.** Triton waits for in-flight requests and model unloads before it finalizes the backend.
+Tasks that outlive their requests, and the runtime itself, must be stopped in `Backend::finalize`.
+
+**Batching.** One task per request removes batching from the backend: Triton hands requests to
+`model_instance_execute` as they arrive. When the backend gains from batching (e.g. a decode loop
+over BLS calls), keep collecting requests into batches yourself.
+
+`example/custom-backend` runs every request as a tokio task, bounds the number of requests in
+progress with a semaphore (`model_instance_execute` waits when all permits are taken, and Triton
+queues the rest), and waits for all tasks in `finalize`.
 
 ## Using the gRPC client
 
