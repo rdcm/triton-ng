@@ -28,7 +28,16 @@ impl ResponseAllocator {
             Some(release_fn),
             None,
         ))?;
-        Ok(Self { ptr })
+        let allocator = Self { ptr };
+
+        // Without a query function TRITONBACKEND_RequestOutputBufferProperties
+        // fails, and backends that ignore that error (onnxruntime) leak it on
+        // every request.
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_ResponseAllocatorSetQueryFunction(ptr, Some(query_fn),)
+        )?;
+
+        Ok(allocator)
     }
 
     pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_ResponseAllocator {
@@ -62,6 +71,19 @@ unsafe extern "C" fn alloc_fn(
     actual_memory_type: *mut triton_ng_sys::TRITONSERVER_MemoryType,
     actual_memory_type_id: *mut i64,
 ) -> *mut triton_ng_sys::TRITONSERVER_Error {
+    if buffer.is_null()
+        || buffer_userp.is_null()
+        || actual_memory_type.is_null()
+        || actual_memory_type_id.is_null()
+    {
+        return unsafe {
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INVALID_ARG,
+                c"null output slot passed to the allocator".as_ptr() as *const c_char,
+            )
+        };
+    }
+
     // Zero-size outputs are valid; return a null buffer with no userp.
     if byte_size == 0 {
         unsafe {
@@ -97,6 +119,32 @@ unsafe extern "C" fn alloc_fn(
     ptr::null_mut()
 }
 
+/// Triton calls this to ask where `alloc_fn` would place an output tensor.
+unsafe extern "C" fn query_fn(
+    _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
+    _userp: *mut c_void,
+    _tensor_name: *const c_char,
+    _byte_size: *mut usize,
+    memory_type: *mut triton_ng_sys::TRITONSERVER_MemoryType,
+    memory_type_id: *mut i64,
+) -> *mut triton_ng_sys::TRITONSERVER_Error {
+    if memory_type.is_null() || memory_type_id.is_null() {
+        return unsafe {
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INVALID_ARG,
+                c"null memory type passed to the allocator query".as_ptr() as *const c_char,
+            )
+        };
+    }
+
+    let (kind, id) = unsafe { placement(*memory_type, *memory_type_id) };
+    unsafe {
+        *memory_type = kind;
+        *memory_type_id = id;
+    }
+    ptr::null_mut()
+}
+
 /// Triton calls this when it is done with a buffer allocated by `alloc_fn`.
 unsafe extern "C" fn release_fn(
     _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
@@ -109,6 +157,15 @@ unsafe extern "C" fn release_fn(
     // Null buffer means it was a zero-size allocation — nothing to free.
     if buffer.is_null() {
         return ptr::null_mut();
+    }
+
+    if buffer_userp.is_null() {
+        return unsafe {
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+                c"output buffer was not allocated by triton-ng".as_ptr() as *const c_char,
+            )
+        };
     }
 
     // Recover and drop the metadata tag.
@@ -164,6 +221,29 @@ fn allocate(
     }
 }
 
+/// Memory kind `allocate` tries first for the requested one.
+fn placement(
+    requested: triton_ng_sys::TRITONSERVER_MemoryType,
+    device_id: i64,
+) -> (triton_ng_sys::TRITONSERVER_MemoryType, i64) {
+    use triton_ng_sys::{
+        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU as CPU,
+        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
+        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
+    };
+
+    match requested {
+        #[cfg(feature = "cuda")]
+        CPU_PINNED => (CPU_PINNED, 0),
+        #[cfg(feature = "cuda")]
+        GPU => (GPU, device_id),
+        _ => {
+            let _ = (CPU_PINNED, GPU, device_id);
+            (CPU, 0)
+        }
+    }
+}
+
 fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
     use triton_ng_sys::{
         TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
@@ -173,20 +253,14 @@ fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
     match kind {
         CPU_PINNED => {
             #[cfg(feature = "cuda")]
-            {
-                pinned_free(buf);
-                return;
-            }
+            pinned_free(buf);
             #[cfg(not(feature = "cuda"))]
             cpu_free(buf);
         }
 
         GPU => {
             #[cfg(feature = "cuda")]
-            {
-                gpu_free(buf);
-                return;
-            }
+            gpu_free(buf);
             #[cfg(not(feature = "cuda"))]
             cpu_free(buf);
         }

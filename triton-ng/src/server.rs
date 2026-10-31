@@ -3,7 +3,7 @@ use crate::inference_response::InferenceResponse;
 use crate::request::decode_le;
 use crate::response_allocator::ResponseAllocator;
 use crate::types::DataType;
-use crate::utils::cstring_from_str;
+use crate::utils::{Message, cstring_from_str};
 use crate::{Error, TritonError};
 use crossbeam::channel::{Sender, bounded};
 use std::ffi::c_void;
@@ -135,30 +135,16 @@ impl Server {
 
     pub fn model_metadata(&self, model_name: &str, version: i64) -> Result<String, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
-        let metadata_ptr = triton_call!(triton_ng_sys::TRITONSERVER_ServerModelMetadata(
-            self.ptr,
-            model_name_cstr.as_ptr(),
-            version,
-            &mut _,
-        ))?;
+        let metadata = Message::from_ptr(triton_call!(
+            triton_ng_sys::TRITONSERVER_ServerModelMetadata(
+                self.ptr,
+                model_name_cstr.as_ptr(),
+                version,
+                &mut _,
+            )
+        )?);
 
-        let mut base: *const i8 = std::ptr::null();
-        let mut byte_size: usize = 0;
-
-        triton_call!(triton_ng_sys::TRITONSERVER_MessageSerializeToJson(
-            metadata_ptr,
-            &mut base,
-            &mut byte_size
-        ))?;
-
-        let json_bytes = unsafe { std::slice::from_raw_parts(base as *const u8, byte_size) };
-        let result = String::from_utf8_lossy(json_bytes).to_string();
-
-        unsafe {
-            triton_ng_sys::TRITONSERVER_MessageDelete(metadata_ptr);
-        }
-
-        Ok(result)
+        metadata.to_json()
     }
 
     /// Run inference synchronously.
@@ -287,6 +273,14 @@ unsafe extern "C" fn inference_response_complete(
 ) {
     use triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL as FINAL;
     let is_final = flags & FINAL != 0;
+
+    if userp.is_null() {
+        // No context to report to: still free the response.
+        if !response_ptr.is_null() {
+            drop(InferenceResponse::from_ptr(response_ptr));
+        }
+        return;
+    }
 
     // Borrow context without taking ownership — we only own it on the final call.
     let context = unsafe { &mut *(userp as *mut InferenceContext) };

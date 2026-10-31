@@ -1,6 +1,6 @@
 use crate::error::{Error, TritonError};
 use crate::server::Server;
-use crate::utils::cstr_to_string;
+use crate::utils::{Message, cstr_to_string};
 use libc::c_char;
 use std::any::Any;
 use std::ffi::c_void;
@@ -23,12 +23,16 @@ impl Model {
         Self { ptr }
     }
 
-    /// Stores backend-defined state for this model, replacing the previous one.
+    /// Stores backend-defined state for this model.
     ///
-    /// Typically called from `Backend::model_initialize`; the state is shared
-    /// by all instances of the model and dropped when the model is finalized.
+    /// Call it once, from `Backend::model_initialize`; the state is shared by
+    /// all instances of the model and dropped when the model is finalized. A
+    /// second call fails: replacing the state would free it under the
+    /// references returned by [`Model::state`].
     pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
-        self.clear_state()?;
+        if !self.raw_state()?.is_null() {
+            return Err(TritonError::from_message("model state is already set"));
+        }
 
         let boxed: Box<BoxedState> = Box::new(Box::new(state));
         let state_ptr = Box::into_raw(boxed) as *mut c_void;
@@ -142,28 +146,13 @@ impl Model {
 
     /// Returns the model configuration as a JSON string (ModelConfig protobuf format).
     pub fn config_json(&self) -> Result<String, TritonError> {
-        let config_ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ModelConfig(
+        let config = Message::from_ptr(triton_call!(triton_ng_sys::TRITONBACKEND_ModelConfig(
             self.ptr,
             1,
             &mut _
-        ))?;
+        ))?);
 
-        let mut base: *const i8 = ptr::null();
-        let mut byte_size: usize = 0;
-        triton_call!(triton_ng_sys::TRITONSERVER_MessageSerializeToJson(
-            config_ptr,
-            &mut base,
-            &mut byte_size,
-        ))?;
-
-        let json = unsafe {
-            let bytes = std::slice::from_raw_parts(base as *const u8, byte_size);
-            String::from_utf8_lossy(bytes).into_owned()
-        };
-
-        unsafe { triton_ng_sys::TRITONSERVER_MessageDelete(config_ptr) };
-
-        Ok(json)
+        config.to_json()
     }
 
     /// Reads a string parameter from the model configuration `parameters` map.

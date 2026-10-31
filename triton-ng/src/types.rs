@@ -19,6 +19,17 @@ pub enum DataType {
 }
 
 impl DataType {
+    /// Size of one element in bytes, `None` for BYTES and INVALID.
+    pub fn element_size(self) -> Option<usize> {
+        match self {
+            Self::Bool | Self::Uint8 | Self::Int8 => Some(1),
+            Self::Uint16 | Self::Int16 | Self::Fp16 | Self::Bf16 => Some(2),
+            Self::Uint32 | Self::Int32 | Self::Fp32 => Some(4),
+            Self::Uint64 | Self::Int64 | Self::Fp64 => Some(8),
+            Self::Bytes | Self::Invalid => None,
+        }
+    }
+
     pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_DataType {
         use triton_ng_sys::*;
         match self {

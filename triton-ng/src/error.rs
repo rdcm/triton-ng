@@ -33,6 +33,26 @@ impl TritonError {
             message: message.into(),
         }
     }
+
+    /// Creates a Triton-side INTERNAL error object, deleted on drop.
+    pub(crate) fn internal(message: &str) -> Self {
+        let message = message.replace('\0', "?");
+        let Ok(c_message) = std::ffi::CString::new(message.as_str()) else {
+            return Self::from_message(message);
+        };
+        let ptr = unsafe {
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+                c_message.as_ptr(),
+            )
+        };
+        TritonError { ptr, message }
+    }
+
+    /// The Triton error object, null when the error exists only on the Rust side.
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_Error {
+        self.ptr
+    }
 }
 
 impl std::fmt::Display for TritonError {

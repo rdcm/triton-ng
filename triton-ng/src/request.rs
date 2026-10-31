@@ -3,6 +3,7 @@ use crate::types::DataType;
 use crate::utils::{cstr_to_string, cstring_from_str, decode_string};
 use libc::{c_char, c_void};
 use std::cell::Cell;
+use std::marker::PhantomData;
 use std::ptr;
 use std::rc::Rc;
 use std::slice;
@@ -68,7 +69,7 @@ impl Request {
             .collect()
     }
 
-    pub fn get_input(&self, name: &str) -> Result<Input, TritonError> {
+    pub fn get_input(&self, name: &str) -> Result<Input<'_>, TritonError> {
         let name = cstring_from_str(name)?;
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_RequestInput(
             self.ptr,
@@ -82,36 +83,30 @@ impl Request {
     ///
     /// Use it to fail a single request of a batch without failing the others.
     pub fn respond_error(&self, message: &str) -> Result<(), TritonError> {
+        if self.is_responded() {
+            return Err(TritonError::from_message(
+                "the request already has a final response",
+            ));
+        }
+
+        // The caller keeps ownership of the error object passed to ResponseSend,
+        // it is deleted on drop.
+        let error = TritonError::internal(message);
+        if error.as_ptr().is_null() {
+            return Err(TritonError::from_message("failed to create error object"));
+        }
+
         let response = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(&mut _, self.ptr))?;
 
-        let message = cstring_from_str(&message.replace('\0', "?"))?;
-        let error = unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                message.as_ptr(),
-            )
-        };
-
-        let result = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
+        // ResponseSend takes ownership of the response whatever it returns.
+        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
             response,
             triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-            error,
-        ));
+            error.as_ptr(),
+        ))?;
 
-        // The caller keeps ownership of the error object passed to ResponseSend.
-        unsafe { triton_ng_sys::TRITONSERVER_ErrorDelete(error) };
-
-        match result {
-            Ok(()) => {
-                self.responded.set(true);
-                Ok(())
-            }
-            Err(e) => {
-                // Ownership of the response was not transferred to Triton.
-                unsafe { triton_ng_sys::TRITONBACKEND_ResponseDelete(response) };
-                Err(e)
-            }
-        }
+        self.responded.set(true);
+        Ok(())
     }
 
     /// Returns ownership of the request to Triton. Must be called exactly once
@@ -124,13 +119,19 @@ impl Request {
     }
 }
 
-pub struct Input {
+/// Input tensor of a [`Request`], borrowed from it: Triton frees the tensor
+/// together with the request.
+pub struct Input<'a> {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Input,
+    request: PhantomData<&'a Request>,
 }
 
-impl Input {
+impl Input<'_> {
     pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Input) -> Self {
-        Self { ptr }
+        Self {
+            ptr,
+            request: PhantomData,
+        }
     }
 
     /// Copies the tensor into a contiguous host buffer.
@@ -156,20 +157,38 @@ impl Input {
                 &mut memory_type_id,
             ))?;
 
-            if memory_type == triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU {
+            if buffer_byte_size == 0 {
+                continue;
+            }
+
+            if buffer.is_null() {
+                return Err(format!("input '{}' buffer {index} is null", properties.name).into());
+            }
+
+            if memory_type != triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU
+                && memory_type
+                    != triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED
+            {
                 return Err(format!(
-                    "input '{}' buffer {index} is in GPU memory, only host memory is supported",
+                    "input '{}' buffer {index} is not in host memory, only host memory is supported",
                     properties.name
                 )
                 .into());
             }
 
-            if buffer_byte_size > 0 {
-                let mem: &[u8] = unsafe {
-                    slice::from_raw_parts(buffer as *const u8, buffer_byte_size as usize)
-                };
-                data.extend_from_slice(mem);
-            }
+            let mem: &[u8] =
+                unsafe { slice::from_raw_parts(buffer as *const u8, buffer_byte_size as usize) };
+            data.extend_from_slice(mem);
+        }
+
+        if data.len() as u64 != properties.byte_size {
+            return Err(format!(
+                "input '{}' has {} bytes in its buffers, expected {}",
+                properties.name,
+                data.len(),
+                properties.byte_size
+            )
+            .into());
         }
 
         Ok(data)
