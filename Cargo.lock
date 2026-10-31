@@ -454,6 +454,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen-grpc-client"
+version = "0.1.0"
+dependencies = [
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1740,7 +1747,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
- "tonic-prost-build",
 ]
 
 [[package]]

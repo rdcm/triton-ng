@@ -1,6 +1,7 @@
 mod client;
 mod datatype;
 mod error;
+#[rustfmt::skip]
 mod generated;
 mod infer;
 mod types;

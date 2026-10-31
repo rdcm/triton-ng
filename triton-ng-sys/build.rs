@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 fn main() -> Result<()> {
     let bindings = bindgen::Builder::default()
-        .clang_arg("-I../deps/triton-core/include")
+        .clang_arg("-Iinclude")
         .clang_arg("-xc++")
-        .header("../deps/triton-core/include/triton/core/tritonbackend.h")
+        .header("include/triton/core/tritonbackend.h")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()?;
 

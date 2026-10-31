@@ -390,64 +390,80 @@ fn decode_int8(data: &[u8]) -> Vec<i8> {
 fn decode_u16(data: &[u8]) -> Result<Vec<u16>> {
     check_elem_size(data, 2, "UINT16")?;
     Ok(data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect())
 }
 
 fn decode_u32(data: &[u8]) -> Result<Vec<u32>> {
     check_elem_size(data, 4, "UINT32")?;
     Ok(data
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect())
 }
 
 fn decode_u64(data: &[u8]) -> Result<Vec<u64>> {
     check_elem_size(data, 8, "UINT64")?;
     Ok(data
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| u64::from_le_bytes(c))
         .collect())
 }
 
 fn decode_i16(data: &[u8]) -> Result<Vec<i16>> {
     check_elem_size(data, 2, "INT16")?;
     Ok(data
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| i16::from_le_bytes(c))
         .collect())
 }
 
 fn decode_i32(data: &[u8]) -> Result<Vec<i32>> {
     check_elem_size(data, 4, "INT32")?;
     Ok(data
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| i32::from_le_bytes(c))
         .collect())
 }
 
 fn decode_i64(data: &[u8]) -> Result<Vec<i64>> {
     check_elem_size(data, 8, "INT64")?;
     Ok(data
-        .chunks_exact(8)
-        .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| i64::from_le_bytes(c))
         .collect())
 }
 
 fn decode_f32(data: &[u8]) -> Result<Vec<f32>> {
     check_elem_size(data, 4, "FP32")?;
     Ok(data
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| f32::from_le_bytes(c))
         .collect())
 }
 
 fn decode_f64(data: &[u8]) -> Result<Vec<f64>> {
     check_elem_size(data, 8, "FP64")?;
     Ok(data
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&c| f64::from_le_bytes(c))
         .collect())
 }
 

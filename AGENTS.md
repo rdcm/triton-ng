@@ -18,8 +18,9 @@ added to the `Makefile` only after it is agreed.
 | `make download-model` | downloads the mnist models used by the tests |
 | `make docker-env-up` / `docker-env-down` / `docker-env-clean` | local Triton with the example backend |
 | `make docker-logs` | logs of the local Triton |
-| `make update-submodules` | updates `deps/` to the branches in `.gitmodules` |
-| `make gen-grpc-client` | regenerates the gRPC client |
+| `make update-submodules` | updates `deps/` to the branches in `.gitmodules` and copies the Triton headers into `triton-ng-sys/include` |
+| `make gen-grpc-client` | regenerates the gRPC client in `triton-ng-client/src/generated` from `proto/` |
+| `make publish` | publishes the crates to crates.io in dependency order; `DRY_RUN=1` only packages and verifies them |
 | `make setup-protoc` | installs `protoc` |
 
 ## Tests

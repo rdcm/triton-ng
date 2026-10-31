@@ -3,11 +3,23 @@ resolver = "2"
 members = [
     "example/app",
     "example/custom-backend",
+    "tools/gen-grpc-client",
     "triton-ng",
     "triton-ng-client",
     "triton-ng-macros",
     "triton-ng-sys",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["rdcm@protonmail.ch"]
+license = "MIT"
+readme = "README.md"
+keywords = ["triton", "inference", "nvidia", "machine-learning", "grpc"]
+repository = "https://github.com/rdcm/triton-ng"
+rust-version = "1.99"
+categories = ["api-bindings", "external-ffi-bindings", "network-programming", "science"]
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

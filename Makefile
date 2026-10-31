@@ -27,9 +27,13 @@ tests:
 update-submodules:
 	git submodule update --init --recursive
 	git submodule update --remote
+	cp deps/triton-core/include/triton/core/tritonbackend.h deps/triton-core/include/triton/core/tritonserver.h triton-ng-sys/include/triton/core/
 
 gen-grpc-client:
-	cargo build --manifest-path=triton-grpc-client/Cargo.toml --release
+	cargo run -p gen-grpc-client
+
+publish:
+	cargo publish --workspace $(if $(DRY_RUN),--dry-run)
 
 build:
 	cargo build --release

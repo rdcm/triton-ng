@@ -406,8 +406,10 @@ pub(crate) fn decode_le<T, const N: usize>(
     }
 
     Ok(buffer
-        .chunks_exact(N)
-        .filter_map(|chunk| chunk.try_into().ok().map(from_le))
+        .as_chunks::<N>()
+        .0
+        .iter()
+        .map(|&chunk| from_le(chunk))
         .collect())
 }
 
