@@ -1,7 +1,7 @@
 use crate::Error;
 use crate::error::TritonError;
 use crate::request::Request;
-use crate::types::DataType;
+use crate::types::{DataType, Parameter};
 use crate::utils::{count_strings, cstring_from_str, encode_string};
 use std::ffi::c_void;
 use std::ptr;
@@ -97,6 +97,56 @@ impl Response {
             written: false,
             pending_outputs: &mut self.pending_outputs,
         })
+    }
+
+    /// Adds the parameter `name` to the response. Clients read it from
+    /// `parameters` of the gRPC `ModelInferResponse`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut response = Response::new(request)?;
+    /// response.set_parameter("tokens", 42)?;
+    /// response.set_parameter("language", "ru")?;
+    /// response.send()?;
+    /// ```
+    pub fn set_parameter(
+        &mut self,
+        name: &str,
+        value: impl Into<Parameter>,
+    ) -> Result<(), TritonError> {
+        let name_cstr = cstring_from_str(name)?;
+        match value.into() {
+            Parameter::Bool(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetBoolParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::Int(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetIntParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::Double(value) => {
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetDoubleParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::String(value) => {
+                let value_cstr = cstring_from_str(&value)?;
+                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSetStringParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value_cstr.as_ptr()
+                ))
+            }
+        }
     }
 
     /// Sends the response as the final one for its request.

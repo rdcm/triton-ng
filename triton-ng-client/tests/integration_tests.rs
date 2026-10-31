@@ -1,11 +1,10 @@
 mod common;
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use common::dto::InferInput;
 use common::sut::{Sut, create_posix_shm, remove_posix_shm};
+use triton_ng_client::Parameter;
 
 #[tokio::test]
 async fn server_is_live() -> Result<()> {
@@ -207,92 +206,57 @@ async fn custom_backend_answers_concurrent_requests() -> Result<()> {
     Ok(())
 }
 
-async fn wait_and_count_cancelled(sut: &Sut, wait_ms: f32) -> Result<f32> {
+/// `held_requests` and `cancelled_requests` reported by the custom backend.
+async fn backend_counters(sut: &Sut) -> Result<(i64, i64)> {
+    let output_name = sut.config.output_name.clone();
     let result = sut
-        .infer(
-            &sut.config.cancellable_model,
-            None,
-            vec![InferInput {
-                name: "WAIT_MS".to_string(),
-                shape: vec![1, 1],
-                data: vec![wait_ms],
-            }],
-            &["CANCELLED"],
-            None,
+        .infer_with_parameters(
+            &sut.config.backend_model,
+            vec![sut.mnist_blank_input()],
+            &[&output_name],
+            HashMap::new(),
         )
         .await?;
-    let output = result
-        .outputs
-        .into_iter()
-        .find(|o| o.name == "CANCELLED")
-        .context("CANCELLED not found in response")?;
-    output
-        .data_f32
-        .first()
-        .copied()
-        .context("CANCELLED is empty")
+    let counter = |name: &str| match result.parameters.get(name) {
+        Some(Parameter::Int(value)) => Ok(*value),
+        other => anyhow::bail!("response parameter {name} is {other:?}"),
+    };
+    Ok((counter("held_requests")?, counter("cancelled_requests")?))
 }
 
-#[tokio::test]
-async fn cancelled_request_reaches_the_backend() -> Result<()> {
-    let sut = Sut::new().await?;
-    let before = wait_and_count_cancelled(&sut, 0.0).await?;
-
-    let abandoned = tokio::time::timeout(
-        Duration::from_millis(300),
-        wait_and_count_cancelled(&sut, 10_000.0),
-    )
-    .await;
-    assert!(
-        abandoned.is_err(),
-        "the request must still be waiting when the client gives up"
-    );
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if wait_and_count_cancelled(&sut, 0.0).await? > before {
+async fn wait_for_backend_counters(sut: &Sut, expected: impl Fn(i64, i64) -> bool) -> Result<()> {
+    for _ in 0..10_000 {
+        let (held, cancelled) = backend_counters(sut).await?;
+        if expected(held, cancelled) {
             return Ok(());
         }
-        anyhow::ensure!(
-            Instant::now() < deadline,
-            "the backend did not see the cancellation"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    anyhow::bail!("backend counters did not reach the expected values")
 }
 
 #[tokio::test]
-async fn request_that_is_not_cancelled_waits_and_is_answered() -> Result<()> {
+async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
     let sut = Sut::new().await?;
-    let started = Instant::now();
-    wait_and_count_cancelled(&sut, 200.0).await?;
-    assert!(started.elapsed() >= Duration::from_millis(200));
-    Ok(())
-}
+    let (_, cancelled_before) = backend_counters(&sut).await?;
 
-#[tokio::test]
-async fn waiting_batch_does_not_block_the_instance() -> Result<()> {
-    let long = tokio::spawn(async {
+    let held = tokio::spawn(async {
         let sut = Sut::new().await?;
-        wait_and_count_cancelled(&sut, 1_500.0).await
+        let output_name = sut.config.output_name.clone();
+        sut.infer_with_parameters(
+            &sut.config.backend_model,
+            vec![sut.mnist_blank_input()],
+            &[&output_name],
+            HashMap::from([("hold_until_cancelled".to_string(), Parameter::Bool(true))]),
+        )
+        .await
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let sut = Sut::new().await?;
-    let started = Instant::now();
-    wait_and_count_cancelled(&sut, 0.0).await?;
-    let quick = started.elapsed();
-
-    assert!(
-        !long.is_finished(),
-        "the long request must still be waiting"
-    );
-    assert!(
-        quick < Duration::from_millis(500),
-        "the quick request took {quick:?} while the only instance held a waiting batch"
-    );
-    long.await??;
-    Ok(())
+    wait_for_backend_counters(&sut, |held, _| held == 1).await?;
+    held.abort();
+    wait_for_backend_counters(&sut, |held, cancelled| {
+        held == 0 && cancelled == cancelled_before + 1
+    })
+    .await
 }
 
 #[tokio::test]

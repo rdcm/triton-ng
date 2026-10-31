@@ -1,5 +1,5 @@
 use crate::error::{Error, TritonError};
-use crate::types::DataType;
+use crate::types::{DataType, Parameter};
 use crate::utils::{cstr_to_string, cstring_from_str, decode_string};
 use libc::{c_char, c_void};
 use std::marker::PhantomData;
@@ -123,6 +123,43 @@ impl Request {
     ///     // ... process the request ...
     /// }
     /// ```
+    /// The value of the request parameter `key`, `None` when the request has no
+    /// such parameter. Clients set request parameters next to the inputs
+    /// (`parameters` of the gRPC `ModelInferRequest`).
+    ///
+    /// Fails when Triton cannot return the parameters or `key` has the BYTES
+    /// type, which is not supported.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let verbose = request.parameter("verbose")? == Some(Parameter::Bool(true));
+    /// ```
+    pub fn parameter(&self, key: &str) -> Result<Option<Parameter>, Error> {
+        let mut count = 0u32;
+        triton_call!(triton_ng_sys::TRITONBACKEND_RequestParameterCount(
+            self.ptr, &mut count
+        ))?;
+
+        for index in 0..count {
+            let mut name: *const c_char = ptr::null();
+            let mut kind: triton_ng_sys::TRITONSERVER_ParameterType = 0;
+            let mut value: *const c_void = ptr::null();
+            triton_call!(triton_ng_sys::TRITONBACKEND_RequestParameter(
+                self.ptr, index, &mut name, &mut kind, &mut value
+            ))?;
+
+            if unsafe { cstr_to_string(name) } == key {
+                // SAFETY: Triton returns `value` matching `kind`, owned by the request.
+                return unsafe { Parameter::from_sys(kind, value) }
+                    .map(Some)
+                    .map_err(|e| format!("request parameter '{key}': {e}").into());
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn is_cancelled(&self) -> Result<bool, TritonError> {
         let mut cancelled = false;
         triton_call!(triton_ng_sys::TRITONBACKEND_RequestIsCancelled(

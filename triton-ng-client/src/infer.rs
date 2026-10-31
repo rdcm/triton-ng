@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::generated::inference::ModelInferResponse;
+use crate::generated::inference::infer_parameter::ParameterChoice;
+use crate::generated::inference::{InferParameter, ModelInferResponse};
 
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
@@ -243,6 +245,8 @@ pub struct InferResponse {
     /// Request ID echoed back from Triton. Empty if no ID was set on the request.
     pub id: String,
     pub outputs: Vec<InferOutput>,
+    /// Parameters the model set on the response.
+    pub parameters: HashMap<String, Parameter>,
 }
 
 impl InferResponse {
@@ -288,6 +292,7 @@ impl InferResponse {
         Ok(InferResponse {
             id: response.id,
             outputs,
+            parameters: Parameter::map_from_proto(response.parameters),
         })
     }
 }
@@ -301,6 +306,74 @@ pub struct InferOptions {
     pub id: Option<String>,
     /// Request timeout. `None` means no deadline.
     pub timeout: Option<Duration>,
+    /// Request parameters, read by the model next to the inputs.
+    pub parameters: HashMap<String, Parameter>,
+}
+
+// ── Parameters ────────────────────────────────────────────────────────────────
+
+/// Value of a request or response parameter.
+///
+/// # Examples
+///
+/// ```ignore
+/// let options = InferOptions {
+///     parameters: HashMap::from([("verbose".to_string(), Parameter::Bool(true))]),
+///     ..Default::default()
+/// };
+/// let response = client.infer("my_model", None, inputs, ["OUTPUT"], options).await?;
+/// let tokens = response.parameters.get("tokens");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub enum Parameter {
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    String(String),
+}
+
+impl Parameter {
+    pub(crate) fn to_proto(&self) -> InferParameter {
+        let choice = match self {
+            Self::Bool(value) => ParameterChoice::BoolParam(*value),
+            Self::Int(value) => ParameterChoice::Int64Param(*value),
+            Self::Double(value) => ParameterChoice::DoubleParam(*value),
+            Self::String(value) => ParameterChoice::StringParam(value.clone()),
+        };
+        InferParameter {
+            parameter_choice: Some(choice),
+        }
+    }
+
+    /// `None` for an empty value or a uint64 one, which Triton does not
+    /// support for custom parameters.
+    pub(crate) fn from_proto(parameter: InferParameter) -> Option<Self> {
+        match parameter.parameter_choice? {
+            ParameterChoice::BoolParam(value) => Some(Self::Bool(value)),
+            ParameterChoice::Int64Param(value) => Some(Self::Int(value)),
+            ParameterChoice::DoubleParam(value) => Some(Self::Double(value)),
+            ParameterChoice::StringParam(value) => Some(Self::String(value)),
+            ParameterChoice::Uint64Param(_) => None,
+        }
+    }
+
+    pub(crate) fn map_to_proto(
+        parameters: &HashMap<String, Parameter>,
+    ) -> HashMap<String, InferParameter> {
+        parameters
+            .iter()
+            .map(|(name, value)| (name.clone(), value.to_proto()))
+            .collect()
+    }
+
+    pub(crate) fn map_from_proto(
+        parameters: HashMap<String, InferParameter>,
+    ) -> HashMap<String, Parameter> {
+        parameters
+            .into_iter()
+            .filter_map(|(name, value)| Some((name, Self::from_proto(value)?)))
+            .collect()
+    }
 }
 
 // ── Decode helpers ────────────────────────────────────────────────────────────
@@ -406,4 +479,40 @@ fn decode_bytes(data: &[u8]) -> Result<Vec<Vec<u8>>> {
         cur = rest;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parameters_survive_the_round_trip() {
+        let parameters = HashMap::from([
+            ("bool".to_string(), Parameter::Bool(true)),
+            ("int".to_string(), Parameter::Int(-7)),
+            ("double".to_string(), Parameter::Double(0.5)),
+            ("string".to_string(), Parameter::String("hello".to_string())),
+        ]);
+        let proto = Parameter::map_to_proto(&parameters);
+        assert_eq!(Parameter::map_from_proto(proto), parameters);
+    }
+
+    #[test]
+    fn unsupported_parameters_are_skipped() {
+        let proto = HashMap::from([
+            (
+                "uint64".to_string(),
+                InferParameter {
+                    parameter_choice: Some(ParameterChoice::Uint64Param(1)),
+                },
+            ),
+            (
+                "empty".to_string(),
+                InferParameter {
+                    parameter_choice: None,
+                },
+            ),
+        ]);
+        assert!(Parameter::map_from_proto(proto).is_empty());
+    }
 }

@@ -16,7 +16,6 @@ pub struct Config {
     pub triton_url: String,
     pub mnist_model: String,
     pub backend_model: String,
-    pub cancellable_model: String,
     pub input_name: String,
     pub output_name: String,
 }
@@ -146,12 +145,41 @@ impl Sut {
         output_names: &[&str],
         id: Option<String>,
     ) -> Result<InferResult> {
+        let options = client::InferOptions {
+            id,
+            ..Default::default()
+        };
+        self.infer_with_options(model, version, inputs, output_names, options)
+            .await
+    }
+
+    pub async fn infer_with_parameters(
+        &self,
+        model: &str,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let options = client::InferOptions {
+            parameters,
+            ..Default::default()
+        };
+        self.infer_with_options(model, None, inputs, output_names, options)
+            .await
+    }
+
+    async fn infer_with_options(
+        &self,
+        model: &str,
+        version: Option<&str>,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        options: client::InferOptions,
+    ) -> Result<InferResult> {
         let proto_inputs: Vec<client::InferInput> = inputs
             .into_iter()
             .map(|i| client::InferInput::fp32(i.name, i.shape, i.data))
             .collect();
-
-        let options = client::InferOptions { id, timeout: None };
 
         let response = self
             .inner
@@ -166,6 +194,7 @@ impl Sut {
 
         Ok(InferResult {
             id: response.id,
+            parameters: response.parameters,
             outputs: response
                 .outputs
                 .into_iter()

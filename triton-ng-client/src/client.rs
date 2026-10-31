@@ -19,7 +19,7 @@ use tonic::transport::{Channel, ClientTlsConfig};
 
 use crate::datatype::Datatype;
 use crate::error::{Error, Result};
-use crate::infer::{InferInput, InferOptions, InferResponse};
+use crate::infer::{InferInput, InferOptions, InferResponse, Parameter};
 use crate::types::{
     CudaMemoryRegion, LogSettingValue, ModelConfig, ModelIndex, ModelInfo, ModelStatistics,
     ServerInfo, SharedMemoryRegion, TensorMetadata,
@@ -328,7 +328,7 @@ impl TritonClient {
                 })
                 .collect(),
             raw_input_contents: raw_contents,
-            ..Default::default()
+            parameters: Parameter::map_to_proto(&options.parameters),
         };
 
         let r = self
