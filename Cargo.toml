@@ -25,7 +25,6 @@ app = { path = "example/app", version = "0.1.0" }
 bindgen = { version = "0.72.1" }
 byteorder = { version = "1.5.0" }
 config = { version = "0.15" }
-crossbeam = { version = "0.8.4" }
 custom-backend = { path = "example/custom-backend", version = "0.1.0" }
 dotenvy = { version = "0.15" }
 libc = { version = "0.2.177" }

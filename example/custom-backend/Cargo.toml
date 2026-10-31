@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 serde_json = { workspace = true }
+tokio = { workspace = true }
 triton-ng = { workspace = true }
 
 [lints]

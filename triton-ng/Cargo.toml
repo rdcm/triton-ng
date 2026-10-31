@@ -8,7 +8,6 @@ cuda = []
 
 [dependencies]
 byteorder = { workspace = true }
-crossbeam = { workspace = true }
 libc = { workspace = true }
 serde_json = { workspace = true }
 triton-ng-macros = { workspace = true }
