@@ -52,6 +52,21 @@ pub mod __macro_support {
 
     pub const NULL_ERROR: ErrorPtr = std::ptr::null::<c_void>();
 
+    /// Runs backend code, turning a panic into an error: unwinding across the
+    /// `extern "C"` boundary would abort the whole Triton server.
+    pub fn catch<T>(
+        f: impl FnOnce() -> Result<T, crate::error::Error>,
+    ) -> Result<T, crate::error::Error> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            Err(format!("backend panicked: {message}").into())
+        })
+    }
+
     pub fn make_internal_error(msg: &str) -> ErrorPtr {
         // Replace null bytes: CString cannot contain them.
         let sanitized = msg.replace('\0', "?");
@@ -133,6 +148,13 @@ pub mod __macro_support {
         requests_ptr: *const *mut c_void,
         request_count: u32,
     ) -> Result<(crate::model::Model, Vec<crate::request::Request>), ErrorPtr> {
+        if instance.is_null() {
+            return Err(make_internal_error("model instance is null"));
+        }
+        if request_count > 0 && requests_ptr.is_null() {
+            return Err(make_internal_error("requests array is null"));
+        }
+
         let mut model_ptr: *mut triton_ng_sys::TRITONBACKEND_Model = std::ptr::null_mut();
         let err = unsafe {
             triton_ng_sys::TRITONBACKEND_ModelInstanceModel(
@@ -144,9 +166,21 @@ pub mod __macro_support {
             return Err(err as ErrorPtr);
         }
 
+        if model_ptr.is_null() {
+            return Err(make_internal_error("model of the instance is null"));
+        }
+
         let model = crate::model::Model::from_ptr(model_ptr);
 
+        if request_count == 0 {
+            return Ok((model, Vec::new()));
+        }
+
         let raw = unsafe { std::slice::from_raw_parts(requests_ptr, request_count as usize) };
+        // Nothing is touched yet, so returning an error leaves the requests to Triton.
+        if raw.iter().any(|r| r.is_null()) {
+            return Err(make_internal_error("one of the requests is null"));
+        }
         let requests = raw
             .iter()
             .map(|&r| {

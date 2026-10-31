@@ -88,7 +88,7 @@ pub trait Backend {
 #[macro_export]
 macro_rules! call_checked {
     ($res:expr) => {
-        match $res {
+        match triton_ng::__macro_support::catch(|| $res) {
             Err(err) => triton_ng::__macro_support::make_internal_error(&err.to_string()),
             Ok(_) => triton_ng::__macro_support::NULL_ERROR,
         }
@@ -130,7 +130,7 @@ macro_rules! declare_backend {
             model: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
             let model = unsafe { triton_ng::__macro_support::model(model) };
-            let result = $class::model_finalize(&model);
+            let result = triton_ng::__macro_support::catch(|| $class::model_finalize(&model));
             triton_ng::__macro_support::clear_model_state(&model);
             triton_ng::call_checked!(result)
         }
@@ -164,7 +164,9 @@ macro_rules! declare_backend {
             } {
                 Err(err) => err,
                 Ok((model, requests)) => {
-                    let result = $class::model_instance_execute(model, &requests);
+                    let result = triton_ng::__macro_support::catch(|| {
+                        $class::model_instance_execute(model, &requests)
+                    });
                     triton_ng::__macro_support::complete_requests(&requests, result)
                 }
             }
