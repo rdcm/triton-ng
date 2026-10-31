@@ -1,8 +1,10 @@
 mod common;
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use common::dto::InferInput;
 use common::sut::{Sut, create_posix_shm, remove_posix_shm};
 
 #[tokio::test]
@@ -202,6 +204,94 @@ async fn custom_backend_answers_concurrent_requests() -> Result<()> {
     while let Some(result) = tasks.join_next().await {
         result??;
     }
+    Ok(())
+}
+
+async fn wait_and_count_cancelled(sut: &Sut, wait_ms: f32) -> Result<f32> {
+    let result = sut
+        .infer(
+            &sut.config.cancellable_model,
+            None,
+            vec![InferInput {
+                name: "WAIT_MS".to_string(),
+                shape: vec![1, 1],
+                data: vec![wait_ms],
+            }],
+            &["CANCELLED"],
+            None,
+        )
+        .await?;
+    let output = result
+        .outputs
+        .into_iter()
+        .find(|o| o.name == "CANCELLED")
+        .context("CANCELLED not found in response")?;
+    output
+        .data_f32
+        .first()
+        .copied()
+        .context("CANCELLED is empty")
+}
+
+#[tokio::test]
+async fn cancelled_request_reaches_the_backend() -> Result<()> {
+    let sut = Sut::new().await?;
+    let before = wait_and_count_cancelled(&sut, 0.0).await?;
+
+    let abandoned = tokio::time::timeout(
+        Duration::from_millis(300),
+        wait_and_count_cancelled(&sut, 10_000.0),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "the request must still be waiting when the client gives up"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if wait_and_count_cancelled(&sut, 0.0).await? > before {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the backend did not see the cancellation"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn request_that_is_not_cancelled_waits_and_is_answered() -> Result<()> {
+    let sut = Sut::new().await?;
+    let started = Instant::now();
+    wait_and_count_cancelled(&sut, 200.0).await?;
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    Ok(())
+}
+
+#[tokio::test]
+async fn waiting_batch_does_not_block_the_instance() -> Result<()> {
+    let long = tokio::spawn(async {
+        let sut = Sut::new().await?;
+        wait_and_count_cancelled(&sut, 1_500.0).await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let sut = Sut::new().await?;
+    let started = Instant::now();
+    wait_and_count_cancelled(&sut, 0.0).await?;
+    let quick = started.elapsed();
+
+    assert!(
+        !long.is_finished(),
+        "the long request must still be waiting"
+    );
+    assert!(
+        quick < Duration::from_millis(500),
+        "the quick request took {quick:?} while the only instance held a waiting batch"
+    );
+    long.await??;
     Ok(())
 }
 

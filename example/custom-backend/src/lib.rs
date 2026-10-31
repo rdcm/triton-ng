@@ -1,63 +1,65 @@
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::runtime::{Handle, Runtime};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, DataType, Error, InferenceFuture, InferenceRequest, InferenceResult, Model,
-    Request, Response, Server, log,
+    BackendHandle, Context, DataType, Error, InferenceFuture, InferenceRequest, InferenceResult,
+    Model, Request, Response, log,
 };
 
-static RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
+/// How often a waiting request checks whether it was cancelled.
+const CANCEL_POLL: Duration = Duration::from_millis(10);
 
-fn runtime() -> Result<Handle, Error> {
-    let runtime = RUNTIME.lock().map_err(|_| "runtime lock is poisoned")?;
-    let runtime = runtime.as_ref().ok_or("backend is not initialized")?;
-    Ok(runtime.handle().clone())
+enum Mode {
+    /// Forwards every request to `target` and returns its outputs.
+    Proxy { target: String, version: i64 },
+    /// Holds every request for `WAIT_MS` milliseconds or until it is cancelled,
+    /// and answers with the number of requests cancelled so far.
+    WaitForCancel,
 }
 
-struct Target {
-    server: Server,
-    model: String,
-    version: i64,
+struct State {
+    mode: Mode,
+    cancelled: AtomicU64,
 }
 
 struct MnistBackend;
 
 impl Backend for MnistBackend {
+    type State = State;
+
     fn initialize(backend: &BackendHandle) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .build()?;
-        *RUNTIME.lock().map_err(|_| "runtime lock is poisoned")? = Some(runtime);
         Ok(())
     }
 
-    fn finalize(_backend: &BackendHandle) -> Result<(), Error> {
-        // Triton finalizes the backend after every model is unloaded, and a model is not
-        // unloaded while a task holds its requests, so only finished tasks are left here.
-        if let Some(runtime) = RUNTIME
-            .lock()
-            .map_err(|_| "runtime lock is poisoned")?
-            .take()
+    fn model_initialize(model: &Model) -> Result<State, Error> {
+        let mode = match model
+            .config_parameter_or("mode", "proxy".to_string())?
+            .as_str()
         {
-            runtime.shutdown_timeout(Duration::from_secs(5));
-        }
-        Ok(())
+            "proxy" => Mode::Proxy {
+                target: model
+                    .config_parameter("target_model")?
+                    .ok_or("missing 'target_model' config parameter")?,
+                version: model.version()? as i64,
+            },
+            "wait_for_cancel" => Mode::WaitForCancel,
+            other => return Err(format!("unknown mode '{other}'").into()),
+        };
+        Ok(State {
+            mode,
+            cancelled: AtomicU64::new(0),
+        })
     }
 
-    fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
-        let target = Arc::new(Target {
-            server: model.get_server()?,
-            model: model
-                .config_parameter("target_model")?
-                .ok_or("missing 'target_model' config parameter")?,
-            version: model.version()? as i64,
-        });
-        // One task per batch: the batch Triton collected is processed as a whole, while
-        // this instance returns and accepts the next one.
-        runtime()?.spawn(async move { process_batch(requests, &target).await });
-
+    async fn model_instance_execute(
+        ctx: Context<State>,
+        requests: Vec<Request>,
+    ) -> Result<(), Error> {
+        match &ctx.state().mode {
+            Mode::Proxy { target, version } => proxy_batch(&ctx, target, *version, requests).await,
+            Mode::WaitForCancel => wait_for_cancel(ctx.state(), requests).await,
+        }
         Ok(())
     }
 }
@@ -68,10 +70,10 @@ impl Backend for MnistBackend {
 /// `mnist_onnx` takes one image per call, so every request gets its own BLS
 /// call, all of them in flight at once. A target model with a batch dimension
 /// would get the whole batch in one BLS call instead.
-async fn process_batch(requests: Vec<Request>, target: &Target) {
+async fn proxy_batch(ctx: &Context<State>, target: &str, version: i64, requests: Vec<Request>) {
     let pending: Vec<_> = requests
         .into_iter()
-        .filter_map(|request| submit(request, target))
+        .filter_map(|request| submit(ctx, target, version, request))
         .collect();
 
     for (request, output_names, inference) in pending {
@@ -87,17 +89,15 @@ async fn process_batch(requests: Vec<Request>, target: &Target) {
 }
 
 /// Submits the BLS call of `request`. On error the request is answered and dropped.
-fn submit(request: Request, target: &Target) -> Option<(Request, Vec<String>, InferenceFuture)> {
-    let prepared = request
-        .output_names()
-        .map_err(Error::from)
-        .and_then(|output_names| {
-            let inference = bls_request(&request, target, &output_names)?;
-            Ok((output_names, inference))
-        });
-    match prepared {
+fn submit(
+    ctx: &Context<State>,
+    target: &str,
+    version: i64,
+    request: Request,
+) -> Option<(Request, Vec<String>, InferenceFuture)> {
+    match bls_request(ctx, target, version, &request) {
         Ok((output_names, inference)) => {
-            let inference = target.server.infer_async(inference);
+            let inference = ctx.server().infer_async(inference);
             Some((request, output_names, inference))
         }
         Err(e) => {
@@ -108,11 +108,13 @@ fn submit(request: Request, target: &Target) -> Option<(Request, Vec<String>, In
 }
 
 fn bls_request(
+    ctx: &Context<State>,
+    target: &str,
+    version: i64,
     request: &Request,
-    target: &Target,
-    output_names: &[String],
-) -> Result<InferenceRequest, Error> {
-    let mut inference = InferenceRequest::new(&target.server, &target.model, target.version)?;
+) -> Result<(Vec<String>, InferenceRequest), Error> {
+    let output_names = request.output_names()?;
+    let mut inference = InferenceRequest::new(ctx.server(), target, version)?;
 
     for name in request.input_names()? {
         let input = request.get_input(&name)?;
@@ -120,11 +122,11 @@ fn bls_request(
         inference.add_input_with_data(&name, DataType::Fp32, &shape, input.as_bytes()?)?;
     }
 
-    for name in output_names {
+    for name in &output_names {
         inference.add_requested_output(name)?;
     }
 
-    Ok(inference)
+    Ok((output_names, inference))
 }
 
 fn respond(
@@ -139,6 +141,66 @@ fn respond(
             .create_output(name, DataType::Fp32, &output.shape)?
             .write_fp32_vec(&output.as_fp32_vec()?)?;
     }
+    response.send()?;
+    Ok(())
+}
+
+/// Holds the requests of the batch until their `WAIT_MS` runs out or they are
+/// cancelled. A cancelled request gets the CANCELLED status, the others get
+/// the number of requests cancelled so far.
+async fn wait_for_cancel(state: &State, requests: Vec<Request>) {
+    let started = Instant::now();
+    let mut waiting: Vec<(Request, Instant)> = requests
+        .into_iter()
+        .filter_map(|request| match wait_ms(&request) {
+            Ok(wait) => Some((request, started + wait)),
+            Err(e) => {
+                respond_error(request, &e.to_string());
+                None
+            }
+        })
+        .collect();
+
+    while !waiting.is_empty() {
+        let mut still_waiting = Vec::with_capacity(waiting.len());
+        for (request, deadline) in waiting {
+            match request.is_cancelled() {
+                Ok(true) => {
+                    state.cancelled.fetch_add(1, Ordering::SeqCst);
+                    if let Err(e) = request.respond_cancelled() {
+                        log::error(&format!("failed to send cancelled response: {e}"));
+                    }
+                }
+                Ok(false) if Instant::now() >= deadline => {
+                    let cancelled = state.cancelled.load(Ordering::SeqCst);
+                    if let Err(e) = respond_cancelled_count(request, cancelled) {
+                        log::error(&format!("failed to send response: {e}"));
+                    }
+                }
+                Ok(false) => still_waiting.push((request, deadline)),
+                Err(e) => respond_error(request, &e.to_string()),
+            }
+        }
+        waiting = still_waiting;
+        if !waiting.is_empty() {
+            tokio::time::sleep(CANCEL_POLL).await;
+        }
+    }
+}
+
+fn wait_ms(request: &Request) -> Result<Duration, Error> {
+    let values = request.get_input("WAIT_MS")?.as_fp32_vec()?;
+    let [wait] = values[..] else {
+        return Err(format!("WAIT_MS must hold one value, got {}", values.len()).into());
+    };
+    Ok(Duration::from_millis(wait.max(0.0) as u64))
+}
+
+fn respond_cancelled_count(request: Request, cancelled: u64) -> Result<(), Error> {
+    let mut response = Response::new(request)?;
+    response
+        .create_output("CANCELLED", DataType::Fp32, &[1, 1])?
+        .write_fp32_vec(&[cancelled as f32])?;
     response.send()?;
     Ok(())
 }

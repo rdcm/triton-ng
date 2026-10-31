@@ -187,30 +187,20 @@ impl Future for InferenceFuture {
 }
 
 /// The Triton server the backend runs in, used for BLS: inference of other
-/// models from a backend.
+/// models from a backend. Batches get it from [`crate::Context::server`].
 ///
-/// `Server` is `Send + Sync + Clone`: a task on another thread can keep its
-/// own copy and run BLS without the [`crate::Model`] it came from. The server
-/// stays valid while any model is loaded, and a model stays loaded while the
-/// backend holds any of its [`crate::Request`]s, so keep the request until the
-/// task is done. [`crate::Model`] itself does not leave the calling thread:
-/// put the shared part of the model state in an `Arc` to use it from a task.
+/// `Server` is `Send + Sync + Clone`. The server stays valid while any model
+/// is loaded, and a model stays loaded while any of its [`crate::Request`]s
+/// is alive.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
-///     let server = model.get_server()?;
-///     let state = Arc::clone(model.state::<Arc<State>>()?);
-///
-///     // One task for the whole batch Triton collected, never one per request.
-///     runtime().spawn(async move {
-///         let mut inference = InferenceRequest::new(&server, &state.target, -1)?;
-///         // ... add the inputs of all `requests` as one batch ...
-///         let result = server.infer_async(inference).await?;
-///         // ... answer every request from its rows of `result` ...
-///         Ok::<_, Error>(())
-///     });
+/// async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
+///     let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
+///     // ... add the inputs of all `requests` as one batch ...
+///     let result = ctx.server().infer_async(inference).await?;
+///     // ... answer every request from its rows of `result` ...
 ///     Ok(())
 /// }
 /// ```

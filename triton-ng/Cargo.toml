@@ -10,6 +10,8 @@ cuda = []
 byteorder = { workspace = true }
 libc = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 triton-ng-macros = { workspace = true }
 triton-ng-sys = { workspace = true }
 

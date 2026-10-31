@@ -1,10 +1,44 @@
 use crate::backend_handle::BackendHandle;
 use crate::error::Error;
+use crate::executor::Context;
 use crate::model::Model;
 use crate::model_instance::ModelInstance;
 use crate::request::Request;
+use std::future::Future;
 
+/// A custom Triton backend, registered with [`crate::declare_backend!`].
+///
+/// # Examples
+///
+/// ```ignore
+/// struct State {
+///     encoder: String,
+/// }
+///
+/// struct MyBackend;
+///
+/// impl Backend for MyBackend {
+///     type State = State;
+///
+///     fn model_initialize(model: &Model) -> Result<State, Error> {
+///         Ok(State { encoder: model.config_parameter_or("encoder", "encoder".to_string())? })
+///     }
+///
+///     async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
+///         let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
+///         // ... add the inputs of all `requests` as one batch ...
+///         let result = ctx.server().infer_async(inference).await?;
+///         // ... answer every request from its rows of `result` ...
+///         Ok(())
+///     }
+/// }
+///
+/// triton_ng::declare_backend!(MyBackend);
+/// ```
 pub trait Backend {
+    /// State shared by all instances of a model, see [`Backend::model_initialize`].
+    type State: Send + Sync + 'static;
+
     /// Initialize a backend. This function is optional, a backend is not
     /// required to implement it. This function is called once when a
     /// backend is loaded to allow the backend to initialize any state
@@ -27,20 +61,19 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Initialize for a model. This function is optional, a backend is not
-    /// required to implement it. This function is called once when a model
-    /// that uses the backend is loaded, before any of its instances is
-    /// created. Use [`Model::set_state`] to keep state shared by all
-    /// instances of the model (tokenizers, vocabularies, parsed parameters).
+    /// Initialize for a model. This function is called once when a model that
+    /// uses the backend is loaded, before any of its instances is created. The
+    /// returned state (tokenizers, vocabularies, parsed parameters) is shared
+    /// by all instances of the model and reaches every batch through
+    /// [`Context::state`].
     ///
     /// Corresponds to TRITONBACKEND_ModelInitialize.
-    fn model_initialize(_model: &Model) -> Result<(), Error> {
-        Ok(())
-    }
+    fn model_initialize(model: &Model) -> Result<Self::State, Error>;
 
     /// Finalize for a model. This function is optional, a backend is not
-    /// required to implement it. The state stored with [`Model::set_state`]
-    /// is dropped automatically right after this function returns.
+    /// required to implement it. The state returned by
+    /// [`Backend::model_initialize`] is dropped right after this function
+    /// returns, once no batch holds it.
     ///
     /// Corresponds to TRITONBACKEND_ModelFinalize.
     fn model_finalize(_model: &Model) -> Result<(), Error> {
@@ -52,6 +85,11 @@ pub trait Backend {
     /// once when a model instance is created to allow the backend to
     /// initialize any state associated with the instance.
     ///
+    /// Every instance gets its own runtime for its batches, configured by
+    /// the model parameters `worker_threads` (threads of the runtime, 1 by
+    /// default) and `max_batches_in_flight` (see
+    /// [`Backend::model_instance_execute`]).
+    ///
     /// Corresponds to TRITONBACKEND_ModelInstanceInitialize.
     fn model_instance_initialize(_instance: &ModelInstance) -> Result<(), Error> {
         Ok(())
@@ -60,45 +98,36 @@ pub trait Backend {
     /// Finalize for a model instance. This function is optional, a
     /// backend is not required to implement it. This function is called
     /// once for an instance, just before the corresponding model is
-    /// unloaded from Triton. All state associated with the instance
-    /// should be freed and any threads created for the instance should be
-    /// exited/joined before returning from this function.
+    /// unloaded from Triton, after every batch of the instance has finished
+    /// and its runtime has stopped.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceFinalize.
     fn model_instance_finalize(_instance: &ModelInstance) -> Result<(), Error> {
         Ok(())
     }
 
-    /// Execute a batch of one or more requests on a model instance. This
-    /// function is required. Triton will not perform multiple
-    /// simultaneous calls to this function for a given model 'instance';
-    /// however, there may be simultaneous calls for different model
-    /// instances (for the same or different models).
+    /// Processes a batch of requests collected by Triton. The future runs on
+    /// the runtime of the instance, `.await` on a BLS call frees its thread
+    /// for the other batches of the instance. Triton gives the instance its
+    /// next batch as soon as this batch is handed to the runtime, so an
+    /// instance works on several batches at once; with the model parameter
+    /// `max_batches_in_flight` the instance takes the next batch only when one
+    /// of them has finished, and Triton keeps the requests in its queue.
     ///
-    /// The backend owns `requests`. A request can be answered right away or
-    /// kept and answered after this function returns, from any thread, see
-    /// [`Request`]. A request dropped without a response, including when this
-    /// function returns an error or panics, gets a generic error response. The
-    /// returned error is only logged: answer requests with
+    /// Process the batch as a whole and send it downstream as batched BLS
+    /// calls: splitting it into tasks per request loses Triton's batching.
+    ///
+    /// The backend owns `requests` and must give every one exactly one final
+    /// response, see [`Request`]. A request dropped without a response, also
+    /// when the future returns an error or panics, gets a generic error
+    /// response. The returned error is only logged: answer requests with
     /// [`Request::respond_error`] to give clients the reason.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceExecute.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
-    ///     for request in requests {
-    ///         let mut response = Response::new(request)?;
-    ///         response
-    ///             .create_output("OUTPUT", DataType::Int64, &[1])?
-    ///             .write_i64_vec(&[42])?;
-    ///         response.send()?;
-    ///     }
-    ///     Ok(())
-    /// }
-    /// ```
-    fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error>;
+    fn model_instance_execute(
+        ctx: Context<Self::State>,
+        requests: Vec<Request>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'static;
 }
 
 #[macro_export]
@@ -136,9 +165,9 @@ macro_rules! declare_backend {
         extern "C" fn TRITONBACKEND_ModelInitialize(
             model: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_initialize(&unsafe {
-                triton_ng::__macro_support::model(model)
-            }))
+            triton_ng::call_checked!(unsafe {
+                triton_ng::__macro_support::model_initialize::<$class>(model)
+            })
         }
 
         #[unsafe(no_mangle)]
@@ -155,18 +184,20 @@ macro_rules! declare_backend {
         extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
             instance: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_instance_initialize(&unsafe {
-                triton_ng::__macro_support::model_instance(instance)
-            }))
+            let instance = unsafe { triton_ng::__macro_support::model_instance(instance) };
+            triton_ng::call_checked!(
+                $class::model_instance_initialize(&instance)
+                    .and_then(|()| triton_ng::__macro_support::start_executor(&instance))
+            )
         }
 
         #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInstanceFinalize(
             instance: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_instance_finalize(&unsafe {
-                triton_ng::__macro_support::model_instance(instance)
-            }))
+            let instance = unsafe { triton_ng::__macro_support::model_instance(instance) };
+            triton_ng::__macro_support::stop_executor(&instance);
+            triton_ng::call_checked!($class::model_instance_finalize(&instance))
         }
 
         #[unsafe(no_mangle)]
@@ -175,15 +206,8 @@ macro_rules! declare_backend {
             requests: *const *mut std::ffi::c_void,
             request_count: u32,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            match unsafe {
-                triton_ng::__macro_support::model_and_requests(instance, requests, request_count)
-            } {
-                Err(err) => err,
-                Ok((model, requests)) => {
-                    triton_ng::__macro_support::execute_result(triton_ng::__macro_support::catch(
-                        || $class::model_instance_execute(model, requests),
-                    ))
-                }
+            unsafe {
+                triton_ng::__macro_support::execute::<$class>(instance, requests, request_count)
             }
         }
     };

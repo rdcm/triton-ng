@@ -21,6 +21,7 @@ services:
       --model-control-mode=explicit
       --load-model=mnist
       --load-model=mnist_onnx
+      --load-model=cancellable
     volumes:
       - ./models:/models
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so

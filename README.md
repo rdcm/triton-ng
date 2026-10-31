@@ -22,66 +22,62 @@ Provides two things:
 ## Writing a custom backend
 
 Implement the `Backend` trait and register it with `declare_backend!`. `model_instance_execute`
-spawns one task for the batch Triton collected and returns, the task sends the whole batch to the
-downstream model in one BLS call with `Server::infer_async`:
+is an `async fn` that gets the whole batch Triton collected; triton-ng runs it on the runtime of the
+model instance, and `.await` on a BLS call lets the instance work on its other batches:
 
 ```rust
-use std::sync::OnceLock;
-use tokio::runtime::Runtime;
 use triton_ng::backend::Backend;
-use triton_ng::{BackendHandle, DataType, Error, InferenceRequest, Model, Request, Response, Server, log};
+use triton_ng::{Context, DataType, Error, InferenceRequest, Model, Request, Response, log};
 
 const DIM: usize = 16;
 
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+struct State {
+    encoder: String,
+}
 
 struct MyBackend;
 
 impl Backend for MyBackend {
-    fn initialize(_backend: &BackendHandle) -> Result<(), Error> {
-        RUNTIME.set(Runtime::new()?).map_err(|_| "runtime is already started")?;
-        Ok(())
+    type State = State;
+
+    fn model_initialize(model: &Model) -> Result<State, Error> {
+        Ok(State {
+            encoder: model.config_parameter_or("encoder", "encoder".to_string())?,
+        })
     }
 
-    fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
-        let server = model.get_server()?;
-        let runtime = RUNTIME.get().ok_or("runtime is not started")?;
-        // One task per batch: the instance takes the next batch while this one waits for BLS.
-        runtime.spawn(process(server, requests));
-        Ok(())
-    }
-}
-
-async fn process(server: Server, requests: Vec<Request>) {
-    let mut batch = Vec::with_capacity(requests.len());
-    let mut input = Vec::with_capacity(requests.len() * DIM);
-    for request in requests {
-        match read_input(&request) {
-            Ok(values) => {
-                input.extend(values);
-                batch.push(request);
+    async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
+        let mut batch = Vec::with_capacity(requests.len());
+        let mut input = Vec::with_capacity(requests.len() * DIM);
+        for request in requests {
+            match read_input(&request) {
+                Ok(values) => {
+                    input.extend(values);
+                    batch.push(request);
+                }
+                Err(e) => respond_error(request, &e.to_string()),
             }
-            Err(e) => respond_error(request, &e.to_string()),
         }
-    }
-    if batch.is_empty() {
-        return;
-    }
+        if batch.is_empty() {
+            return Ok(());
+        }
 
-    match encode(&server, &input, batch.len()).await {
-        Ok(output) => {
-            for (request, row) in batch.into_iter().zip(output.chunks_exact(DIM)) {
-                if let Err(e) = respond(request, row) {
-                    log::error(&format!("failed to send response: {e}"));
+        match encode(&ctx, &input, batch.len()).await {
+            Ok(output) => {
+                for (request, row) in batch.into_iter().zip(output.chunks_exact(DIM)) {
+                    if let Err(e) = respond(request, row) {
+                        log::error(&format!("failed to send response: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                let message = e.to_string();
+                for request in batch {
+                    respond_error(request, &message);
                 }
             }
         }
-        Err(e) => {
-            let message = e.to_string();
-            for request in batch {
-                respond_error(request, &message);
-            }
-        }
+        Ok(())
     }
 }
 
@@ -93,14 +89,14 @@ fn read_input(request: &Request) -> Result<Vec<f32>, Error> {
     Ok(values)
 }
 
-/// Runs the downstream model on the rows of the whole batch.
-async fn encode(server: &Server, input: &[f32], rows: usize) -> Result<Vec<f32>, Error> {
-    let mut inference = InferenceRequest::new(server, "encoder", -1)?;
+/// Runs the downstream model on the rows of the whole batch in one BLS call.
+async fn encode(ctx: &Context<State>, input: &[f32], rows: usize) -> Result<Vec<f32>, Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
     let bytes = input.iter().flat_map(|v| v.to_le_bytes()).collect();
     inference.add_input_with_data("INPUT", DataType::Fp32, &[rows as i64, DIM as i64], bytes)?;
     inference.add_requested_output("OUTPUT")?;
 
-    let result = server.infer_async(inference).await?;
+    let result = ctx.server().infer_async(inference).await?;
     result.output("OUTPUT")?.as_fp32_vec()
 }
 
@@ -130,12 +126,12 @@ Build as a `cdylib`:
 crate-type = ["cdylib"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread"] }
 triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 ```
 
-See [Execution model and thread safety](docs/README.md) for request ownership, BLS futures,
-threads, lifetimes, cancellation, shutdown and batching.
+See [Execution model and thread safety](docs/README.md) for instances and their runtimes, the
+`worker_threads` and `max_batches_in_flight` parameters, request ownership, BLS futures, threads,
+cancellation, shutdown and batching.
 
 ## Using the gRPC client
 

@@ -4,6 +4,8 @@ pub mod backend;
 pub mod backend_handle;
 #[path = "error.rs"]
 pub mod error;
+#[path = "executor.rs"]
+pub mod executor;
 #[path = "inference_request.rs"]
 pub mod inference_request;
 #[path = "inference_response.rs"]
@@ -30,6 +32,7 @@ pub(crate) mod utils;
 pub use backend::*;
 pub use backend_handle::*;
 pub use error::*;
+pub use executor::Context;
 pub use inference_request::*;
 pub use inference_response::*;
 pub use model::*;
@@ -99,15 +102,90 @@ pub mod __macro_support {
         }
     }
 
-    /// Logs the result of `model_instance_execute`. Called from `declare_backend!`.
-    ///
-    /// Always reports success to Triton: the requests are owned by the backend
-    /// from the start of the call, returning an error would make Triton respond
-    /// to (and release) them a second time.
-    pub fn execute_result(result: Result<(), crate::error::Error>) -> ErrorPtr {
-        if let Err(e) = result {
-            crate::log::error(&format!("model instance execute failed: {e}"));
+    /// Runs `Backend::model_initialize` and stores its state. Called from `declare_backend!`.
+    pub unsafe fn model_initialize<B: crate::backend::Backend>(
+        model: *mut c_void,
+    ) -> Result<(), crate::error::Error> {
+        let model = unsafe { self::model(model) };
+        let state = catch(|| B::model_initialize(&model))?;
+        model.set_state(std::sync::Arc::new(state))?;
+        Ok(())
+    }
+
+    /// Starts the runtime of a model instance. Called from `declare_backend!`.
+    pub fn start_executor(
+        instance: &crate::model_instance::ModelInstance,
+    ) -> Result<(), crate::error::Error> {
+        catch(|| {
+            let model = instance.model()?;
+            let thread_name = format!("{}-{}", model.name()?, instance.name()?);
+            let executor = crate::executor::InstanceExecutor::new(&model, thread_name)?;
+            instance.set_executor(executor)?;
+            Ok(())
+        })
+    }
+
+    /// Waits for the batches of a model instance and stops its runtime.
+    /// Called from `declare_backend!`.
+    pub fn stop_executor(instance: &crate::model_instance::ModelInstance) {
+        match catch(|| Ok(instance.take_executor()?)) {
+            Ok(Some(executor)) => {
+                if let Err(e) = catch(|| {
+                    executor.shutdown();
+                    Ok(())
+                }) {
+                    crate::log::error(&format!("failed to stop model instance runtime: {e}"));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => crate::log::error(&format!("failed to take model instance runtime: {e}")),
         }
+    }
+
+    /// Hands a batch over to the runtime of its instance. Called from `declare_backend!`.
+    ///
+    /// Always reports success to Triton once the requests are wrapped: they are
+    /// owned by the backend from then on, returning an error would make Triton
+    /// respond to (and release) them a second time.
+    pub unsafe fn execute<B: crate::backend::Backend>(
+        instance: *mut c_void,
+        requests_ptr: *const *mut c_void,
+        request_count: u32,
+    ) -> ErrorPtr {
+        let (model, requests) =
+            match unsafe { model_and_requests(instance, requests_ptr, request_count) } {
+                Ok(parts) => parts,
+                Err(err) => return err,
+            };
+        let instance = unsafe { model_instance(instance) };
+
+        let prepared = catch(|| {
+            let executor = instance.executor()?;
+            let ctx = crate::executor::context::<B::State>(&model, instance.device_id()?)?;
+            Ok((executor, ctx))
+        });
+
+        match prepared {
+            Ok((executor, ctx)) => {
+                let result = catch(|| {
+                    executor.spawn(B::model_instance_execute(ctx, requests));
+                    Ok(())
+                });
+                if let Err(e) = result {
+                    crate::log::error(&format!("failed to start the batch: {e}"));
+                }
+            }
+            Err(e) => {
+                let message = e.to_string();
+                crate::log::error(&format!("model instance execute failed: {message}"));
+                for request in requests {
+                    if let Err(e) = request.respond_error(&message) {
+                        crate::log::error(&format!("failed to send error response: {e}"));
+                    }
+                }
+            }
+        }
+
         NULL_ERROR
     }
 

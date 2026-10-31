@@ -1,9 +1,26 @@
 use crate::error::TritonError;
+use crate::executor::InstanceExecutor;
+use crate::model::Model;
 use crate::types::InstanceKind;
 use crate::utils::cstr_to_string;
 use libc::c_char;
+use std::ffi::c_void;
+use std::ptr;
 use triton_ng_macros::triton_call;
 
+/// A model instance: Triton runs one per `instance_group` entry and device.
+///
+/// Every instance has its own runtime that runs the batches given to it, see
+/// [`crate::Backend::model_instance_execute`].
+///
+/// # Examples
+///
+/// ```ignore
+/// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+///     log::info(&format!("instance {} on device {}", instance.name()?, instance.device_id()?));
+///     Ok(())
+/// }
+/// ```
 pub struct ModelInstance {
     ptr: *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
 }
@@ -36,5 +53,70 @@ impl ModelInstance {
             self.ptr, &mut kind
         ))?;
         Ok(InstanceKind::from_sys(kind))
+    }
+
+    /// The model this instance belongs to.
+    pub fn model(&self) -> Result<Model, TritonError> {
+        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceModel(
+            self.ptr,
+            &mut _
+        ))?;
+        Ok(Model::from_ptr(ptr))
+    }
+
+    /// Stores the executor of this instance. Fails if one is already stored:
+    /// replacing it would free it under the references returned by
+    /// [`ModelInstance::executor`].
+    pub(crate) fn set_executor(&self, executor: InstanceExecutor) -> Result<(), TritonError> {
+        if !self.raw_state()?.is_null() {
+            return Err(TritonError::from_message(
+                "model instance executor is already set",
+            ));
+        }
+        let state_ptr = Box::into_raw(Box::new(executor)) as *mut c_void;
+        if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceSetState(
+            self.ptr, state_ptr
+        )) {
+            unsafe { drop(Box::from_raw(state_ptr as *mut InstanceExecutor)) };
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn executor(&self) -> Result<&InstanceExecutor, TritonError> {
+        let state_ptr = self.raw_state()?;
+        if state_ptr.is_null() {
+            return Err(TritonError::from_message(
+                "model instance executor is not initialized",
+            ));
+        }
+        // SAFETY: the pointer was produced by `set_executor` from a
+        // `Box<InstanceExecutor>` and stays valid until `take_executor`, which
+        // only runs on instance finalize.
+        Ok(unsafe { &*(state_ptr as *const InstanceExecutor) })
+    }
+
+    /// Removes the executor of this instance, if any, and hands it over.
+    pub(crate) fn take_executor(&self) -> Result<Option<InstanceExecutor>, TritonError> {
+        let state_ptr = self.raw_state()?;
+        if state_ptr.is_null() {
+            return Ok(None);
+        }
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceSetState(
+            self.ptr,
+            ptr::null_mut()
+        ))?;
+        Ok(Some(*unsafe {
+            Box::from_raw(state_ptr as *mut InstanceExecutor)
+        }))
+    }
+
+    fn raw_state(&self) -> Result<*mut c_void, TritonError> {
+        let mut state_ptr: *mut c_void = ptr::null_mut();
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceState(
+            self.ptr,
+            &mut state_ptr
+        ))?;
+        Ok(state_ptr)
     }
 }

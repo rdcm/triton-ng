@@ -1,0 +1,40 @@
+name: "cancellable"
+backend: "custom_backend"
+max_batch_size: 8
+
+dynamic_batching {
+  max_queue_delay_microseconds: 1000
+}
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+  }
+]
+
+input [
+  {
+    name: "WAIT_MS"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }
+]
+
+output [
+  {
+    name: "CANCELLED"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }
+]
+
+parameters: {
+  key: "mode"
+  value: { string_value: "wait_for_cancel" }
+}
+
+parameters: {
+  key: "worker_threads"
+  value: { string_value: "2" }
+}

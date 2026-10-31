@@ -23,13 +23,11 @@ impl Model {
         Self { ptr }
     }
 
-    /// Stores backend-defined state for this model.
-    ///
-    /// Call it once, from `Backend::model_initialize`; the state is shared by
-    /// all instances of the model and dropped when the model is finalized. A
-    /// second call fails: replacing the state would free it under the
-    /// references returned by [`Model::state`].
-    pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
+    /// Stores the state returned by `Backend::model_initialize`, shared by all
+    /// instances of the model and dropped when the model is finalized. A second
+    /// call fails: replacing the state would free it under the references
+    /// returned by [`Model::state`].
+    pub(crate) fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
         if !self.raw_state()?.is_null() {
             return Err(TritonError::from_message("model state is already set"));
         }
@@ -48,7 +46,7 @@ impl Model {
     }
 
     /// Returns the state previously stored with [`Model::set_state`].
-    pub fn state<T: Any>(&self) -> Result<&T, Error> {
+    pub(crate) fn state<T: Any>(&self) -> Result<&T, Error> {
         let state_ptr = self.raw_state()?;
         if state_ptr.is_null() {
             return Err("model state is not initialized".into());
