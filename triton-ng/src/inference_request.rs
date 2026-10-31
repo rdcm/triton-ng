@@ -13,6 +13,11 @@ pub struct InferenceRequest {
     buffers: Vec<Vec<u8>>,
 }
 
+// SAFETY: Triton lets a request be built and submitted from any thread, it is
+// only not safe to use one request from several threads at once, and
+// `InferenceRequest` is not `Sync`. The input buffers are plain Rust memory.
+unsafe impl Send for InferenceRequest {}
+
 impl InferenceRequest {
     pub fn new(server: &Server, model_name: &str, model_version: i64) -> Result<Self, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;

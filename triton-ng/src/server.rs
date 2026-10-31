@@ -186,9 +186,50 @@ impl Future for InferenceFuture {
     }
 }
 
+/// The Triton server the backend runs in, used for BLS: inference of other
+/// models from a backend.
+///
+/// `Server` is `Send + Sync + Clone`: a task on another thread can keep its
+/// own copy and run BLS without the [`crate::Model`] it came from. The server
+/// stays valid while any model is loaded, and a model stays loaded while the
+/// backend holds any of its [`crate::Request`]s, so keep the request until the
+/// task is done. [`crate::Model`] itself does not leave the calling thread:
+/// put the shared part of the model state in an `Arc` to use it from a task.
+///
+/// # Examples
+///
+/// ```ignore
+/// fn model_instance_execute(model: Model, requests: Vec<Request>) -> Result<(), Error> {
+///     let server = model.get_server()?;
+///     let state = Arc::clone(model.state::<Arc<State>>()?);
+///
+///     for request in requests {
+///         let server = server.clone();
+///         let state = Arc::clone(&state);
+///         runtime().spawn(async move {
+///             let mut inference = InferenceRequest::new(&server, &state.target, -1)?;
+///             // ... add inputs from `request` ...
+///             let result = server.infer_async(inference).await?;
+///             // ... answer `request` from `result` ...
+///             Ok::<_, Error>(())
+///         });
+///     }
+///     Ok(())
+/// }
+/// ```
+#[derive(Clone)]
 pub struct Server {
     ptr: *mut triton_ng_sys::TRITONSERVER_Server,
 }
+
+// SAFETY: the pointer is the TRITONSERVER_Server, which the frontends call
+// from many threads at once. TRITONSERVER_ServerDelete waits for in-flight
+// requests and for every model to unload before freeing it (InferenceServer::Stop),
+// and a model is not unloaded while any of its requests is alive, so the
+// pointer outlives every `Request` the backend holds. Only an expired
+// --exit-timeout-secs on shutdown breaks this, when the process is exiting.
+unsafe impl Send for Server {}
+unsafe impl Sync for Server {}
 
 impl Server {
     pub(crate) fn from_ptr(
@@ -257,6 +298,17 @@ impl Server {
 
     /// Submits inference and returns a future of its result, see
     /// [`InferenceFuture`]. Submission errors are reported by the future.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut inference = InferenceRequest::new(&server, "encoder", -1)?;
+    /// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples.len() as i64], bytes)?;
+    /// inference.add_requested_output("EMBEDDING")?;
+    ///
+    /// let result = server.infer_async(inference).await?;
+    /// let embedding = result.output("EMBEDDING")?.as_fp32_vec()?;
+    /// ```
     ///
     /// Takes ownership of `request`. The request is freed by the
     /// `inference_request_release` callback, which Triton calls only *after* the
@@ -461,9 +513,12 @@ mod tests {
     }
 
     #[test]
-    fn future_is_send_and_static() {
+    fn handles_can_move_to_tasks() {
         fn assert_send<T: Send + 'static>() {}
+        fn assert_shared<T: Send + Sync + Clone + 'static>() {}
         assert_send::<InferenceFuture>();
+        assert_send::<crate::InferenceRequest>();
+        assert_shared::<super::Server>();
     }
 
     #[test]
