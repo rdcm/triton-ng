@@ -21,97 +21,37 @@ Provides two things:
 
 ## Writing a custom backend
 
-Implement the `Backend` trait and register it with `declare_backend!`. `model_instance_execute`
-is an `async fn` that gets the whole batch Triton collected; triton-ng runs it on the runtime of the
-model instance, and `.await` on a BLS call lets the instance work on its other batches:
+Implement the `Backend` trait and register it with `declare_backend!`:
 
 ```rust
 use triton_ng::backend::Backend;
-use triton_ng::{Context, DataType, Error, InferenceRequest, Model, Request, Response, log};
-
-const DIM: usize = 16;
-
-struct State {
-    encoder: String,
-}
+use triton_ng::{Context, DataType, Error, InferenceRequest, Model, Request, Response};
 
 struct MyBackend;
 
 impl Backend for MyBackend {
-    type State = State;
+    type State = ();
 
-    fn model_initialize(model: &Model) -> Result<State, Error> {
-        Ok(State {
-            encoder: model.config_parameter_or("encoder", "encoder".to_string())?,
-        })
-    }
-
-    async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
-        let mut batch = Vec::with_capacity(requests.len());
-        let mut input = Vec::with_capacity(requests.len() * DIM);
-        for request in requests {
-            match read_input(&request) {
-                Ok(values) => {
-                    input.extend(values);
-                    batch.push(request);
-                }
-                Err(e) => respond_error(request, &e.to_string()),
-            }
-        }
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        match encode(&ctx, &input, batch.len()).await {
-            Ok(output) => {
-                for (request, row) in batch.into_iter().zip(output.chunks_exact(DIM)) {
-                    if let Err(e) = respond(request, row) {
-                        log::error(&format!("failed to send response: {e}"));
-                    }
-                }
-            }
-            Err(e) => {
-                let message = e.to_string();
-                for request in batch {
-                    respond_error(request, &message);
-                }
-            }
-        }
+    fn model_initialize(_model: &Model) -> Result<(), Error> {
         Ok(())
     }
-}
 
-fn read_input(request: &Request) -> Result<Vec<f32>, Error> {
-    let values = request.get_input("INPUT")?.as_fp32_vec()?;
-    if values.len() != DIM {
-        return Err(format!("INPUT must hold {DIM} values, got {}", values.len()).into());
-    }
-    Ok(values)
-}
+    async fn model_instance_execute(ctx: Context<()>, requests: Vec<Request>) -> Result<(), Error> {
+        for request in requests {
+            let data = request.get_input("INPUT")?.as_bytes()?;
 
-/// Runs the downstream model on the rows of the whole batch in one BLS call.
-async fn encode(ctx: &Context<State>, input: &[f32], rows: usize) -> Result<Vec<f32>, Error> {
-    let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
-    let bytes = input.iter().flat_map(|v| v.to_le_bytes()).collect();
-    inference.add_input_with_data("INPUT", DataType::Fp32, &[rows as i64, DIM as i64], bytes)?;
-    inference.add_requested_output("OUTPUT")?;
+            let mut inference = InferenceRequest::new(ctx.server(), "my_model", -1)?;
+            inference.add_input_with_data("INPUT", DataType::Fp32, &[1, 10], data)?;
+            inference.add_requested_output("OUTPUT")?;
+            let result = ctx.server().infer_async(inference).await?;
 
-    let result = ctx.server().infer_async(inference).await?;
-    result.output("OUTPUT")?.as_fp32_vec()
-}
-
-fn respond(request: Request, row: &[f32]) -> Result<(), Error> {
-    let mut response = Response::new(request)?;
-    response
-        .create_output("OUTPUT", DataType::Fp32, &[1, DIM as i64])?
-        .write_fp32_vec(row)?;
-    response.send()?;
-    Ok(())
-}
-
-fn respond_error(request: Request, message: &str) {
-    if let Err(e) = request.respond_error(message) {
-        log::error(&format!("failed to send error response: {e}"));
+            let mut response = Response::new(request)?;
+            response
+                .create_output("OUTPUT", DataType::Fp32, &[1, 10])?
+                .write_fp32_vec(&result.output("OUTPUT")?.as_fp32_vec()?)?;
+            response.send()?;
+        }
+        Ok(())
     }
 }
 
