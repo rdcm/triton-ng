@@ -6,7 +6,7 @@ use crate::model_instance::ModelInstance;
 use crate::request::Request;
 use std::future::Future;
 
-/// A custom Triton backend, registered with [`crate::declare_backend!`].
+/// A custom Triton backend, registered with [`crate::backend`].
 ///
 /// # Examples
 ///
@@ -17,6 +17,7 @@ use std::future::Future;
 ///
 /// struct MyBackend;
 ///
+/// #[triton_ng::backend]
 /// impl Backend for MyBackend {
 ///     fn model_initialize(model: &Model) -> Result<(), Error> {
 ///         let encoder = model.config_parameter_or("encoder", "encoder".to_string())?;
@@ -33,8 +34,6 @@ use std::future::Future;
 ///         Ok(())
 ///     }
 /// }
-///
-/// triton_ng::declare_backend!(MyBackend);
 /// ```
 pub trait Backend {
     /// Initialize a backend. This function is optional, a backend is not
@@ -128,87 +127,4 @@ pub trait Backend {
         ctx: Context,
         requests: Vec<Request>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'static;
-}
-
-#[macro_export]
-macro_rules! call_checked {
-    ($res:expr) => {
-        match triton_ng::__macro_support::catch(|| $res) {
-            Err(err) => triton_ng::__macro_support::make_internal_error(&err.to_string()),
-            Ok(_) => triton_ng::__macro_support::NULL_ERROR,
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! declare_backend {
-    ($class:ident) => {
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_Initialize(
-            backend: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::initialize(&unsafe {
-                triton_ng::__macro_support::backend_handle(backend)
-            }))
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_Finalize(
-            backend: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::finalize(&unsafe {
-                triton_ng::__macro_support::backend_handle(backend)
-            }))
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_ModelInitialize(
-            model: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!($class::model_initialize(&unsafe {
-                triton_ng::__macro_support::model(model)
-            }))
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_ModelFinalize(
-            model: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            let model = unsafe { triton_ng::__macro_support::model(model) };
-            let result = triton_ng::__macro_support::catch(|| $class::model_finalize(&model));
-            triton_ng::__macro_support::clear_model_state(&model);
-            triton_ng::call_checked!(result)
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
-            instance: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            let instance = unsafe { triton_ng::__macro_support::model_instance(instance) };
-            triton_ng::call_checked!(
-                $class::model_instance_initialize(&instance)
-                    .and_then(|()| triton_ng::__macro_support::start_executor(&instance))
-            )
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_ModelInstanceFinalize(
-            instance: *mut std::ffi::c_void,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            let instance = unsafe { triton_ng::__macro_support::model_instance(instance) };
-            triton_ng::__macro_support::stop_executor(&instance);
-            triton_ng::call_checked!($class::model_instance_finalize(&instance))
-        }
-
-        #[unsafe(no_mangle)]
-        extern "C" fn TRITONBACKEND_ModelInstanceExecute(
-            instance: *mut std::ffi::c_void,
-            requests: *const *mut std::ffi::c_void,
-            request_count: u32,
-        ) -> triton_ng::__macro_support::ErrorPtr {
-            unsafe {
-                triton_ng::__macro_support::execute::<$class>(instance, requests, request_count)
-            }
-        }
-    };
 }

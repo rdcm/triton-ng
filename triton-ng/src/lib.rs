@@ -43,101 +43,80 @@ pub use response_allocator::*;
 pub use server::*;
 pub use types::*;
 
-/// Support module for `declare_backend!` macro expansion in external crates.
-/// Not part of the public API.
+pub use triton_ng_macros::backend;
+
+/// Entry points called by the code that [`backend`] generates. Not part of the
+/// public API.
 #[doc(hidden)]
 pub mod __macro_support {
+    use crate::backend::Backend;
+    use crate::backend_handle::BackendHandle;
+    use crate::error::Error;
+    use crate::executor::InstanceExecutor;
+    use crate::model::Model;
+    use crate::model_instance::ModelInstance;
+    use crate::request::Request;
     use std::ffi::c_void;
 
     /// Opaque error pointer returned by Triton backend entry points.
     /// Equivalent to `*const TRITONSERVER_Error` at the ABI level.
     pub type ErrorPtr = *const c_void;
 
-    pub const NULL_ERROR: ErrorPtr = std::ptr::null::<c_void>();
+    const NULL_ERROR: ErrorPtr = std::ptr::null::<c_void>();
 
-    /// Runs backend code, turning a panic into an error: unwinding across the
-    /// `extern "C"` boundary would abort the whole Triton server.
-    pub fn catch<T>(
-        f: impl FnOnce() -> Result<T, crate::error::Error>,
-    ) -> Result<T, crate::error::Error> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown panic payload".to_string());
-            Err(format!("backend panicked: {message}").into())
-        })
+    /// TRITONBACKEND_Initialize.
+    pub unsafe fn initialize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
+        let backend = unsafe { backend_handle(backend) };
+        into_error_ptr(catch(|| B::initialize(&backend)))
     }
 
-    pub fn make_internal_error(msg: &str) -> ErrorPtr {
-        // Replace null bytes: CString cannot contain them.
-        let sanitized = msg.replace('\0', "?");
-        // SAFETY: replace('\0') guarantees no null bytes remain.
-        let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
-        unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                c_str.as_ptr(),
-            ) as ErrorPtr
-        }
+    /// TRITONBACKEND_Finalize.
+    pub unsafe fn finalize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
+        let backend = unsafe { backend_handle(backend) };
+        into_error_ptr(catch(|| B::finalize(&backend)))
     }
 
-    /// Wraps a raw backend handle pointer. Called from `declare_backend!`.
-    pub unsafe fn backend_handle(ptr: *mut c_void) -> crate::backend_handle::BackendHandle {
-        crate::backend_handle::BackendHandle::from_ptr(
-            ptr as *mut triton_ng_sys::TRITONBACKEND_Backend,
-        )
+    /// TRITONBACKEND_ModelInitialize.
+    pub unsafe fn model_initialize<B: Backend>(model: *mut c_void) -> ErrorPtr {
+        let model = unsafe { self::model(model) };
+        into_error_ptr(catch(|| B::model_initialize(&model)))
     }
 
-    /// Wraps a raw model pointer. Called from `declare_backend!`.
-    pub unsafe fn model(ptr: *mut c_void) -> crate::model::Model {
-        crate::model::Model::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Model)
-    }
-
-    /// Drops the model state on finalize. Called from `declare_backend!`.
-    pub fn clear_model_state(model: &crate::model::Model) {
+    /// TRITONBACKEND_ModelFinalize. Drops the model state after the hook.
+    pub unsafe fn model_finalize<B: Backend>(model: *mut c_void) -> ErrorPtr {
+        let model = unsafe { self::model(model) };
+        let result = catch(|| B::model_finalize(&model));
         if let Err(e) = model.clear_state() {
             crate::log::error(&format!("failed to clear model state: {e}"));
         }
+        into_error_ptr(result)
     }
 
-    /// Starts the runtime of a model instance. Called from `declare_backend!`.
-    pub fn start_executor(
-        instance: &crate::model_instance::ModelInstance,
-    ) -> Result<(), crate::error::Error> {
-        catch(|| {
-            let model = instance.model()?;
-            let thread_name = format!("{}-{}", model.name()?, instance.name()?);
-            let executor = crate::executor::InstanceExecutor::new(&model, thread_name)?;
-            instance.set_executor(executor)?;
-            Ok(())
-        })
+    /// TRITONBACKEND_ModelInstanceInitialize. Starts the runtime of the
+    /// instance after the hook.
+    pub unsafe fn model_instance_initialize<B: Backend>(instance: *mut c_void) -> ErrorPtr {
+        let instance = unsafe { model_instance(instance) };
+        into_error_ptr(catch(|| {
+            B::model_instance_initialize(&instance)?;
+            start_executor(&instance)
+        }))
     }
 
-    /// Waits for the batches of a model instance and stops its runtime.
-    /// Called from `declare_backend!`.
-    pub fn stop_executor(instance: &crate::model_instance::ModelInstance) {
-        match catch(|| Ok(instance.take_executor()?)) {
-            Ok(Some(executor)) => {
-                if let Err(e) = catch(|| {
-                    executor.shutdown();
-                    Ok(())
-                }) {
-                    crate::log::error(&format!("failed to stop model instance runtime: {e}"));
-                }
-            }
-            Ok(None) => {}
-            Err(e) => crate::log::error(&format!("failed to take model instance runtime: {e}")),
-        }
+    /// TRITONBACKEND_ModelInstanceFinalize. Waits for the batches of the
+    /// instance and stops its runtime before the hook.
+    pub unsafe fn model_instance_finalize<B: Backend>(instance: *mut c_void) -> ErrorPtr {
+        let instance = unsafe { model_instance(instance) };
+        stop_executor(&instance);
+        into_error_ptr(catch(|| B::model_instance_finalize(&instance)))
     }
 
-    /// Hands a batch over to the runtime of its instance. Called from `declare_backend!`.
+    /// TRITONBACKEND_ModelInstanceExecute. Hands the batch over to the runtime
+    /// of its instance.
     ///
     /// Always reports success to Triton once the requests are wrapped: they are
     /// owned by the backend from then on, returning an error would make Triton
     /// respond to (and release) them a second time.
-    pub unsafe fn execute<B: crate::backend::Backend>(
+    pub unsafe fn model_instance_execute<B: Backend>(
         instance: *mut c_void,
         requests_ptr: *const *mut c_void,
         request_count: u32,
@@ -179,20 +158,81 @@ pub mod __macro_support {
         NULL_ERROR
     }
 
-    /// Wraps a raw model instance pointer. Called from `declare_backend!`.
-    pub unsafe fn model_instance(ptr: *mut c_void) -> crate::model_instance::ModelInstance {
-        crate::model_instance::ModelInstance::from_ptr(
-            ptr as *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
-        )
+    /// Runs backend code, turning a panic into an error: unwinding across the
+    /// `extern "C"` boundary would abort the whole Triton server.
+    fn catch<T>(f: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            Err(format!("backend panicked: {message}").into())
+        })
+    }
+
+    fn into_error_ptr(result: Result<(), Error>) -> ErrorPtr {
+        match result {
+            Ok(()) => NULL_ERROR,
+            Err(e) => make_internal_error(&e.to_string()),
+        }
+    }
+
+    fn make_internal_error(msg: &str) -> ErrorPtr {
+        // Replace null bytes: CString cannot contain them.
+        let sanitized = msg.replace('\0', "?");
+        // SAFETY: replace('\0') guarantees no null bytes remain.
+        let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
+        unsafe {
+            triton_ng_sys::TRITONSERVER_ErrorNew(
+                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+                c_str.as_ptr(),
+            ) as ErrorPtr
+        }
+    }
+
+    unsafe fn backend_handle(ptr: *mut c_void) -> BackendHandle {
+        BackendHandle::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Backend)
+    }
+
+    unsafe fn model(ptr: *mut c_void) -> Model {
+        Model::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Model)
+    }
+
+    unsafe fn model_instance(ptr: *mut c_void) -> ModelInstance {
+        ModelInstance::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_ModelInstance)
+    }
+
+    fn start_executor(instance: &ModelInstance) -> Result<(), Error> {
+        let model = instance.model()?;
+        let thread_name = format!("{}-{}", model.name()?, instance.name()?);
+        let executor = InstanceExecutor::new(&model, thread_name)?;
+        instance.set_executor(executor)?;
+        Ok(())
+    }
+
+    fn stop_executor(instance: &ModelInstance) {
+        match catch(|| Ok(instance.take_executor()?)) {
+            Ok(Some(executor)) => {
+                if let Err(e) = catch(|| {
+                    executor.shutdown();
+                    Ok(())
+                }) {
+                    crate::log::error(&format!("failed to stop model instance runtime: {e}"));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => crate::log::error(&format!("failed to take model instance runtime: {e}")),
+        }
     }
 
     /// Extracts a `Model` and `Vec<Request>` from a `ModelInstanceExecute` call.
     /// Returns `Err(ErrorPtr)` if `TRITONBACKEND_ModelInstanceModel` fails.
-    pub unsafe fn model_and_requests(
+    unsafe fn model_and_requests(
         instance: *mut c_void,
         requests_ptr: *const *mut c_void,
         request_count: u32,
-    ) -> Result<(crate::model::Model, Vec<crate::request::Request>), ErrorPtr> {
+    ) -> Result<(Model, Vec<Request>), ErrorPtr> {
         if instance.is_null() {
             return Err(make_internal_error("model instance is null"));
         }
@@ -215,7 +255,7 @@ pub mod __macro_support {
             return Err(make_internal_error("model of the instance is null"));
         }
 
-        let model = crate::model::Model::from_ptr(model_ptr);
+        let model = Model::from_ptr(model_ptr);
 
         if request_count == 0 {
             return Ok((model, Vec::new()));
@@ -228,9 +268,7 @@ pub mod __macro_support {
         }
         let requests = raw
             .iter()
-            .map(|&r| {
-                crate::request::Request::from_ptr(r as *mut triton_ng_sys::TRITONBACKEND_Request)
-            })
+            .map(|&r| Request::from_ptr(r as *mut triton_ng_sys::TRITONBACKEND_Request))
             .collect();
 
         Ok((model, requests))

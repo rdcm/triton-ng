@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Expr, parse_macro_input, visit_mut::VisitMut};
+use syn::{Expr, ItemImpl, parse_macro_input, visit_mut::VisitMut};
 
 /// Replaces the first `&mut _` in the expression with `&mut __triton_out`.
 /// Returns whether a replacement was made.
@@ -66,4 +66,109 @@ pub fn triton_call(input: TokenStream) -> TokenStream {
         }}
         .into()
     }
+}
+
+/// Registers an `impl Backend for T` block as the Triton backend of the crate.
+///
+/// Keeps the impl as it is and exports the `TRITONBACKEND_*` entry points
+/// Triton looks up in the backend library, each one calling the matching
+/// method of `T`. A crate has one backend, so the attribute is used once per
+/// `cdylib`.
+///
+/// # Examples
+///
+/// ```ignore
+/// struct MyBackend;
+///
+/// #[triton_ng::backend]
+/// impl Backend for MyBackend {
+///     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+///         // ...
+///         Ok(())
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn backend(args: TokenStream, input: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[backend] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let item = parse_macro_input!(input as ItemImpl);
+    if item.trait_.is_none() {
+        return syn::Error::new_spanned(
+            &item.self_ty,
+            "#[backend] must be placed on `impl Backend for T`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let ty = &item.self_ty;
+
+    quote! {
+        #item
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_Initialize(
+            backend: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::initialize::<#ty>(backend) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_Finalize(
+            backend: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::finalize::<#ty>(backend) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelInitialize(
+            model: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::model_initialize::<#ty>(model) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelFinalize(
+            model: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::model_finalize::<#ty>(model) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelInstanceInitialize(
+            instance: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::model_instance_initialize::<#ty>(instance) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelInstanceFinalize(
+            instance: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::model_instance_finalize::<#ty>(instance) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelInstanceExecute(
+            instance: *mut ::std::ffi::c_void,
+            requests: *const *mut ::std::ffi::c_void,
+            request_count: u32,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe {
+                ::triton_ng::__macro_support::model_instance_execute::<#ty>(
+                    instance,
+                    requests,
+                    request_count,
+                )
+            }
+        }
+    }
+    .into()
 }

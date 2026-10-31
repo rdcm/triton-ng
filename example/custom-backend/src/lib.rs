@@ -13,6 +13,7 @@ struct State {
 
 struct MnistBackend;
 
+#[triton_ng::backend]
 impl Backend for MnistBackend {
     fn initialize(backend: &BackendHandle) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
@@ -91,5 +92,3 @@ async fn respond_when_cancelled(request: Request) -> Result<(), Error> {
     request.respond_cancelled()?;
     Ok(())
 }
-
-triton_ng::declare_backend!(MnistBackend);

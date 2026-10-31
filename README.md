@@ -19,7 +19,7 @@ Provides two things:
 
 ## Writing a custom backend
 
-Implement the `Backend` trait and register it with `declare_backend!`:
+Implement the `Backend` trait and register it with `#[triton_ng::backend]`:
 
 ```rust
 use triton_ng::backend::Backend;
@@ -27,6 +27,7 @@ use triton_ng::{Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
 
+#[triton_ng::backend]
 impl Backend for MyBackend {
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
@@ -46,8 +47,6 @@ impl Backend for MyBackend {
         Ok(())
     }
 }
-
-triton_ng::declare_backend!(MyBackend);
 ```
 
 Build as a `cdylib`:
