@@ -4,13 +4,13 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
 use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, DataType, Error, InferenceRequest, InferenceResult, Model, Request, Response,
-    Server, log,
+    BackendHandle, DataType, Error, InferenceFuture, InferenceRequest, InferenceResult, Model,
+    Request, Response, Server, log,
 };
 
-/// Requests processed at once by the backend. When all of them are busy,
-/// `model_instance_execute` waits and Triton keeps the rest in its queue.
-const MAX_IN_FLIGHT: usize = 64;
+/// Batches processed at once by the backend. When all of them are busy,
+/// `model_instance_execute` waits and Triton keeps collecting the next batch.
+const MAX_BATCHES_IN_FLIGHT: usize = 4;
 
 struct Executor {
     runtime: Runtime,
@@ -44,7 +44,7 @@ impl Backend for MnistBackend {
             .build()?;
         *EXECUTOR.lock().map_err(|_| "executor lock is poisoned")? = Some(Executor {
             runtime,
-            permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
+            permits: Arc::new(Semaphore::new(MAX_BATCHES_IN_FLIGHT)),
         });
         Ok(())
     }
@@ -60,7 +60,7 @@ impl Backend for MnistBackend {
         // Every task holds a permit until it ends, so all permits back means no task is left.
         executor
             .runtime
-            .block_on(executor.permits.acquire_many(MAX_IN_FLIGHT as u32))?
+            .block_on(executor.permits.acquire_many(MAX_BATCHES_IN_FLIGHT as u32))?
             .forget();
         executor.runtime.shutdown_timeout(Duration::from_secs(5));
         Ok(())
@@ -76,38 +76,60 @@ impl Backend for MnistBackend {
         });
         let (handle, permits) = executor()?;
 
-        for request in requests {
-            let permit = handle.block_on(Arc::clone(&permits).acquire_owned())?;
-            let target = Arc::clone(&target);
-            handle.spawn(async move {
-                process(request, &target).await;
-                drop(permit);
-            });
-        }
+        // One task per batch: the batch Triton collected is processed as a whole, while
+        // this instance returns and accepts the next one.
+        let permit = handle.block_on(Arc::clone(&permits).acquire_owned())?;
+        handle.spawn(async move {
+            process_batch(requests, &target).await;
+            drop(permit);
+        });
 
         Ok(())
     }
 }
 
-/// Answers `request` with the result of the target model, or with the error
-/// that prevented it. Other requests are not affected either way.
-async fn process(request: Request, target: &Target) {
-    let output_names = match request.output_names() {
-        Ok(names) => names,
-        Err(e) => return respond_error(request, &e.to_string()),
-    };
-    let inference = match bls_request(&request, target, &output_names) {
-        Ok(inference) => inference,
-        Err(e) => return respond_error(request, &e.to_string()),
-    };
+/// Answers every request of the batch with the result of the target model,
+/// or with the error that prevented it. Requests do not affect each other.
+///
+/// `mnist_onnx` takes one image per call, so every request gets its own BLS
+/// call, all of them in flight at once. A target model with a batch dimension
+/// would get the whole batch in one BLS call instead.
+async fn process_batch(requests: Vec<Request>, target: &Target) {
+    let pending: Vec<_> = requests
+        .into_iter()
+        .filter_map(|request| submit(request, target))
+        .collect();
 
-    match target.server.infer_async(inference).await {
-        Ok(result) => {
-            if let Err(e) = respond(request, &output_names, &result) {
-                log::error(&format!("failed to send response: {e}"));
+    for (request, output_names, inference) in pending {
+        match inference.await {
+            Ok(result) => {
+                if let Err(e) = respond(request, &output_names, &result) {
+                    log::error(&format!("failed to send response: {e}"));
+                }
             }
+            Err(e) => respond_error(request, &e.to_string()),
         }
-        Err(e) => respond_error(request, &e.to_string()),
+    }
+}
+
+/// Submits the BLS call of `request`. On error the request is answered and dropped.
+fn submit(request: Request, target: &Target) -> Option<(Request, Vec<String>, InferenceFuture)> {
+    let prepared = request
+        .output_names()
+        .map_err(Error::from)
+        .and_then(|output_names| {
+            let inference = bls_request(&request, target, &output_names)?;
+            Ok((output_names, inference))
+        });
+    match prepared {
+        Ok((output_names, inference)) => {
+            let inference = target.server.infer_async(inference);
+            Some((request, output_names, inference))
+        }
+        Err(e) => {
+            respond_error(request, &e.to_string());
+            None
+        }
     }
 }
 

@@ -16,7 +16,8 @@ async fn main() -> Result<()> {
     let meta = client.model_metadata(model, version, None).await?;
     let input = meta.inputs.first().ok_or(Error::ModelHasNoInputs)?;
     let output = meta.outputs.first().ok_or(Error::ModelHasNoOutputs)?;
-    let n_elements: usize = input.shape.iter().map(|&d| d as usize).product();
+    let shape: Vec<i64> = input.shape.iter().map(|&d| d.max(1)).collect();
+    let n_elements: usize = shape.iter().map(|&d| d as usize).product();
 
     let response = client
         .infer(
@@ -24,7 +25,7 @@ async fn main() -> Result<()> {
             version,
             [InferInput::fp32(
                 &input.name,
-                input.shape.clone(),
+                shape,
                 vec![0.0f32; n_elements],
             )],
             [output.name.as_str()],

@@ -66,7 +66,7 @@ crate-type = ["cdylib"]
 **Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>` and may
 answer the requests right away or keep them and answer later, after it returns, from any thread.
 Triton calls `model_instance_execute` again as soon as it returns, so a single model instance can
-work on many requests at once.
+work on several batches at once.
 
 **Exactly one final response.** `Response::new`, `Request::respond_error` and
 `Request::respond_cancelled` consume the request, so it cannot be answered twice. A request dropped
@@ -101,13 +101,15 @@ with `Request::respond_cancelled`.
 **Shutdown.** Triton waits for in-flight requests and model unloads before it finalizes the backend.
 Tasks that outlive their requests, and the runtime itself, must be stopped in `Backend::finalize`.
 
-**Batching.** One task per request removes batching from the backend: Triton hands requests to
-`model_instance_execute` as they arrive. When the backend gains from batching (e.g. a decode loop
-over BLS calls), keep collecting requests into batches yourself.
+**Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
+scheduler collected, and the backend should process it as a whole, sending it to the downstream
+models as batched BLS calls. Run one task per call of `model_instance_execute`, never one task per
+request: per-request tasks split the batch into single rows and every downstream call runs with
+batch size one.
 
-`example/custom-backend` runs every request as a tokio task, bounds the number of requests in
-progress with a semaphore (`model_instance_execute` waits when all permits are taken, and Triton
-queues the rest), and waits for all tasks in `finalize`.
+`example/custom-backend` runs every batch as a tokio task, bounds the number of batches in progress
+with a semaphore (`model_instance_execute` waits when all permits are taken, and Triton keeps
+collecting the next batch), and waits for all tasks in `finalize`.
 
 ## Using the gRPC client
 

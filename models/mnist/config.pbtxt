@@ -1,12 +1,16 @@
 name: "mnist"
 backend: "custom_backend"
-max_batch_size: 0
+max_batch_size: 8
+
+dynamic_batching {
+  max_queue_delay_microseconds: 1000
+}
 
 input [
   {
     name: "Input3"
     data_type: TYPE_FP32
-    dims: [ 1, 1, 28, 28 ]
+    dims: [ 1, 28, 28 ]
   }
 ]
 
@@ -14,7 +18,7 @@ output [
   {
     name: "Plus214_Output_0"
     data_type: TYPE_FP32
-    dims: [ 1, 10 ]
+    dims: [ 10 ]
   }
 ]
 

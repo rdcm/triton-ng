@@ -203,17 +203,14 @@ impl Future for InferenceFuture {
 ///     let server = model.get_server()?;
 ///     let state = Arc::clone(model.state::<Arc<State>>()?);
 ///
-///     for request in requests {
-///         let server = server.clone();
-///         let state = Arc::clone(&state);
-///         runtime().spawn(async move {
-///             let mut inference = InferenceRequest::new(&server, &state.target, -1)?;
-///             // ... add inputs from `request` ...
-///             let result = server.infer_async(inference).await?;
-///             // ... answer `request` from `result` ...
-///             Ok::<_, Error>(())
-///         });
-///     }
+///     // One task for the whole batch Triton collected, never one per request.
+///     runtime().spawn(async move {
+///         let mut inference = InferenceRequest::new(&server, &state.target, -1)?;
+///         // ... add the inputs of all `requests` as one batch ...
+///         let result = server.infer_async(inference).await?;
+///         // ... answer every request from its rows of `result` ...
+///         Ok::<_, Error>(())
+///     });
 ///     Ok(())
 /// }
 /// ```
