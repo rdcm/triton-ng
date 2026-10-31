@@ -102,16 +102,6 @@ pub mod __macro_support {
         }
     }
 
-    /// Runs `Backend::model_initialize` and stores its state. Called from `declare_backend!`.
-    pub unsafe fn model_initialize<B: crate::backend::Backend>(
-        model: *mut c_void,
-    ) -> Result<(), crate::error::Error> {
-        let model = unsafe { self::model(model) };
-        let state = catch(|| B::model_initialize(&model))?;
-        model.set_state(std::sync::Arc::new(state))?;
-        Ok(())
-    }
-
     /// Starts the runtime of a model instance. Called from `declare_backend!`.
     pub fn start_executor(
         instance: &crate::model_instance::ModelInstance,
@@ -161,7 +151,7 @@ pub mod __macro_support {
 
         let prepared = catch(|| {
             let executor = instance.executor()?;
-            let ctx = crate::executor::context::<B::State>(&model, instance.device_id()?)?;
+            let ctx = crate::executor::context(&model, instance.device_id()?)?;
             Ok((executor, ctx))
         });
 

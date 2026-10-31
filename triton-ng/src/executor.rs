@@ -1,7 +1,8 @@
 use crate::error::Error;
 use crate::log;
-use crate::model::Model;
+use crate::model::{Model, SharedState};
 use crate::server::Server;
+use std::any::Any;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +16,7 @@ const WORKER_THREADS: &str = "worker_threads";
 const MAX_BATCHES_IN_FLIGHT: &str = "max_batches_in_flight";
 
 /// What a batch task gets from its model: the server for BLS calls and the
-/// state returned by [`crate::Backend::model_initialize`].
+/// state stored with [`Model::set_state`].
 ///
 /// `Context` is `Send + Clone` and holds no Triton pointers, so it can be used
 /// across `.await` and passed to other tasks.
@@ -23,52 +24,42 @@ const MAX_BATCHES_IN_FLIGHT: &str = "max_batches_in_flight";
 /// # Examples
 ///
 /// ```ignore
-/// async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
-///     let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
+/// async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+///     let state = ctx.state::<State>()?;
+///     let mut inference = InferenceRequest::new(ctx.server(), &state.encoder, -1)?;
 ///     // ... add the inputs of all `requests` as one batch ...
 ///     let result = ctx.server().infer_async(inference).await?;
 ///     // ... answer every request from its rows of `result` ...
 ///     Ok(())
 /// }
 /// ```
-pub struct Context<S> {
+#[derive(Clone)]
+pub struct Context {
     server: Server,
-    state: Arc<S>,
+    state: Option<SharedState>,
     device_id: i32,
 }
 
-impl<S> Context<S> {
-    pub(crate) fn new(server: Server, state: Arc<S>, device_id: i32) -> Self {
-        Self {
-            server,
-            state,
-            device_id,
-        }
-    }
-
+impl Context {
     /// The server to run BLS calls on, see [`Server::infer_async`].
     pub fn server(&self) -> &Server {
         &self.server
     }
 
-    /// The state returned by [`crate::Backend::model_initialize`].
-    pub fn state(&self) -> &S {
-        &self.state
+    /// The state stored with [`Model::set_state`].
+    ///
+    /// Fails when the model has no state or it is not a `T`.
+    pub fn state<T: Any>(&self) -> Result<&T, Error> {
+        self.state
+            .as_deref()
+            .ok_or("model state is not initialized")?
+            .downcast_ref::<T>()
+            .ok_or_else(|| "model state has unexpected type".into())
     }
 
     /// Device of the instance that runs the batch (GPU id for `KIND_GPU`).
     pub fn device_id(&self) -> i32 {
         self.device_id
-    }
-}
-
-impl<S> Clone for Context<S> {
-    fn clone(&self) -> Self {
-        Self {
-            server: self.server.clone(),
-            state: Arc::clone(&self.state),
-            device_id: self.device_id,
-        }
     }
 }
 
@@ -134,10 +125,10 @@ impl InstanceExecutor {
 }
 
 /// Server of `model` and the device of the instance, as passed to batch tasks.
-pub(crate) fn context<S: Send + Sync + 'static>(
-    model: &Model,
-    device_id: i32,
-) -> Result<Context<S>, Error> {
-    let state = Arc::clone(model.state::<Arc<S>>()?);
-    Ok(Context::new(model.get_server()?, state, device_id))
+pub(crate) fn context(model: &Model, device_id: i32) -> Result<Context, Error> {
+    Ok(Context {
+        server: model.get_server()?,
+        state: model.shared_state()?,
+        device_id,
+    })
 }

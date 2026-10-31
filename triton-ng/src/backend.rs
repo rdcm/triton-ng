@@ -18,14 +18,15 @@ use std::future::Future;
 /// struct MyBackend;
 ///
 /// impl Backend for MyBackend {
-///     type State = State;
-///
-///     fn model_initialize(model: &Model) -> Result<State, Error> {
-///         Ok(State { encoder: model.config_parameter_or("encoder", "encoder".to_string())? })
+///     fn model_initialize(model: &Model) -> Result<(), Error> {
+///         let encoder = model.config_parameter_or("encoder", "encoder".to_string())?;
+///         model.set_state(State { encoder })?;
+///         Ok(())
 ///     }
 ///
-///     async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
-///         let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
+///     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+///         let state = ctx.state::<State>()?;
+///         let mut inference = InferenceRequest::new(ctx.server(), &state.encoder, -1)?;
 ///         // ... add the inputs of all `requests` as one batch ...
 ///         let result = ctx.server().infer_async(inference).await?;
 ///         // ... answer every request from its rows of `result` ...
@@ -36,9 +37,6 @@ use std::future::Future;
 /// triton_ng::declare_backend!(MyBackend);
 /// ```
 pub trait Backend {
-    /// State shared by all instances of a model, see [`Backend::model_initialize`].
-    type State: Send + Sync + 'static;
-
     /// Initialize a backend. This function is optional, a backend is not
     /// required to implement it. This function is called once when a
     /// backend is loaded to allow the backend to initialize any state
@@ -61,19 +59,21 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Initialize for a model. This function is called once when a model that
-    /// uses the backend is loaded, before any of its instances is created. The
-    /// returned state (tokenizers, vocabularies, parsed parameters) is shared
-    /// by all instances of the model and reaches every batch through
-    /// [`Context::state`].
+    /// Initialize for a model. This function is optional, a backend is not
+    /// required to implement it. This function is called once when a model
+    /// that uses the backend is loaded, before any of its instances is
+    /// created. Use [`Model::set_state`] to keep state shared by all
+    /// instances of the model (tokenizers, vocabularies, parsed parameters);
+    /// batches get it through [`Context::state`].
     ///
     /// Corresponds to TRITONBACKEND_ModelInitialize.
-    fn model_initialize(model: &Model) -> Result<Self::State, Error>;
+    fn model_initialize(_model: &Model) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Finalize for a model. This function is optional, a backend is not
-    /// required to implement it. The state returned by
-    /// [`Backend::model_initialize`] is dropped right after this function
-    /// returns, once no batch holds it.
+    /// required to implement it. The state stored with [`Model::set_state`]
+    /// is dropped right after this function returns, once no batch holds it.
     ///
     /// Corresponds to TRITONBACKEND_ModelFinalize.
     fn model_finalize(_model: &Model) -> Result<(), Error> {
@@ -125,7 +125,7 @@ pub trait Backend {
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceExecute.
     fn model_instance_execute(
-        ctx: Context<Self::State>,
+        ctx: Context,
         requests: Vec<Request>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'static;
 }
@@ -165,9 +165,9 @@ macro_rules! declare_backend {
         extern "C" fn TRITONBACKEND_ModelInitialize(
             model: *mut std::ffi::c_void,
         ) -> triton_ng::__macro_support::ErrorPtr {
-            triton_ng::call_checked!(unsafe {
-                triton_ng::__macro_support::model_initialize::<$class>(model)
-            })
+            triton_ng::call_checked!($class::model_initialize(&unsafe {
+                triton_ng::__macro_support::model(model)
+            }))
         }
 
         #[unsafe(no_mangle)]

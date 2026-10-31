@@ -196,8 +196,9 @@ impl Future for InferenceFuture {
 /// # Examples
 ///
 /// ```ignore
-/// async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
-///     let mut inference = InferenceRequest::new(ctx.server(), &ctx.state().encoder, -1)?;
+/// async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+///     let state = ctx.state::<State>()?;
+///     let mut inference = InferenceRequest::new(ctx.server(), &state.encoder, -1)?;
 ///     // ... add the inputs of all `requests` as one batch ...
 ///     let result = ctx.server().infer_async(inference).await?;
 ///     // ... answer every request from its rows of `result` ...

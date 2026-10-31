@@ -14,42 +14,39 @@ struct State {
 struct MnistBackend;
 
 impl Backend for MnistBackend {
-    type State = State;
-
     fn initialize(backend: &BackendHandle) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
         Ok(())
     }
 
-    fn model_initialize(model: &Model) -> Result<State, Error> {
-        Ok(State {
+    fn model_initialize(model: &Model) -> Result<(), Error> {
+        model.set_state(State {
             target_model: model.config_parameter("target_model")?,
             version: model.version()? as i64,
             cancelled: AtomicU64::new(0),
-        })
+        })?;
+        Ok(())
     }
 
-    async fn model_instance_execute(
-        ctx: Context<State>,
-        requests: Vec<Request>,
-    ) -> Result<(), Error> {
-        match &ctx.state().target_model {
-            Some(target_model) => proxy(&ctx, target_model, requests).await,
-            None => wait_for_cancel(ctx.state(), requests).await,
+    async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+        let state = ctx.state::<State>()?;
+        match &state.target_model {
+            Some(target_model) => proxy(&ctx, state, target_model, requests).await,
+            None => wait_for_cancel(state, requests).await,
         }
     }
 }
 
 async fn proxy(
-    ctx: &Context<State>,
+    ctx: &Context,
+    state: &State,
     target_model: &str,
     requests: Vec<Request>,
 ) -> Result<(), Error> {
     for request in requests {
         let output_names = request.output_names()?;
 
-        let mut inference_req =
-            InferenceRequest::new(ctx.server(), target_model, ctx.state().version)?;
+        let mut inference_req = InferenceRequest::new(ctx.server(), target_model, state.version)?;
         for name in request.input_names()? {
             let input = request.get_input(&name)?;
             let shape = input.properties()?.shape;

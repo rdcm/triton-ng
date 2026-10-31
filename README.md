@@ -25,18 +25,12 @@ Implement the `Backend` trait and register it with `declare_backend!`:
 
 ```rust
 use triton_ng::backend::Backend;
-use triton_ng::{Context, DataType, Error, InferenceRequest, Model, Request, Response};
+use triton_ng::{Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
 
 impl Backend for MyBackend {
-    type State = ();
-
-    fn model_initialize(_model: &Model) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn model_instance_execute(ctx: Context<()>, requests: Vec<Request>) -> Result<(), Error> {
+    async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
             let data = request.get_input("INPUT")?.as_bytes()?;
 

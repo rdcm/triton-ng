@@ -9,10 +9,14 @@ use std::io::prelude::*;
 use std::path::PathBuf;
 use std::ptr;
 use std::str::FromStr;
+use std::sync::Arc;
 use triton_ng_macros::triton_call;
 
-/// Type-erased model state stored behind `TRITONBACKEND_ModelSetState`.
-type BoxedState = Box<dyn Any + Send + Sync>;
+/// Type-erased model state, shared by the model and the batches in flight.
+pub(crate) type SharedState = Arc<dyn Any + Send + Sync>;
+
+/// Model state stored behind `TRITONBACKEND_ModelSetState`.
+type BoxedState = SharedState;
 
 pub struct Model {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Model,
@@ -23,16 +27,33 @@ impl Model {
         Self { ptr }
     }
 
-    /// Stores the state returned by `Backend::model_initialize`, shared by all
-    /// instances of the model and dropped when the model is finalized. A second
-    /// call fails: replacing the state would free it under the references
-    /// returned by [`Model::state`].
-    pub(crate) fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
+    /// Stores backend-defined state for this model.
+    ///
+    /// Call it once, from `Backend::model_initialize`; the state is shared by
+    /// all instances of the model, reaches every batch through
+    /// [`crate::Context::state`] and is dropped when the model is finalized
+    /// and no batch holds it. A second call fails: replacing the state would
+    /// free it under the references returned by [`Model::state`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// struct State {
+    ///     encoder: String,
+    /// }
+    ///
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     let encoder = model.config_parameter_or("encoder", "encoder".to_string())?;
+    ///     model.set_state(State { encoder })?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
         if !self.raw_state()?.is_null() {
             return Err(TritonError::from_message("model state is already set"));
         }
 
-        let boxed: Box<BoxedState> = Box::new(Box::new(state));
+        let boxed: Box<BoxedState> = Box::new(Arc::new(state));
         let state_ptr = Box::into_raw(boxed) as *mut c_void;
 
         if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_ModelSetState(
@@ -46,19 +67,31 @@ impl Model {
     }
 
     /// Returns the state previously stored with [`Model::set_state`].
-    pub(crate) fn state<T: Any>(&self) -> Result<&T, Error> {
+    ///
+    /// Fails when no state is stored or it is not a `T`.
+    pub fn state<T: Any>(&self) -> Result<&T, Error> {
+        let state = self
+            .stored_state()?
+            .ok_or("model state is not initialized")?;
+        state
+            .downcast_ref::<T>()
+            .ok_or_else(|| "model state has unexpected type".into())
+    }
+
+    /// A new reference to the state stored with [`Model::set_state`], if any.
+    pub(crate) fn shared_state(&self) -> Result<Option<SharedState>, Error> {
+        Ok(self.stored_state()?.map(Arc::clone))
+    }
+
+    fn stored_state(&self) -> Result<Option<&SharedState>, Error> {
         let state_ptr = self.raw_state()?;
         if state_ptr.is_null() {
-            return Err("model state is not initialized".into());
+            return Ok(None);
         }
 
         // SAFETY: the pointer was produced by `set_state` from a `Box<BoxedState>`
         // and stays valid until `clear_state`, which only runs on model finalize.
-        let state = unsafe { &*(state_ptr as *const BoxedState) };
-
-        state
-            .downcast_ref::<T>()
-            .ok_or_else(|| "model state has unexpected type".into())
+        Ok(Some(unsafe { &*(state_ptr as *const BoxedState) }))
     }
 
     /// Drops the state stored with [`Model::set_state`], if any.

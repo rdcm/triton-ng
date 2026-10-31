@@ -32,9 +32,9 @@ policies (`max_queue_size`, timeouts, priorities) see an empty queue. Bound the 
 (e.g. by the consumers of a message queue), or set `max_batches_in_flight` to keep the requests in
 Triton's queue, where they are batched and its policies apply.
 
-**State.** `Backend::model_initialize` returns the state of the model (tokenizers, vocabularies,
-parsed parameters). It is shared by all instances and reaches every batch through
-`Context::state`, together with the `Server` for BLS calls. `Model` is not available in
+**State.** `Backend::model_initialize` stores the state of the model (tokenizers, vocabularies,
+parsed parameters) with `Model::set_state`. It is shared by all instances and reaches every batch
+through `Context::state::<T>()`, together with the `Server` for BLS calls. `Model` is not available in
 `model_instance_execute`: read everything the batches need from it in `model_initialize`.
 
 **Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>`. A request can

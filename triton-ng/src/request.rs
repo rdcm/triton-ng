@@ -19,7 +19,7 @@ use triton_ng_macros::triton_call;
 /// # Examples
 ///
 /// ```ignore
-/// async fn model_instance_execute(ctx: Context<State>, requests: Vec<Request>) -> Result<(), Error> {
+/// async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
 ///     for request in requests {
 ///         let text = match request.get_input("TEXT").and_then(|input| input.as_string()) {
 ///             Ok(text) => text,
