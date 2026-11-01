@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::memory::MemoryManager;
 use crate::model::{Model, SharedState};
 use crate::server::Server;
 use std::any::Any;
@@ -14,8 +15,8 @@ const WORKER_THREADS: &str = "worker_threads";
 /// Model parameter: batches an instance processes at once, unlimited when absent or 0.
 const MAX_BATCHES_IN_FLIGHT: &str = "max_batches_in_flight";
 
-/// What a batch task gets from its model: the server for BLS calls and the
-/// state stored with [`Model::set_state`].
+/// What a batch task gets from its model: the server for BLS calls, Triton's
+/// memory manager and the state stored with [`Model::set_state`].
 ///
 /// `Context` is `Send + Clone` and holds no Triton pointers, so it can be used
 /// across `.await` and passed to other tasks.
@@ -35,6 +36,7 @@ const MAX_BATCHES_IN_FLIGHT: &str = "max_batches_in_flight";
 #[derive(Clone)]
 pub struct Context {
     server: Server,
+    memory: MemoryManager,
     state: Option<SharedState>,
     device_id: i32,
 }
@@ -43,6 +45,17 @@ impl Context {
     /// The server to run BLS calls on, see [`Server::infer_async`].
     pub fn server(&self) -> &Server {
         &self.server
+    }
+
+    /// Triton's memory manager, for buffers of BLS inputs and outputs.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut tokens = ctx.memory().pinned(requests.len() * 8)?;
+    /// ```
+    pub fn memory(&self) -> &MemoryManager {
+        &self.memory
     }
 
     /// The state stored with [`Model::set_state`].
@@ -132,10 +145,12 @@ impl InstanceExecutor {
     }
 }
 
-/// Server of `model` and the device of the instance, as passed to batch tasks.
+/// Server and memory manager of `model` and the device of the instance, as
+/// passed to batch tasks.
 pub(crate) fn context(model: &Model, device_id: i32) -> Result<Context, Error> {
     Ok(Context {
         server: model.get_server()?,
+        memory: MemoryManager::of_model(model)?,
         state: model.shared_state()?,
         device_id,
     })

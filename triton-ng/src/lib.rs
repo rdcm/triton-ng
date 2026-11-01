@@ -12,6 +12,8 @@ pub mod inference_request;
 pub mod inference_response;
 #[path = "log.rs"]
 pub mod log;
+#[path = "memory.rs"]
+pub mod memory;
 #[path = "model.rs"]
 pub mod model;
 #[path = "model_instance.rs"]
@@ -35,6 +37,7 @@ pub use error::*;
 pub use executor::Context;
 pub use inference_request::*;
 pub use inference_response::*;
+pub use memory::*;
 pub use model::*;
 pub use model_instance::*;
 pub use request::*;

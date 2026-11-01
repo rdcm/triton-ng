@@ -24,6 +24,10 @@ impl Model {
         Self { ptr }
     }
 
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONBACKEND_Model {
+        self.ptr
+    }
+
     /// Stores backend-defined state for this model.
     ///
     /// Call it once, from `Backend::model_initialize`; the state is shared by
