@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -11,6 +12,26 @@ const IMAGE: &str = "Input3";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
 const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
+
+#[derive(Clone, Copy)]
+enum OutputMemory {
+    Pinned,
+    Gpu,
+    WrongSize,
+}
+
+impl FromStr for OutputMemory {
+    type Err = Error;
+
+    fn from_str(memory: &str) -> Result<Self, Error> {
+        match memory {
+            "pinned" => Ok(Self::Pinned),
+            "gpu" => Ok(Self::Gpu),
+            "wrong_size" => Ok(Self::WrongSize),
+            other => Err(format!("unknown memory '{other}'").into()),
+        }
+    }
+}
 
 struct State {
     target_model: String,
@@ -110,7 +131,10 @@ impl Backend for MnistBackend {
                 continue;
             }
             if let Some(Parameter::String(memory)) = request.parameter("memory")? {
-                buffered.push((request, memory));
+                match memory.parse::<OutputMemory>() {
+                    Ok(memory) => buffered.push((request, memory)),
+                    Err(e) => request.respond_error(&e.to_string())?,
+                }
                 continue;
             }
 
@@ -129,7 +153,7 @@ impl Backend for MnistBackend {
 
         for (request, memory) in buffered {
             let image = request.get_input(IMAGE)?.as_bytes()?;
-            match digit_with_buffers(&ctx, state, image, &memory).await {
+            match digit_with_buffers(&ctx, state, image, memory).await {
                 Ok(digit) => respond(&ctx, state, request, digit)?,
                 Err(e) => request.respond_error(&e.to_string())?,
             }
@@ -154,7 +178,7 @@ async fn digit_with_buffers(
     ctx: &Context,
     state: &State,
     image: Vec<u8>,
-    memory: &str,
+    memory: OutputMemory,
 ) -> Result<i32, Error> {
     let buffers = ctx.instance_state::<Buffers>()?;
     let mut pinned_image = ctx.memory().pinned(image.len())?;
@@ -164,7 +188,7 @@ async fn digit_with_buffers(
     inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, pinned_image)?;
 
     match memory {
-        "pinned" => {
+        OutputMemory::Pinned => {
             inference
                 .add_requested_output_into(LOGITS, buffers.pinned(ctx.memory(), LOGITS_BYTES)?)?;
             let mut result = ctx.server().infer_async(inference).await?;
@@ -172,7 +196,7 @@ async fn digit_with_buffers(
             buffers.put_pinned(result.take_pinned(LOGITS)?)?;
             Ok(digit)
         }
-        "gpu" => {
+        OutputMemory::Gpu => {
             let logits = buffers.gpu(ctx.memory(), ctx.device_id(), LOGITS_BYTES)?;
             inference.add_requested_output_into(LOGITS, logits)?;
             let mut result = ctx.server().infer_async(inference).await?;
@@ -182,12 +206,11 @@ async fn digit_with_buffers(
             let host = ctx.server().infer_async(inference).await?;
             argmax(&host.output(LOGITS)?.as_fp32_vec()?)
         }
-        "wrong_size" => {
+        OutputMemory::WrongSize => {
             inference.add_requested_output_into(LOGITS, ctx.memory().pinned(4)?)?;
             ctx.server().infer_async(inference).await?;
             Err("output written into a buffer of the wrong size".into())
         }
-        other => Err(format!("unknown memory '{other}'").into()),
     }
 }
 
