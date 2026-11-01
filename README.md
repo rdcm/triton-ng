@@ -60,9 +60,9 @@ crate-type = ["cdylib"]
 triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 ```
 
-See [Execution model and thread safety](docs/README.md) for instances and their runtimes, the
-`worker_threads` and `max_batches_in_flight` parameters, request ownership, BLS futures, threads,
-cancellation, shutdown and batching.
+See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
+and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
+BLS futures, threads, cancellation, shutdown and batching.
 
 ## Using the gRPC client
 
