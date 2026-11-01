@@ -34,17 +34,24 @@ impl OutputPlan {
         Some((raw.memory_type, raw.memory_type_id))
     }
 
-    /// Hands over the buffer of output `name`, `Ok(None)` for outputs without
-    /// a buffer. Fails when the buffer was already handed over.
-    fn take(&self, name: &str) -> Result<Option<OutputBuffer>, String> {
+    /// Hands over the buffer of output `name` for `byte_size` bytes,
+    /// `Ok(None)` for outputs without a buffer. Fails when the buffer was
+    /// already handed over or has another size; the buffer is dropped then.
+    fn take(&self, name: &str, byte_size: usize) -> Result<Option<OutputBuffer>, String> {
         let mut buffers = self.buffers.lock().unwrap_or_else(PoisonError::into_inner);
-        match buffers.get_mut(name) {
-            None => Ok(None),
-            Some(slot) => slot
-                .take()
-                .map(Some)
-                .ok_or_else(|| format!("output '{name}' is returned twice, its buffer is taken")),
+        let Some(slot) = buffers.get_mut(name) else {
+            return Ok(None);
+        };
+        let buffer = slot
+            .take()
+            .ok_or_else(|| format!("output '{name}' is returned twice, its buffer is taken"))?;
+        let len = buffer.raw().len;
+        if len != byte_size {
+            return Err(format!(
+                "output '{name}' has {byte_size} bytes, its buffer has {len}"
+            ));
         }
+        Ok(Some(buffer))
     }
 }
 
@@ -151,21 +158,15 @@ unsafe extern "C" fn alloc_fn(
     }
 
     let planned = match unsafe { plan_and_name(userp, tensor_name) } {
-        Some((plan, name)) => match plan.take(&name) {
-            Ok(planned) => planned.map(|output| (name, output)),
+        Some((plan, name)) => match plan.take(&name, byte_size) {
+            Ok(planned) => planned,
             Err(message) => return internal(&message),
         },
         None => None,
     };
 
-    if let Some((name, output)) = planned {
+    if let Some(output) = planned {
         let raw = output.raw();
-        if raw.len != byte_size {
-            return internal(&format!(
-                "output '{name}' has {byte_size} bytes, its buffer has {}",
-                raw.len
-            ));
-        }
         let tag: Box<OutputTag> = Box::new(Some(output));
         unsafe {
             *buffer = raw.ptr;
@@ -236,4 +237,51 @@ unsafe extern "C" fn release_fn(
         drop(unsafe { Box::from_raw(buffer_userp as *mut OutputTag) });
     }
     ptr::null_mut()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputPlan;
+    use crate::memory::MemoryManager;
+    use std::collections::HashMap;
+
+    fn plan() -> OutputPlan {
+        let memory = MemoryManager::heap();
+        OutputPlan::new(HashMap::from([
+            ("ho".to_string(), Some(memory.gpu(1, 40).unwrap().into())),
+            ("logits".to_string(), Some(memory.pinned(8).unwrap().into())),
+        ]))
+    }
+
+    #[test]
+    fn query_reports_the_memory_of_the_buffer() {
+        let plan = plan();
+
+        assert_eq!(plan.placement("ho"), Some((crate::memory::GPU, 1)));
+        assert_eq!(plan.placement("dec"), None);
+    }
+
+    #[test]
+    fn buffer_is_handed_over_once() {
+        let plan = plan();
+
+        assert!(plan.take("ho", 40).unwrap().is_some());
+        assert_eq!(plan.placement("ho"), None);
+        assert!(plan.take("ho", 40).err().unwrap().contains("twice"));
+    }
+
+    #[test]
+    fn buffer_of_another_size_is_refused() {
+        let plan = plan();
+
+        let error = plan.take("logits", 4).err().unwrap();
+
+        assert!(error.contains("4 bytes"), "{error}");
+        assert!(plan.take("logits", 8).is_err());
+    }
+
+    #[test]
+    fn outputs_without_buffer_are_left_to_malloc() {
+        assert!(plan().take("dec", 1280).unwrap().is_none());
+    }
 }

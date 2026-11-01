@@ -6,7 +6,6 @@ use crate::response_allocator::{OutputPlan, ResponseAllocator};
 use crate::types::DataType;
 use crate::utils::{Message, cstring_from_str};
 use crate::{Error, TritonError};
-use std::any::Any;
 use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
@@ -40,14 +39,10 @@ impl OutputTensor {
     pub fn bytes(&self) -> Result<&[u8], Error> {
         match &self.data {
             OutputData::Host(data) => Ok(data),
-            OutputData::Buffer(buffer) => {
-                if let Some(buffer) = buffer.downcast_ref::<RamBuffer>() {
-                    Ok(buffer)
-                } else if let Some(buffer) = buffer.downcast_ref::<PinnedRamBuffer>() {
-                    Ok(buffer)
-                } else {
-                    Err(format!("output '{}' is in GPU memory", self.name).into())
-                }
+            OutputData::Buffer(WrittenBuffer::Ram(buffer)) => Ok(buffer),
+            OutputData::Buffer(WrittenBuffer::Pinned(buffer)) => Ok(buffer),
+            OutputData::Buffer(WrittenBuffer::Gpu(_)) => {
+                Err(format!("output '{}' is in GPU memory", self.name).into())
             }
             OutputData::Taken => Err(format!("buffer of output '{}' is taken", self.name).into()),
         }
@@ -117,19 +112,28 @@ impl InferenceResult {
     /// let state: GpuBuffer = result.take_gpu("ho")?;
     /// ```
     pub fn take_gpu(&mut self, name: &str) -> Result<GpuBuffer, Error> {
-        self.take(name, "GPU")
+        match self.take(name)? {
+            WrittenBuffer::Gpu(buffer) => Ok(buffer),
+            other => self.put_back(name, other, "GPU"),
+        }
     }
 
     /// Hands over the pinned buffer the output `name` was written into, see
     /// [`InferenceResult::take_gpu`].
     pub fn take_pinned(&mut self, name: &str) -> Result<PinnedRamBuffer, Error> {
-        self.take(name, "pinned")
+        match self.take(name)? {
+            WrittenBuffer::Pinned(buffer) => Ok(buffer),
+            other => self.put_back(name, other, "pinned"),
+        }
     }
 
     /// Hands over the CPU buffer the output `name` was written into, see
     /// [`InferenceResult::take_gpu`].
     pub fn take_ram(&mut self, name: &str) -> Result<RamBuffer, Error> {
-        self.take(name, "CPU")
+        match self.take(name)? {
+            WrittenBuffer::Ram(buffer) => Ok(buffer),
+            other => self.put_back(name, other, "CPU"),
+        }
     }
 
     fn output_mut(&mut self, name: &str) -> Result<&mut OutputTensor, Error> {
@@ -139,22 +143,21 @@ impl InferenceResult {
             .ok_or_else(|| format!("missing output '{name}'").into())
     }
 
-    fn take<T: Any>(&mut self, name: &str, kind: &str) -> Result<T, Error> {
+    fn take(&mut self, name: &str) -> Result<WrittenBuffer, Error> {
         let output = self.output_mut(name)?;
         match std::mem::replace(&mut output.data, OutputData::Taken) {
-            OutputData::Buffer(buffer) => match buffer.downcast::<T>() {
-                Ok(buffer) => Ok(*buffer),
-                Err(buffer) => {
-                    output.data = OutputData::Buffer(buffer);
-                    Err(format!("output '{name}' is not in a {kind} buffer").into())
-                }
-            },
+            OutputData::Buffer(buffer) => Ok(buffer),
             OutputData::Host(data) => {
                 output.data = OutputData::Host(data);
                 Err(format!("output '{name}' has no buffer").into())
             }
             OutputData::Taken => Err(format!("buffer of output '{name}' is taken").into()),
         }
+    }
+
+    fn put_back<T>(&mut self, name: &str, buffer: WrittenBuffer, kind: &str) -> Result<T, Error> {
+        self.output_mut(name)?.data = OutputData::Buffer(buffer);
+        Err(format!("output '{name}' is not in a {kind} buffer").into())
     }
 }
 
@@ -562,7 +565,9 @@ unsafe extern "C" fn inference_response_complete(
 
 #[cfg(test)]
 mod tests {
-    use super::{Completion, InferenceFuture, InferenceResult};
+    use super::{Completion, InferenceFuture, InferenceResult, OutputData, OutputTensor};
+    use crate::memory::{MemoryManager, OutputBuffer};
+    use crate::types::DataType;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll, Wake, Waker};
@@ -586,6 +591,62 @@ mod tests {
             outputs: vec![],
             error: None,
         }
+    }
+
+    fn result_with_buffers() -> InferenceResult {
+        let memory = MemoryManager::heap();
+        let output = |name: &str, data| OutputTensor {
+            name: name.to_string(),
+            shape: vec![2],
+            datatype: DataType::Fp32,
+            data,
+        };
+        let written = |buffer: OutputBuffer| OutputData::Buffer(buffer.into_written());
+        InferenceResult {
+            outputs: vec![
+                output("gpu", written(memory.gpu(0, 8).unwrap().into())),
+                output("pinned", written(memory.pinned(8).unwrap().into())),
+                output("host", OutputData::Host(vec![0; 8])),
+            ],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn output_buffer_is_taken_once() {
+        let mut result = result_with_buffers();
+
+        assert_eq!(result.take_gpu("gpu").unwrap().len(), 8);
+        assert!(result.take_gpu("gpu").is_err());
+        assert!(result.output("gpu").unwrap().bytes().is_err());
+    }
+
+    #[test]
+    fn buffer_of_other_memory_stays_in_the_result() {
+        let mut result = result_with_buffers();
+
+        assert!(result.take_gpu("pinned").is_err());
+        assert_eq!(
+            result.output("pinned").unwrap().as_fp32_vec().unwrap(),
+            [0.0, 0.0]
+        );
+        assert_eq!(result.take_pinned("pinned").unwrap().len(), 8);
+    }
+
+    #[test]
+    fn host_outputs_have_no_buffer_to_take() {
+        let mut result = result_with_buffers();
+
+        assert!(result.take_ram("host").is_err());
+        assert_eq!(result.output("host").unwrap().bytes().unwrap().len(), 8);
+        assert!(result.take_ram("missing").is_err());
+    }
+
+    #[test]
+    fn gpu_outputs_cannot_be_read_on_the_cpu() {
+        let result = result_with_buffers();
+
+        assert!(result.output("gpu").unwrap().as_fp32_vec().is_err());
     }
 
     #[test]

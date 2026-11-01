@@ -1,4 +1,5 @@
 use crate::TritonError;
+use crate::memory::{RawBuffer, WrittenBuffer};
 use crate::response_allocator::OutputTag;
 use crate::server::{OutputData, OutputTensor};
 use crate::types::DataType;
@@ -95,20 +96,15 @@ impl InferenceResponse {
             // output buffer. Triton frees it only in the release callback,
             // when this response is deleted, so nothing else touches it now.
             let tag = unsafe { &mut *(userp as *mut OutputTag) };
-            let buffer = tag.take().ok_or_else(|| {
-                TritonError::from_message(format!("buffer of output '{name}' is already taken"))
-            })?;
-            let raw = buffer.raw();
-            if raw.ptr.cast_const() != base
-                || raw.len != byte_size
-                || raw.memory_type != memory_type
-                || raw.memory_type_id != memory_type_id
-            {
-                return Err(TritonError::from_message(format!(
-                    "output '{name}' is not where its buffer is"
-                )));
-            }
-            OutputData::Buffer(buffer.into_written())
+            let placed = RawBuffer {
+                ptr: base.cast_mut(),
+                len: byte_size,
+                memory_type,
+                memory_type_id,
+            };
+            OutputData::Buffer(
+                written_output(tag, &name, &placed).map_err(TritonError::from_message)?,
+            )
         };
 
         Ok(OutputTensor {
@@ -120,6 +116,27 @@ impl InferenceResponse {
     }
 }
 
+/// Takes the buffer out of the tag of output `name`, checking that Triton
+/// placed the output (`placed`) exactly in it.
+fn written_output(
+    tag: &mut OutputTag,
+    name: &str,
+    placed: &RawBuffer,
+) -> Result<WrittenBuffer, String> {
+    let buffer = tag
+        .take()
+        .ok_or_else(|| format!("buffer of output '{name}' is already taken"))?;
+    let raw = buffer.raw();
+    if raw.ptr != placed.ptr
+        || raw.len != placed.len
+        || raw.memory_type != placed.memory_type
+        || raw.memory_type_id != placed.memory_type_id
+    {
+        return Err(format!("output '{name}' is not where its buffer is"));
+    }
+    Ok(buffer.into_written())
+}
+
 impl Drop for InferenceResponse {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -127,5 +144,60 @@ impl Drop for InferenceResponse {
                 triton_ng_sys::TRITONSERVER_InferenceResponseDelete(self.ptr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::written_output;
+    use crate::memory::{CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
+
+    fn tagged_gpu() -> (Option<OutputBuffer>, RawBuffer) {
+        let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());
+        let raw = buffer.raw();
+        (Some(buffer), raw)
+    }
+
+    #[test]
+    fn output_in_its_buffer_is_handed_over() {
+        let (mut tag, placed) = tagged_gpu();
+
+        let written = written_output(&mut tag, "ho", &placed).unwrap();
+
+        assert!(matches!(written, WrittenBuffer::Gpu(buffer) if buffer.len() == 40));
+        assert!(tag.is_none());
+    }
+
+    #[test]
+    fn output_placed_elsewhere_is_refused() {
+        let elsewhere: [fn(RawBuffer) -> RawBuffer; 4] = [
+            |placed| RawBuffer { len: 4, ..placed },
+            |placed| RawBuffer {
+                memory_type: CPU_PINNED,
+                ..placed
+            },
+            |placed| RawBuffer {
+                memory_type_id: 1,
+                ..placed
+            },
+            |placed| RawBuffer {
+                ptr: std::ptr::null_mut(),
+                ..placed
+            },
+        ];
+
+        for move_output in elsewhere {
+            let (mut tag, placed) = tagged_gpu();
+            assert_eq!(placed.memory_type, GPU);
+            assert!(written_output(&mut tag, "ho", &move_output(placed)).is_err());
+        }
+    }
+
+    #[test]
+    fn taken_buffer_is_not_handed_over_again() {
+        let (mut tag, placed) = tagged_gpu();
+        written_output(&mut tag, "ho", &placed).unwrap();
+
+        assert!(written_output(&mut tag, "ho", &placed).is_err());
     }
 }

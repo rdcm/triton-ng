@@ -1,4 +1,4 @@
-use crate::error::TritonError;
+use crate::error::{Error, TritonError};
 use crate::model::Model;
 use std::ffi::c_void;
 use std::ops::{Deref, DerefMut};
@@ -10,9 +10,10 @@ pub(crate) type MemoryType = triton_ng_sys::TRITONSERVER_MemoryType;
 
 pub(crate) const CPU: MemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
-const CPU_PINNED: MemoryType =
+pub(crate) const CPU_PINNED: MemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED;
-const GPU: MemoryType = triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU;
+pub(crate) const GPU: MemoryType =
+    triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU;
 
 /// Triton's memory manager: buffers from the server's own pools. Batches get
 /// it from [`crate::Context::memory`].
@@ -43,6 +44,47 @@ const GPU: MemoryType = triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER
 #[derive(Clone)]
 pub struct MemoryManager {
     ptr: *mut triton_ng_sys::TRITONBACKEND_MemoryManager,
+    /// Triton calls go through these, so unit tests can use heap memory
+    /// without linking libtritonserver.
+    allocate: Allocate,
+    free: Free,
+}
+
+type ManagerPtr = *mut triton_ng_sys::TRITONBACKEND_MemoryManager;
+type Allocate = fn(ManagerPtr, usize, MemoryType, i64) -> Result<*mut c_void, Error>;
+type Free = fn(ManagerPtr, *mut c_void, MemoryType, i64);
+
+fn triton_allocate(
+    manager: ManagerPtr,
+    len: usize,
+    memory_type: MemoryType,
+    memory_type_id: i64,
+) -> Result<*mut c_void, Error> {
+    Ok(triton_call!(
+        triton_ng_sys::TRITONBACKEND_MemoryManagerAllocate(
+            manager,
+            &mut _,
+            memory_type,
+            memory_type_id,
+            len as u64,
+        )
+    )?)
+}
+
+fn triton_free(
+    manager: ManagerPtr,
+    ptr: *mut c_void,
+    memory_type: MemoryType,
+    memory_type_id: i64,
+) {
+    if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_MemoryManagerFree(
+        manager,
+        ptr,
+        memory_type,
+        memory_type_id,
+    )) {
+        crate::log::error(&format!("failed to free a memory manager buffer: {e}"));
+    }
 }
 
 // SAFETY: the pointer is the memory manager of the core, a single object for
@@ -67,7 +109,21 @@ impl MemoryManager {
                 "TRITONBACKEND_BackendMemoryManager returned null",
             ));
         }
-        Ok(Self { ptr })
+        Ok(Self {
+            ptr,
+            allocate: triton_allocate,
+            free: triton_free,
+        })
+    }
+
+    /// A manager that takes every kind of memory from the heap, for unit tests.
+    #[cfg(test)]
+    pub(crate) fn heap() -> Self {
+        Self {
+            ptr: ptr::null_mut(),
+            allocate: |_, len, _, _| Ok(unsafe { libc::calloc(len, 1) }),
+            free: |_, ptr, _, _| unsafe { libc::free(ptr) },
+        }
     }
 
     /// Allocates `len` bytes of CPU memory, filled with zeros.
@@ -80,7 +136,7 @@ impl MemoryManager {
     /// let mut image = ctx.memory().ram(28 * 28 * 4)?;
     /// image.copy_from_slice(request.get_input("Input3")?.as_bytes()?);
     /// ```
-    pub fn ram(&self, len: usize) -> Result<RamBuffer, TritonError> {
+    pub fn ram(&self, len: usize) -> Result<RamBuffer, Error> {
         Ok(RamBuffer(Allocation::zeroed(self, len, CPU, 0)?))
     }
 
@@ -96,7 +152,7 @@ impl MemoryManager {
     /// let mut tokens = ctx.memory().pinned(batch * 8)?;
     /// tokens.copy_from_slice(&token_bytes);
     /// ```
-    pub fn pinned(&self, len: usize) -> Result<PinnedRamBuffer, TritonError> {
+    pub fn pinned(&self, len: usize) -> Result<PinnedRamBuffer, Error> {
         Ok(PinnedRamBuffer(Allocation::zeroed(
             self, len, CPU_PINNED, 0,
         )?))
@@ -115,11 +171,9 @@ impl MemoryManager {
     /// ```ignore
     /// let state = ctx.memory().gpu(ctx.device_id(), batch * 320 * 4)?;
     /// ```
-    pub fn gpu(&self, device_id: i32, len: usize) -> Result<UninitGpuBuffer, TritonError> {
+    pub fn gpu(&self, device_id: i32, len: usize) -> Result<UninitGpuBuffer, Error> {
         if device_id < 0 {
-            return Err(TritonError::from_message(format!(
-                "GPU device id must not be negative, got {device_id}"
-            )));
+            return Err(format!("GPU device id must not be negative, got {device_id}").into());
         }
         Ok(UninitGpuBuffer(Allocation::new(
             self,
@@ -151,21 +205,13 @@ impl Allocation {
         len: usize,
         memory_type: MemoryType,
         memory_type_id: i64,
-    ) -> Result<Self, TritonError> {
+    ) -> Result<Self, Error> {
         let ptr = if len == 0 {
             ptr::null_mut()
         } else {
-            let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_MemoryManagerAllocate(
-                manager.ptr,
-                &mut _,
-                memory_type,
-                memory_type_id,
-                len as u64,
-            ))?;
+            let ptr = (manager.allocate)(manager.ptr, len, memory_type, memory_type_id)?;
             if ptr.is_null() {
-                return Err(TritonError::from_message(
-                    "TRITONBACKEND_MemoryManagerAllocate returned null",
-                ));
+                return Err("TRITONBACKEND_MemoryManagerAllocate returned null".into());
             }
             ptr
         };
@@ -183,7 +229,7 @@ impl Allocation {
         len: usize,
         memory_type: MemoryType,
         memory_type_id: i64,
-    ) -> Result<Self, TritonError> {
+    ) -> Result<Self, Error> {
         let allocation = Self::new(manager, len, memory_type, memory_type_id)?;
         if len > 0 {
             unsafe { ptr::write_bytes(allocation.ptr.cast::<u8>(), 0, len) };
@@ -215,14 +261,12 @@ impl Drop for Allocation {
         if self.ptr.is_null() {
             return;
         }
-        if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_MemoryManagerFree(
+        (self.manager.free)(
             self.manager.ptr,
             self.ptr,
             self.memory_type,
             self.memory_type_id,
-        )) {
-            crate::log::error(&format!("failed to free a memory manager buffer: {e}"));
-        }
+        );
     }
 }
 
@@ -331,6 +375,7 @@ mod sealed {
     use std::ffi::c_void;
 
     /// Memory Triton reads or writes: where it is, its address and size.
+    #[derive(Clone, Copy)]
     pub struct RawBuffer {
         pub(crate) ptr: *mut c_void,
         pub(crate) len: usize,
@@ -433,10 +478,12 @@ impl From<UninitGpuBuffer> for OutputBuffer {
     }
 }
 
-/// A buffer a model has written its output into, see
-/// [`OutputBuffer::into_written`]. Type-erased so that dropping a result
-/// does not reach Triton symbols in unit tests.
-pub(crate) type WrittenBuffer = Box<dyn std::any::Any + Send + Sync>;
+/// An [`OutputBuffer`] a model has written its output into.
+pub(crate) enum WrittenBuffer {
+    Ram(RamBuffer),
+    Pinned(PinnedRamBuffer),
+    Gpu(GpuBuffer),
+}
 
 impl OutputBuffer {
     pub(crate) fn raw(&self) -> RawBuffer {
@@ -447,19 +494,88 @@ impl OutputBuffer {
         }
     }
 
-    /// The buffer once a model has written its output into it:
-    /// [`RamBuffer`], [`PinnedRamBuffer`] or [`GpuBuffer`].
     pub(crate) fn into_written(self) -> WrittenBuffer {
         match self {
-            Self::Ram(buffer) => Box::new(buffer),
-            Self::Pinned(buffer) => Box::new(buffer),
-            Self::Gpu(buffer) => Box::new(GpuBuffer(buffer.0)),
+            Self::Ram(buffer) => WrittenBuffer::Ram(buffer),
+            Self::Pinned(buffer) => WrittenBuffer::Pinned(buffer),
+            Self::Gpu(buffer) => WrittenBuffer::Gpu(GpuBuffer(buffer.0)),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{CPU, CPU_PINNED, GPU, MemoryManager, OutputBuffer, Sealed, WrittenBuffer};
+    use std::ptr;
+    use std::sync::Arc;
+
+    fn written_gpu(memory: &MemoryManager, device_id: i32, len: usize) -> super::GpuBuffer {
+        match OutputBuffer::from(memory.gpu(device_id, len).unwrap()).into_written() {
+            WrittenBuffer::Gpu(buffer) => buffer,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn cpu_buffers_are_zeroed_and_writable() {
+        let memory = MemoryManager::heap();
+        let mut ram = memory.ram(16).unwrap();
+        let mut pinned = memory.pinned(8).unwrap();
+
+        assert_eq!(&ram[..], &[0; 16]);
+        assert_eq!(&pinned[..], &[0; 8]);
+        ram[3] = 7;
+        pinned.copy_from_slice(&[1; 8]);
+        assert_eq!(ram[3], 7);
+        assert_eq!(&pinned[..], &[1; 8]);
+    }
+
+    #[test]
+    fn inputs_tell_triton_where_their_memory_is() {
+        let memory = MemoryManager::heap();
+        let vec = vec![0u8; 4];
+        let ram = memory.ram(4).unwrap();
+        let pinned = memory.pinned(4).unwrap();
+        let gpu = Arc::new(written_gpu(&memory, 1, 4));
+
+        let placement = |raw: super::RawBuffer| (raw.memory_type, raw.memory_type_id, raw.len);
+        assert_eq!(placement(vec.raw()), (CPU, 0, 4));
+        assert_eq!(placement(ram.raw()), (CPU, 0, 4));
+        assert_eq!(placement(pinned.raw()), (CPU_PINNED, 0, 4));
+        assert_eq!(placement(gpu.raw()), (GPU, 1, 4));
+        assert_eq!(Arc::clone(&gpu).raw().ptr, gpu.as_ref().raw().ptr);
+    }
+
+    #[test]
+    fn gpu_memory_is_reused_as_output() {
+        let memory = MemoryManager::heap();
+        let gpu = written_gpu(&memory, 0, 32);
+        let ptr = gpu.raw().ptr;
+
+        let reused = OutputBuffer::from(gpu.into_uninit());
+
+        assert_eq!(reused.raw().ptr, ptr);
+        assert_eq!(reused.raw().memory_type, GPU);
+    }
+
+    #[test]
+    fn negative_gpu_device_is_rejected() {
+        assert!(MemoryManager::heap().gpu(-1, 4).is_err());
+    }
+
+    #[test]
+    fn empty_buffers_do_not_reach_triton() {
+        let memory = MemoryManager {
+            ptr: ptr::null_mut(),
+            allocate: |_, _, _, _| panic!("allocated an empty buffer"),
+            free: |_, _, _, _| panic!("freed an empty buffer"),
+        };
+
+        assert!(memory.ram(0).unwrap().is_empty());
+        assert!(memory.pinned(0).unwrap().is_empty());
+        assert!(memory.gpu(0, 0).unwrap().is_empty());
+    }
+
     #[test]
     fn buffers_can_move_to_tasks() {
         fn assert_shared<T: Send + Sync + 'static>() {}
