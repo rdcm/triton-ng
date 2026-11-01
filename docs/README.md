@@ -1,59 +1,13 @@
-# Execution model and thread safety
+# triton-ng documentation
 
-**Instances and batches.** Triton runs `instance_group.count` instances of a model, and every
-instance has its own multi-threaded runtime owned by triton-ng. `model_instance_execute` is an
-`async fn`: triton-ng runs the future of every batch on the runtime of its instance and returns
-to Triton at once, so an instance works on several batches at the same time. `.await` on a BLS
-call frees the thread for the other batches of the instance; no thread waits for a model.
+How to write custom Triton backends with triton-ng. Start with the [main README](../README.md)
+for a minimal backend, the gRPC client and running the example.
 
-The model parameters `worker_threads` and `max_batches_in_flight` set the threads of every
-runtime and how many batches an instance works on at once, see
-[model-parameters.md](model-parameters.md).
+| Section | What it covers |
+|---|---|
+| [Execution model and thread safety](execution_model_and_thread_safety.md) | Instances and their runtimes, state of models and instances, request ownership, BLS futures, threads, cancellation, shutdown, batching |
+| [Model parameters](model_parameters.md) | `worker_threads` and `max_batches_in_flight` in the model config |
+| [Memory buffers](memory_buffers.md) | RAM, pinned and GPU buffers from Triton's memory manager for BLS inputs and outputs, caching them in a backend |
 
-**Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
-scheduler collected, and the backend should process it as a whole, sending it to the downstream
-models as batched BLS calls. Never split it into tasks per request: every downstream call would
-run with batch size one.
-
-**State.** `Backend::model_initialize` stores the state of the model (tokenizers, vocabularies,
-parsed parameters) with `Model::set_state`. It is shared by all instances and reaches every batch
-through `Context::state::<T>()`, together with the `Server` for BLS calls. `Model` is not available in
-`model_instance_execute`: read everything the batches need from it in `model_initialize`.
-
-**Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>`. A request can
-be answered from any thread of the runtime.
-
-**Exactly one final response.** `Response::new`, `Request::respond_error` and
-`Request::respond_cancelled` consume the request, so it cannot be answered twice. A request dropped
-without a response, including when the future returns an error or panics, gets a generic error
-response. Every request is released to Triton when it is dropped. The error returned by
-`model_instance_execute` is only logged: answer a request with `respond_error` to give the client
-the reason.
-
-**BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
-`InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded.
-
-**What can move to another thread:**
-
-| Type | `Send` | `Sync` | Notes |
-|---|---|---|---|
-| `Request`, `Response` | yes | no | one request is used by one thread at a time |
-| `InferenceRequest`, `InferenceFuture` | yes | no | |
-| `Server`, `Context` | yes | yes | `Clone` |
-| `Model` | no | no | used only in the init and finalize hooks |
-
-**Lifetimes.** A model is not finalized while any of its requests is alive, and the server is not
-destroyed while any model is loaded, so a batch never outlives the server it calls.
-
-**Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
-with `Request::respond_cancelled`. Triton reports a client that drops a gRPC call as a cancellation.
-
-**Shutdown.** Before `Backend::model_instance_finalize`, triton-ng waits for every batch of the
-instance and stops its runtime.
-
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
-`mnist_onnx` over BLS and answers with the recognized digit. A request with the
-`hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
-most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
-requests are answered.
+[`example/custom-backend`](../example/custom-backend/src/lib.rs) is the MNIST example backend that
+uses all of it.

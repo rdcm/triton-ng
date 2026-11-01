@@ -1,15 +1,27 @@
 use crate::TritonError;
-use crate::server::OutputTensor;
+use crate::inference_result::{OutputData, OutputTensor};
+use crate::response_allocator::OutputTag;
 use crate::types::DataType;
 use crate::utils::cstr_to_string;
+use crate::{RawBuffer, WrittenBuffer};
 use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::slice;
 use triton_ng_macros::triton_call;
 
-pub struct InferenceResponse {
+/// A response to a BLS request, read in the response callback.
+///
+/// Owns the `TRITONSERVER_InferenceResponse` and deletes it on drop, which
+/// releases its output buffers. `Send`, not `Sync`: reading the outputs
+/// takes the buffers out of their allocator tags.
+pub(crate) struct InferenceResponse {
     ptr: *mut triton_ng_sys::TRITONSERVER_InferenceResponse,
 }
+
+// SAFETY: Triton delivers the response on one of its threads and lets it be
+// deleted from any thread; output buffers are released through
+// `response_allocator`, whose callbacks are thread-safe.
+unsafe impl Send for InferenceResponse {}
 
 impl InferenceResponse {
     pub(crate) fn from_ptr(
@@ -72,21 +84,37 @@ impl InferenceResponse {
             unsafe { cstr_to_string(name_ptr) }
         };
 
-        if memory_type == triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU {
-            return Err(TritonError::from_message(format!(
-                "output '{name}' is in GPU memory, only host memory is supported"
-            )));
-        }
-
         let shape = if shape_ptr.is_null() || dim_count == 0 {
             Vec::new()
         } else {
             unsafe { slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec() }
         };
-        let data = if base.is_null() || byte_size == 0 {
-            Vec::new()
+
+        let data = if userp.is_null() {
+            if memory_type != crate::CPU {
+                return Err(TritonError::from_message(format!(
+                    "output '{name}' is not in CPU memory without a buffer"
+                )));
+            }
+            OutputData::Host(if base.is_null() || byte_size == 0 {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
+            })
         } else {
-            unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
+            // SAFETY: a non-null userp is the tag `alloc_fn` made for an
+            // output buffer. Triton frees it only in the release callback,
+            // when this response is deleted, so nothing else touches it now.
+            let tag = unsafe { &mut *(userp as *mut OutputTag) };
+            let placed = RawBuffer {
+                ptr: base.cast_mut(),
+                len: byte_size,
+                memory_type,
+                memory_type_id,
+            };
+            OutputData::Buffer(
+                written_output(tag, &name, &placed).map_err(TritonError::from_message)?,
+            )
         };
 
         Ok(OutputTensor {
@@ -98,6 +126,27 @@ impl InferenceResponse {
     }
 }
 
+/// Takes the buffer out of the tag of output `name`, checking that Triton
+/// placed the output (`placed`) exactly in it.
+fn written_output(
+    tag: &mut OutputTag,
+    name: &str,
+    placed: &RawBuffer,
+) -> Result<WrittenBuffer, String> {
+    let buffer = tag
+        .take()
+        .ok_or_else(|| format!("buffer of output '{name}' is already taken"))?;
+    let raw = buffer.raw();
+    if raw.ptr != placed.ptr
+        || raw.len != placed.len
+        || raw.memory_type != placed.memory_type
+        || raw.memory_type_id != placed.memory_type_id
+    {
+        return Err(format!("output '{name}' is not where its buffer is"));
+    }
+    Ok(buffer.into_written())
+}
+
 impl Drop for InferenceResponse {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -105,5 +154,60 @@ impl Drop for InferenceResponse {
                 triton_ng_sys::TRITONSERVER_InferenceResponseDelete(self.ptr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::written_output;
+    use crate::{CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
+
+    fn tagged_gpu() -> (Option<OutputBuffer>, RawBuffer) {
+        let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());
+        let raw = buffer.raw();
+        (Some(buffer), raw)
+    }
+
+    #[test]
+    fn output_in_its_buffer_is_handed_over() {
+        let (mut tag, placed) = tagged_gpu();
+
+        let written = written_output(&mut tag, "ho", &placed).unwrap();
+
+        assert!(matches!(written, WrittenBuffer::Gpu(buffer) if buffer.len() == 40));
+        assert!(tag.is_none());
+    }
+
+    #[test]
+    fn output_placed_elsewhere_is_refused() {
+        let elsewhere: [fn(RawBuffer) -> RawBuffer; 4] = [
+            |placed| RawBuffer { len: 4, ..placed },
+            |placed| RawBuffer {
+                memory_type: CPU_PINNED,
+                ..placed
+            },
+            |placed| RawBuffer {
+                memory_type_id: 1,
+                ..placed
+            },
+            |placed| RawBuffer {
+                ptr: std::ptr::null_mut(),
+                ..placed
+            },
+        ];
+
+        for move_output in elsewhere {
+            let (mut tag, placed) = tagged_gpu();
+            assert_eq!(placed.memory_type, GPU);
+            assert!(written_output(&mut tag, "ho", &move_output(placed)).is_err());
+        }
+    }
+
+    #[test]
+    fn taken_buffer_is_not_handed_over_again() {
+        let (mut tag, placed) = tagged_gpu();
+        written_output(&mut tag, "ho", &placed).unwrap();
+
+        assert!(written_output(&mut tag, "ho", &placed).is_err());
     }
 }

@@ -1,8 +1,7 @@
-use crate::error::TritonError;
+use crate::error::{Error, TritonError};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::ffi::{CString, c_char};
 use std::io::Cursor;
-use triton_ng_macros::triton_call;
 
 /// Splits serialized BYTES tensor content (`u32` little-endian length + bytes
 /// per element) into elements. A length running past the end is an error.
@@ -69,43 +68,25 @@ pub fn cstring_from_str(s: &str) -> Result<CString, TritonError> {
     CString::new(s).map_err(|e| TritonError::from_message(e.to_string()))
 }
 
-/// Owned `TRITONSERVER_Message`, deleted on drop.
-pub(crate) struct Message(*mut triton_ng_sys::TRITONSERVER_Message);
-
-impl Message {
-    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONSERVER_Message) -> Self {
-        Self(ptr)
+/// Decodes a buffer of little-endian fixed-size elements.
+pub(crate) fn decode_le<T, const N: usize>(
+    buffer: &[u8],
+    from_le: fn([u8; N]) -> T,
+) -> Result<Vec<T>, Error> {
+    if !buffer.len().is_multiple_of(N) {
+        return Err(format!(
+            "tensor byte size {} is not a multiple of element size {N}",
+            buffer.len()
+        )
+        .into());
     }
 
-    pub(crate) fn to_json(&self) -> Result<String, TritonError> {
-        let mut base: *const c_char = std::ptr::null();
-        let mut byte_size: usize = 0;
-        triton_call!(triton_ng_sys::TRITONSERVER_MessageSerializeToJson(
-            self.0,
-            &mut base,
-            &mut byte_size,
-        ))?;
-
-        if byte_size == 0 {
-            return Ok(String::new());
-        }
-        if base.is_null() {
-            return Err(TritonError::from_message(
-                "message serialized to a null buffer",
-            ));
-        }
-
-        let bytes = unsafe { std::slice::from_raw_parts(base as *const u8, byte_size) };
-        Ok(String::from_utf8_lossy(bytes).into_owned())
-    }
-}
-
-impl Drop for Message {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { triton_ng_sys::TRITONSERVER_MessageDelete(self.0) };
-        }
-    }
+    Ok(buffer
+        .as_chunks::<N>()
+        .0
+        .iter()
+        .map(|&chunk| from_le(chunk))
+        .collect())
 }
 
 #[cfg(test)]

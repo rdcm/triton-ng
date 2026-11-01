@@ -1,12 +1,38 @@
 use crate::utils::cstr_to_string;
 
-pub type Error = Box<dyn std::error::Error>;
+/// The error of every fallible call in triton-ng and of the backend hooks:
+/// any error type that is `Send + Sync`, boxed. Being `Send + Sync`, it can
+/// be held across `.await` in `model_instance_execute`, whose future must be
+/// `Send`. `?` converts `String`, `&str`, [`TritonError`] and most library
+/// errors into it.
+///
+/// # Examples
+///
+/// ```ignore
+/// fn model_initialize(model: &Model) -> Result<(), Error> {
+///     let vocab = String::from_utf8(model.load_file("vocab.txt")?)?;
+///     if vocab.is_empty() {
+///         return Err("vocab.txt is empty".into());
+///     }
+///     model.set_state(State { vocab })?;
+///     Ok(())
+/// }
+/// ```
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
+/// An error from Triton or from triton-ng, with its message.
+///
+/// Owns the `TRITONSERVER_Error` it may carry and deletes it on drop. `Send + Sync`.
 #[derive(Debug)]
 pub struct TritonError {
     ptr: *mut triton_ng_sys::TRITONSERVER_Error,
     message: String,
 }
+
+// SAFETY: a TRITONSERVER_Error is an immutable code and message owned by this
+// value; reading it and deleting it are not tied to the thread that made it.
+unsafe impl Send for TritonError {}
+unsafe impl Sync for TritonError {}
 
 impl TritonError {
     pub(crate) unsafe fn new(ptr: *mut triton_ng_sys::TRITONSERVER_Error) -> Self {

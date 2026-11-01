@@ -1,0 +1,26 @@
+name: "identity_gpu"
+backend: "identity"
+max_batch_size: 0
+
+input [
+  {
+    name: "INPUT0"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  }
+]
+
+output [
+  {
+    name: "OUTPUT0"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
