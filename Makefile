@@ -41,5 +41,6 @@ build:
 download-model:
 	mkdir -p models/mnist/1
 	mkdir -p models/mnist_onnx/1
+	mkdir -p models/identity_gpu/1
 	wget https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx
 	mv mnist-12.onnx models/mnist_onnx/1/model.onnx

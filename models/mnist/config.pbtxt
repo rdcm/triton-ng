@@ -28,6 +28,11 @@ parameters: {
 }
 
 parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
+
+parameters: {
   key: "max_batches_in_flight"
   value: { string_value: "4" }
 }

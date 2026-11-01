@@ -1,23 +1,27 @@
 use std::str::FromStr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, Context, DataType, Error, GpuBuffer, InferenceRequest, MemoryManager, Model,
-    ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, Response, UninitGpuBuffer,
+    BackendHandle, Context, DataType, Error, GpuBuffer, InferenceFuture, InferenceRequest,
+    MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, Response,
+    UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
 const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
+const IDENTITY_INPUT: &str = "INPUT0";
+const IDENTITY_OUTPUT: &str = "OUTPUT0";
 
 #[derive(Clone, Copy)]
 enum OutputMemory {
     Ram,
     Pinned,
     Gpu,
+    GpuInput,
     WrongSize,
 }
 
@@ -29,6 +33,7 @@ impl FromStr for OutputMemory {
             "ram" => Ok(Self::Ram),
             "pinned" => Ok(Self::Pinned),
             "gpu" => Ok(Self::Gpu),
+            "gpu_input" => Ok(Self::GpuInput),
             "wrong_size" => Ok(Self::WrongSize),
             other => Err(format!("unknown memory '{other}'").into()),
         }
@@ -37,6 +42,7 @@ impl FromStr for OutputMemory {
 
 struct State {
     target_model: String,
+    identity_model: String,
     held: AtomicI64,
     cancelled: AtomicI64,
 }
@@ -132,6 +138,9 @@ impl Backend for MnistBackend {
             target_model: model
                 .config_parameter("target_model")?
                 .ok_or("missing 'target_model' config parameter")?,
+            identity_model: model
+                .config_parameter("identity_model")?
+                .ok_or("missing 'identity_model' config parameter")?,
             held: AtomicI64::new(0),
             cancelled: AtomicI64::new(0),
         })?;
@@ -242,12 +251,51 @@ async fn digit_with_buffers(
             let host = ctx.server().infer_async(inference).await?;
             argmax(&host.output(LOGITS)?.as_fp32_vec()?)
         }
+        OutputMemory::GpuInput => {
+            inference.add_requested_output_into(
+                LOGITS,
+                ctx.memory().gpu(ctx.device_id(), LOGITS_BYTES)?,
+            )?;
+            let mut result = ctx.server().infer_async(inference).await?;
+            let logits = Arc::new(result.take_gpu(LOGITS)?);
+            let copies = [
+                identity_of(ctx, state, &logits)?,
+                identity_of(ctx, state, &logits)?,
+            ];
+            drop(logits);
+
+            let inference = host_inference(ctx, state, image)?;
+            let host = ctx.server().infer_async(inference).await?;
+            let expected = host.output(LOGITS)?.bytes()?;
+            for copy in copies {
+                if copy.await?.output(IDENTITY_OUTPUT)?.bytes()? != expected {
+                    return Err("the GPU buffer read as an input differs from the logits".into());
+                }
+            }
+            argmax(&host.output(LOGITS)?.as_fp32_vec()?)
+        }
         OutputMemory::WrongSize => {
             inference.add_requested_output_into(LOGITS, ctx.memory().pinned(4)?)?;
             ctx.server().infer_async(inference).await?;
             Err("output written into a buffer of the wrong size".into())
         }
     }
+}
+
+fn identity_of(
+    ctx: &Context,
+    state: &State,
+    logits: &Arc<GpuBuffer>,
+) -> Result<InferenceFuture, Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), &state.identity_model, -1)?;
+    inference.add_input_with_buffer(
+        IDENTITY_INPUT,
+        DataType::Fp32,
+        &[1, 10],
+        Arc::clone(logits),
+    )?;
+    inference.add_requested_output(IDENTITY_OUTPUT)?;
+    Ok(ctx.server().infer_async(inference))
 }
 
 fn argmax(logits: &[f32]) -> Result<i32, Error> {

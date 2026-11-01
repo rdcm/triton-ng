@@ -181,5 +181,8 @@ thread: Triton's pools are thread-safe.
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) answers a request with the
 parameter `memory` set to `ram`, `pinned` or `gpu` from a buffer of that kind: the image goes in
 a RAM or pinned buffer, the logits are written into a buffer cached in the instance state, and
-the response reports how many buffers the instance has allocated. `wrong_size` writes the logits
-into a buffer of the wrong size and gets an error.
+the response reports how many buffers the instance has allocated. `gpu_input` writes the logits
+into a GPU buffer and passes it, through an `Arc`, as the input of two concurrent requests to
+`identity_gpu` (Triton's `identity` backend on a GPU instance); the backend drops its own `Arc`
+before the requests finish and checks that both copies equal the logits. `wrong_size` writes the
+logits into a buffer of the wrong size and gets an error.
