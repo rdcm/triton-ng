@@ -1,6 +1,24 @@
 use crate::utils::cstr_to_string;
 
-pub type Error = Box<dyn std::error::Error>;
+/// The error of every fallible call in triton-ng and of the backend hooks:
+/// any error type that is `Send + Sync`, boxed. Being `Send + Sync`, it can
+/// be held across `.await` in `model_instance_execute`, whose future must be
+/// `Send`. `?` converts `String`, `&str`, [`TritonError`] and most library
+/// errors into it.
+///
+/// # Examples
+///
+/// ```ignore
+/// fn model_initialize(model: &Model) -> Result<(), Error> {
+///     let vocab = String::from_utf8(model.load_file("vocab.txt")?)?;
+///     if vocab.is_empty() {
+///         return Err("vocab.txt is empty".into());
+///     }
+///     model.set_state(State { vocab })?;
+///     Ok(())
+/// }
+/// ```
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// An error from Triton or from triton-ng, with its message.
 ///
