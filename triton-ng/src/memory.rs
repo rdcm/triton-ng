@@ -3,11 +3,13 @@ use crate::model::Model;
 use std::ffi::c_void;
 use std::ops::{Deref, DerefMut};
 use std::ptr;
+use std::sync::Arc;
 use triton_ng_macros::triton_call;
 
-type MemoryType = triton_ng_sys::TRITONSERVER_MemoryType;
+pub(crate) type MemoryType = triton_ng_sys::TRITONSERVER_MemoryType;
 
-const CPU: MemoryType = triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
+pub(crate) const CPU: MemoryType =
+    triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
 const CPU_PINNED: MemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED;
 const GPU: MemoryType = triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU;
@@ -313,37 +315,155 @@ impl UninitGpuBuffer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{GPU, MemoryManager};
-    use std::ptr;
+impl Allocation {
+    fn raw(&self) -> RawBuffer {
+        RawBuffer {
+            ptr: self.ptr,
+            len: self.len,
+            memory_type: self.memory_type,
+            memory_type_id: self.memory_type_id,
+        }
+    }
+}
 
-    fn manager() -> MemoryManager {
-        MemoryManager {
-            ptr: ptr::null_mut(),
+mod sealed {
+    use super::MemoryType;
+    use std::ffi::c_void;
+
+    /// Memory Triton reads or writes: where it is, its address and size.
+    pub struct RawBuffer {
+        pub(crate) ptr: *mut c_void,
+        pub(crate) len: usize,
+        pub(crate) memory_type: MemoryType,
+        pub(crate) memory_type_id: i64,
+    }
+
+    pub trait Sealed {
+        fn raw(&self) -> RawBuffer;
+    }
+}
+
+pub(crate) use sealed::{RawBuffer, Sealed};
+
+/// Data of a BLS input: `Vec<u8>`, [`RamBuffer`], [`PinnedRamBuffer`],
+/// [`GpuBuffer`], or an `Arc` of any of them to keep using the buffer, for
+/// example in a cache, while Triton reads it.
+///
+/// The request owns the buffer until Triton releases the request, which can
+/// be after the response has arrived: an `Arc` passed as an input is not
+/// unique again before that.
+///
+/// # Examples
+///
+/// ```ignore
+/// let state: Arc<GpuBuffer> = Arc::new(result.take_gpu("ho")?);
+/// inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
+/// ```
+pub trait InputBuffer: sealed::Sealed + Send + 'static {}
+
+impl Sealed for Vec<u8> {
+    fn raw(&self) -> RawBuffer {
+        RawBuffer {
+            ptr: self.as_ptr().cast_mut().cast(),
+            len: self.len(),
+            memory_type: CPU,
+            memory_type_id: 0,
+        }
+    }
+}
+
+impl InputBuffer for Vec<u8> {}
+
+impl Sealed for RamBuffer {
+    fn raw(&self) -> RawBuffer {
+        self.0.raw()
+    }
+}
+
+impl InputBuffer for RamBuffer {}
+
+impl Sealed for PinnedRamBuffer {
+    fn raw(&self) -> RawBuffer {
+        self.0.raw()
+    }
+}
+
+impl InputBuffer for PinnedRamBuffer {}
+
+impl Sealed for GpuBuffer {
+    fn raw(&self) -> RawBuffer {
+        self.0.raw()
+    }
+}
+
+impl InputBuffer for GpuBuffer {}
+
+impl<T: InputBuffer + Sync> Sealed for Arc<T> {
+    fn raw(&self) -> RawBuffer {
+        self.as_ref().raw()
+    }
+}
+
+impl<T: InputBuffer + Sync> InputBuffer for Arc<T> {}
+
+/// Memory a BLS output is written into, see
+/// [`crate::InferenceRequest::add_requested_output_into`]. Its length must be
+/// the exact size of the output.
+pub enum OutputBuffer {
+    Ram(RamBuffer),
+    Pinned(PinnedRamBuffer),
+    Gpu(UninitGpuBuffer),
+}
+
+impl From<RamBuffer> for OutputBuffer {
+    fn from(buffer: RamBuffer) -> Self {
+        Self::Ram(buffer)
+    }
+}
+
+impl From<PinnedRamBuffer> for OutputBuffer {
+    fn from(buffer: PinnedRamBuffer) -> Self {
+        Self::Pinned(buffer)
+    }
+}
+
+impl From<UninitGpuBuffer> for OutputBuffer {
+    fn from(buffer: UninitGpuBuffer) -> Self {
+        Self::Gpu(buffer)
+    }
+}
+
+/// A buffer a model has written its output into, see
+/// [`OutputBuffer::into_written`]. Type-erased so that dropping a result
+/// does not reach Triton symbols in unit tests.
+pub(crate) type WrittenBuffer = Box<dyn std::any::Any + Send + Sync>;
+
+impl OutputBuffer {
+    pub(crate) fn raw(&self) -> RawBuffer {
+        match self {
+            Self::Ram(buffer) => buffer.0.raw(),
+            Self::Pinned(buffer) => buffer.0.raw(),
+            Self::Gpu(buffer) => buffer.0.raw(),
         }
     }
 
-    #[test]
-    fn empty_buffers_do_not_reach_triton() {
-        let manager = manager();
-        let mut ram = manager.ram(0).unwrap();
-        assert!(ram.is_empty());
-        assert!(ram.iter_mut().next().is_none());
-
-        let pinned = manager.pinned(0).unwrap();
-        assert!(pinned.is_empty());
-
-        let gpu = manager.gpu(1, 0).unwrap();
-        assert!(gpu.is_empty());
-        assert_eq!(gpu.device_id(), 1);
-        assert_eq!(gpu.0.memory_type, GPU);
+    /// The buffer once a model has written its output into it:
+    /// [`RamBuffer`], [`PinnedRamBuffer`] or [`GpuBuffer`].
+    pub(crate) fn into_written(self) -> WrittenBuffer {
+        match self {
+            Self::Ram(buffer) => Box::new(buffer),
+            Self::Pinned(buffer) => Box::new(buffer),
+            Self::Gpu(buffer) => Box::new(GpuBuffer(buffer.0)),
+        }
     }
+}
 
+#[cfg(test)]
+mod tests {
     #[test]
     fn buffers_can_move_to_tasks() {
         fn assert_shared<T: Send + Sync + 'static>() {}
-        assert_shared::<MemoryManager>();
+        assert_shared::<super::MemoryManager>();
         assert_shared::<super::RamBuffer>();
         assert_shared::<super::PinnedRamBuffer>();
         assert_shared::<super::GpuBuffer>();

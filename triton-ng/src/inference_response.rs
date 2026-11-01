@@ -1,5 +1,6 @@
 use crate::TritonError;
-use crate::server::OutputTensor;
+use crate::response_allocator::OutputTag;
+use crate::server::{OutputData, OutputTensor};
 use crate::types::DataType;
 use crate::utils::cstr_to_string;
 use std::ffi::{c_char, c_void};
@@ -72,21 +73,42 @@ impl InferenceResponse {
             unsafe { cstr_to_string(name_ptr) }
         };
 
-        if memory_type == triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU {
-            return Err(TritonError::from_message(format!(
-                "output '{name}' is in GPU memory, only host memory is supported"
-            )));
-        }
-
         let shape = if shape_ptr.is_null() || dim_count == 0 {
             Vec::new()
         } else {
             unsafe { slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec() }
         };
-        let data = if base.is_null() || byte_size == 0 {
-            Vec::new()
+
+        let data = if userp.is_null() {
+            if memory_type != crate::memory::CPU {
+                return Err(TritonError::from_message(format!(
+                    "output '{name}' is not in CPU memory without a buffer"
+                )));
+            }
+            OutputData::Host(if base.is_null() || byte_size == 0 {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
+            })
         } else {
-            unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
+            // SAFETY: a non-null userp is the tag `alloc_fn` made for an
+            // output buffer. Triton frees it only in the release callback,
+            // when this response is deleted, so nothing else touches it now.
+            let tag = unsafe { &mut *(userp as *mut OutputTag) };
+            let buffer = tag.take().ok_or_else(|| {
+                TritonError::from_message(format!("buffer of output '{name}' is already taken"))
+            })?;
+            let raw = buffer.raw();
+            if raw.ptr.cast_const() != base
+                || raw.len != byte_size
+                || raw.memory_type != memory_type
+                || raw.memory_type_id != memory_type_id
+            {
+                return Err(TritonError::from_message(format!(
+                    "output '{name}' is not where its buffer is"
+                )));
+            }
+            OutputData::Buffer(buffer.into_written())
         };
 
         Ok(OutputTensor {

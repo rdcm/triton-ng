@@ -1,10 +1,12 @@
-use crate::inference_request::InferenceRequest;
+use crate::inference_request::{InferenceRequest, InputBuffers};
 use crate::inference_response::InferenceResponse;
+use crate::memory::{GpuBuffer, PinnedRamBuffer, RamBuffer, WrittenBuffer};
 use crate::request::decode_le;
-use crate::response_allocator::ResponseAllocator;
+use crate::response_allocator::{OutputPlan, ResponseAllocator};
 use crate::types::DataType;
 use crate::utils::{Message, cstring_from_str};
 use crate::{Error, TritonError};
+use std::any::Any;
 use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
@@ -13,33 +15,63 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use triton_ng_macros::triton_call;
 
+/// Where the data of an output is.
+pub(crate) enum OutputData {
+    /// Copied to CPU memory owned by the result.
+    Host(Vec<u8>),
+    /// In the buffer given with `add_requested_output_into`.
+    Buffer(WrittenBuffer),
+    /// The buffer was handed over with one of the `take_*` methods.
+    Taken,
+}
+
 pub struct OutputTensor {
     pub name: String,
-    pub data: Vec<u8>,
     pub shape: Vec<i64>,
     pub datatype: crate::types::DataType,
+    pub(crate) data: OutputData,
 }
 
 impl OutputTensor {
+    /// The bytes of the output.
+    ///
+    /// Fails when the output is in a GPU buffer, which the CPU cannot read,
+    /// or when its buffer was taken.
+    pub fn bytes(&self) -> Result<&[u8], Error> {
+        match &self.data {
+            OutputData::Host(data) => Ok(data),
+            OutputData::Buffer(buffer) => {
+                if let Some(buffer) = buffer.downcast_ref::<RamBuffer>() {
+                    Ok(buffer)
+                } else if let Some(buffer) = buffer.downcast_ref::<PinnedRamBuffer>() {
+                    Ok(buffer)
+                } else {
+                    Err(format!("output '{}' is in GPU memory", self.name).into())
+                }
+            }
+            OutputData::Taken => Err(format!("buffer of output '{}' is taken", self.name).into()),
+        }
+    }
+
     pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
         self.expect_datatype(DataType::Fp32)?;
-        decode_le(&self.data, f32::from_le_bytes)
+        decode_le(self.bytes()?, f32::from_le_bytes)
     }
 
     pub fn as_i32_vec(&self) -> Result<Vec<i32>, Error> {
         self.expect_datatype(DataType::Int32)?;
-        decode_le(&self.data, i32::from_le_bytes)
+        decode_le(self.bytes()?, i32::from_le_bytes)
     }
 
     pub fn as_i64_vec(&self) -> Result<Vec<i64>, Error> {
         self.expect_datatype(DataType::Int64)?;
-        decode_le(&self.data, i64::from_le_bytes)
+        decode_le(self.bytes()?, i64::from_le_bytes)
     }
 
     /// Integer tensor widened to `i64`, accepts both INT32 and INT64.
     pub fn as_index_vec(&self) -> Result<Vec<i64>, Error> {
         match self.datatype {
-            DataType::Int32 => Ok(decode_le(&self.data, i32::from_le_bytes)?
+            DataType::Int32 => Ok(decode_le(self.bytes()?, i32::from_le_bytes)?
                 .into_iter()
                 .map(i64::from)
                 .collect()),
@@ -72,6 +104,58 @@ impl InferenceResult {
             .find(|o| o.name == name)
             .ok_or_else(|| format!("missing output '{name}'").into())
     }
+
+    /// Hands over the GPU buffer the output `name` was written into, see
+    /// [`InferenceRequest::add_requested_output_into`].
+    ///
+    /// Fails when the output is missing, is not in a GPU buffer, or was taken.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut result = ctx.server().infer_async(inference).await?;
+    /// let state: GpuBuffer = result.take_gpu("ho")?;
+    /// ```
+    pub fn take_gpu(&mut self, name: &str) -> Result<GpuBuffer, Error> {
+        self.take(name, "GPU")
+    }
+
+    /// Hands over the pinned buffer the output `name` was written into, see
+    /// [`InferenceResult::take_gpu`].
+    pub fn take_pinned(&mut self, name: &str) -> Result<PinnedRamBuffer, Error> {
+        self.take(name, "pinned")
+    }
+
+    /// Hands over the CPU buffer the output `name` was written into, see
+    /// [`InferenceResult::take_gpu`].
+    pub fn take_ram(&mut self, name: &str) -> Result<RamBuffer, Error> {
+        self.take(name, "CPU")
+    }
+
+    fn output_mut(&mut self, name: &str) -> Result<&mut OutputTensor, Error> {
+        self.outputs
+            .iter_mut()
+            .find(|o| o.name == name)
+            .ok_or_else(|| format!("missing output '{name}'").into())
+    }
+
+    fn take<T: Any>(&mut self, name: &str, kind: &str) -> Result<T, Error> {
+        let output = self.output_mut(name)?;
+        match std::mem::replace(&mut output.data, OutputData::Taken) {
+            OutputData::Buffer(buffer) => match buffer.downcast::<T>() {
+                Ok(buffer) => Ok(*buffer),
+                Err(buffer) => {
+                    output.data = OutputData::Buffer(buffer);
+                    Err(format!("output '{name}' is not in a {kind} buffer").into())
+                }
+            },
+            OutputData::Host(data) => {
+                output.data = OutputData::Host(data);
+                Err(format!("output '{name}' has no buffer").into())
+            }
+            OutputData::Taken => Err(format!("buffer of output '{name}' is taken").into()),
+        }
+    }
 }
 
 impl InferenceResult {
@@ -86,6 +170,7 @@ impl InferenceResult {
 pub struct InferenceContext {
     completion: Arc<Completion>,
     allocator: ResponseAllocator,
+    outputs: OutputPlan,
     pending_outputs: Vec<OutputTensor>,
     error: Option<String>,
 }
@@ -325,7 +410,7 @@ impl Server {
     ) -> Result<(), TritonError> {
         let allocator = ResponseAllocator::new()?;
 
-        let (raw, buffers) = request.into_raw_parts();
+        let (raw, buffers, outputs) = request.into_raw_parts();
         let buffers_ptr = Box::into_raw(Box::new(buffers)) as *mut c_void;
 
         // Register the release callback before handing the request to Triton.
@@ -344,6 +429,7 @@ impl Server {
         let context = Box::new(InferenceContext {
             completion,
             allocator,
+            outputs: OutputPlan::new(outputs),
             pending_outputs: Vec::new(),
             error: None,
         });
@@ -353,7 +439,9 @@ impl Server {
             triton_ng_sys::TRITONSERVER_InferenceRequestSetResponseCallback(
                 raw,
                 (*context_ptr.cast::<InferenceContext>()).allocator.as_ptr(),
-                ptr::null_mut(),
+                ptr::from_ref(&(*context_ptr.cast::<InferenceContext>()).outputs)
+                    .cast_mut()
+                    .cast(),
                 Some(inference_response_complete),
                 context_ptr,
             )
@@ -387,8 +475,8 @@ impl Server {
 /// Called by Triton after the backend has fully released the inference request.
 /// At this point it is safe to delete the request object.
 ///
-/// `userp` is the boxed `Vec<Vec<u8>>` of input buffers referenced by the
-/// request, they are freed only after the request itself is deleted.
+/// `userp` is the boxed [`InputBuffers`] referenced by the request, they are
+/// freed only after the request itself is deleted.
 ///
 /// The header says RELEASE_ALL should always be set today, but recommends
 /// checking explicitly in case future versions add new flags.
@@ -406,7 +494,7 @@ unsafe extern "C" fn inference_request_release(
     }
 
     if !userp.is_null() {
-        unsafe { drop(Box::from_raw(userp as *mut Vec<Vec<u8>>)) };
+        unsafe { drop(Box::from_raw(userp as *mut InputBuffers)) };
     }
 }
 
