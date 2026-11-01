@@ -141,16 +141,6 @@ make build
 make docker-env-down && make docker-env-up
 ```
 
-## Features
-
-| Feature | Description |
-|---|---|
-| `cuda` | Enable GPU and pinned memory allocation in `ResponseAllocator` |
-
-```toml
-triton-ng = { version = "0.1", features = ["cuda"] }
-```
-
 ## License
 
 MIT

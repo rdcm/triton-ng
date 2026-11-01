@@ -3,19 +3,10 @@ use std::os::raw::{c_char, c_void};
 use std::ptr;
 use triton_ng_macros::triton_call;
 
-// CUDA runtime functions — available when `cuda` feature is enabled.
-// libcudart is linked via build.rs.
-#[cfg(feature = "cuda")]
-unsafe extern "C" {
-    fn cudaMalloc(dev_ptr: *mut *mut c_void, size: usize) -> i32;
-    fn cudaFree(dev_ptr: *mut c_void) -> i32;
-    fn cudaMallocHost(ptr: *mut *mut c_void, size: usize) -> i32;
-    fn cudaFreeHost(ptr: *mut c_void) -> i32;
-}
+const CPU: triton_ng_sys::TRITONSERVER_MemoryType =
+    triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
 
-/// Tag stored in `buffer_userp` so the release callback knows how to free.
-type MemoryKind = triton_ng_sys::TRITONSERVER_MemoryType;
-
+/// Allocator of BLS outputs: every output goes to CPU memory from `malloc`.
 pub struct ResponseAllocator {
     ptr: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
 }
@@ -56,15 +47,12 @@ impl Drop for ResponseAllocator {
 }
 
 /// Triton calls this to allocate a buffer for each output tensor.
-///
-/// We store the *actual* memory kind in `buffer_userp` (as a `Box<MemoryKind>`)
-/// so that `release_fn` knows which allocator to use when freeing.
 unsafe extern "C" fn alloc_fn(
     _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
     _tensor_name: *const c_char,
     byte_size: usize,
-    memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
-    memory_type_id: i64,
+    _memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
+    _memory_type_id: i64,
     _userp: *mut c_void,
     buffer: *mut *mut c_void,
     buffer_userp: *mut *mut c_void,
@@ -84,36 +72,27 @@ unsafe extern "C" fn alloc_fn(
         };
     }
 
-    // Zero-size outputs are valid; return a null buffer with no userp.
-    if byte_size == 0 {
-        unsafe {
-            *buffer = ptr::null_mut();
-            *buffer_userp = ptr::null_mut();
-            *actual_memory_type =
-                triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
-            *actual_memory_type_id = 0;
+    // Zero-size outputs are valid; return a null buffer.
+    let buf = if byte_size == 0 {
+        ptr::null_mut()
+    } else {
+        let buf = unsafe { libc::malloc(byte_size) };
+        if buf.is_null() {
+            return unsafe {
+                triton_ng_sys::TRITONSERVER_ErrorNew(
+                    triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
+                    c"failed to allocate output buffer".as_ptr() as *const c_char,
+                )
+            };
         }
-        return ptr::null_mut();
-    }
-
-    let (buf, actual_kind, actual_id) = allocate(byte_size, memory_type, memory_type_id);
-
-    if buf.is_null() {
-        return unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                c"failed to allocate output buffer".as_ptr() as *const c_char,
-            )
-        };
-    }
-
-    let kind_ptr = Box::into_raw(Box::new(actual_kind)) as *mut c_void;
+        buf
+    };
 
     unsafe {
         *buffer = buf;
-        *buffer_userp = kind_ptr;
-        *actual_memory_type = actual_kind;
-        *actual_memory_type_id = actual_id;
+        *buffer_userp = ptr::null_mut();
+        *actual_memory_type = CPU;
+        *actual_memory_type_id = 0;
     }
 
     ptr::null_mut()
@@ -137,10 +116,9 @@ unsafe extern "C" fn query_fn(
         };
     }
 
-    let (kind, id) = unsafe { placement(*memory_type, *memory_type_id) };
     unsafe {
-        *memory_type = kind;
-        *memory_type_id = id;
+        *memory_type = CPU;
+        *memory_type_id = 0;
     }
     ptr::null_mut()
 }
@@ -149,158 +127,11 @@ unsafe extern "C" fn query_fn(
 unsafe extern "C" fn release_fn(
     _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
     buffer: *mut c_void,
-    buffer_userp: *mut c_void,
+    _buffer_userp: *mut c_void,
     _byte_size: usize,
     _memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
     _memory_type_id: i64,
 ) -> *mut triton_ng_sys::TRITONSERVER_Error {
-    // Null buffer means it was a zero-size allocation — nothing to free.
-    if buffer.is_null() {
-        return ptr::null_mut();
-    }
-
-    if buffer_userp.is_null() {
-        return unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                c"output buffer was not allocated by triton-ng".as_ptr() as *const c_char,
-            )
-        };
-    }
-
-    // Recover and drop the metadata tag.
-    let kind = unsafe { *Box::from_raw(buffer_userp as *mut MemoryKind) };
-
-    free_buffer(buffer, kind);
-
+    unsafe { libc::free(buffer) };
     ptr::null_mut()
-}
-
-/// Returns `(ptr, actual_kind, actual_device_id)`.
-/// Falls back to CPU when the requested kind is unavailable.
-fn allocate(
-    byte_size: usize,
-    requested: triton_ng_sys::TRITONSERVER_MemoryType,
-    device_id: i64,
-) -> (*mut c_void, triton_ng_sys::TRITONSERVER_MemoryType, i64) {
-    use triton_ng_sys::{
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU as CPU,
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
-    };
-
-    match requested {
-        CPU => (cpu_alloc(byte_size), CPU, 0),
-
-        CPU_PINNED => {
-            #[cfg(feature = "cuda")]
-            {
-                let ptr = pinned_alloc(byte_size);
-                if !ptr.is_null() {
-                    return (ptr, CPU_PINNED, 0);
-                }
-            }
-            (cpu_alloc(byte_size), CPU, 0)
-        }
-
-        GPU => {
-            #[cfg(feature = "cuda")]
-            {
-                let ptr = gpu_alloc(byte_size);
-                if !ptr.is_null() {
-                    return (ptr, GPU, device_id);
-                }
-            }
-            let _ = device_id;
-            (cpu_alloc(byte_size), CPU, 0)
-        }
-
-        _ => (cpu_alloc(byte_size), CPU, 0),
-    }
-}
-
-/// Memory kind `allocate` tries first for the requested one.
-fn placement(
-    requested: triton_ng_sys::TRITONSERVER_MemoryType,
-    device_id: i64,
-) -> (triton_ng_sys::TRITONSERVER_MemoryType, i64) {
-    use triton_ng_sys::{
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU as CPU,
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
-    };
-
-    match requested {
-        #[cfg(feature = "cuda")]
-        CPU_PINNED => (CPU_PINNED, 0),
-        #[cfg(feature = "cuda")]
-        GPU => (GPU, device_id),
-        _ => {
-            let _ = (CPU_PINNED, GPU, device_id);
-            (CPU, 0)
-        }
-    }
-}
-
-fn free_buffer(buf: *mut c_void, kind: triton_ng_sys::TRITONSERVER_MemoryType) {
-    use triton_ng_sys::{
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED as CPU_PINNED,
-        TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU as GPU,
-    };
-
-    match kind {
-        CPU_PINNED => {
-            #[cfg(feature = "cuda")]
-            pinned_free(buf);
-            #[cfg(not(feature = "cuda"))]
-            cpu_free(buf);
-        }
-
-        GPU => {
-            #[cfg(feature = "cuda")]
-            gpu_free(buf);
-            #[cfg(not(feature = "cuda"))]
-            cpu_free(buf);
-        }
-
-        _ => cpu_free(buf),
-    }
-}
-
-#[inline]
-fn cpu_alloc(size: usize) -> *mut c_void {
-    unsafe { libc::malloc(size) }
-}
-
-#[inline]
-fn cpu_free(ptr: *mut c_void) {
-    unsafe { libc::free(ptr) }
-}
-
-#[cfg(feature = "cuda")]
-#[inline]
-fn gpu_alloc(size: usize) -> *mut c_void {
-    let mut ptr: *mut c_void = ptr::null_mut();
-    let rc = unsafe { cudaMalloc(&mut ptr, size) };
-    if rc != 0 { ptr::null_mut() } else { ptr }
-}
-
-#[cfg(feature = "cuda")]
-#[inline]
-fn gpu_free(ptr: *mut c_void) {
-    unsafe { cudaFree(ptr) };
-}
-
-#[cfg(feature = "cuda")]
-#[inline]
-fn pinned_alloc(size: usize) -> *mut c_void {
-    let mut ptr: *mut c_void = ptr::null_mut();
-    let rc = unsafe { cudaMallocHost(&mut ptr, size) };
-    if rc != 0 { ptr::null_mut() } else { ptr }
-}
-
-#[cfg(feature = "cuda")]
-#[inline]
-fn pinned_free(ptr: *mut c_void) {
-    unsafe { cudaFreeHost(ptr) };
 }
