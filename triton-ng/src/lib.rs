@@ -1,29 +1,49 @@
+#[path = "allocation.rs"]
+pub(crate) mod allocation;
 #[path = "backend.rs"]
 pub mod backend;
 #[path = "backend_handle.rs"]
 pub mod backend_handle;
+#[path = "buffers.rs"]
+pub mod buffers;
 #[path = "error.rs"]
 pub mod error;
 #[path = "executor.rs"]
 pub mod executor;
+#[path = "inference_future.rs"]
+pub mod inference_future;
 #[path = "inference_request.rs"]
 pub mod inference_request;
 #[path = "inference_response.rs"]
-pub mod inference_response;
+pub(crate) mod inference_response;
+#[path = "inference_result.rs"]
+pub mod inference_result;
+#[path = "input.rs"]
+pub mod input;
+#[path = "input_buffer.rs"]
+pub mod input_buffer;
 #[path = "log.rs"]
 pub mod log;
-#[path = "memory.rs"]
-pub mod memory;
+#[path = "memory_manager.rs"]
+pub mod memory_manager;
+#[path = "message.rs"]
+pub(crate) mod message;
 #[path = "model.rs"]
 pub mod model;
 #[path = "model_instance.rs"]
 pub mod model_instance;
+#[path = "output.rs"]
+pub mod output;
+#[path = "output_buffer.rs"]
+pub mod output_buffer;
+#[path = "raw_buffer.rs"]
+mod raw_buffer;
 #[path = "request.rs"]
 pub mod request;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
-pub mod response_allocator;
+pub(crate) mod response_allocator;
 #[path = "server.rs"]
 pub mod server;
 #[path = "types.rs"]
@@ -33,16 +53,22 @@ pub(crate) mod utils;
 
 pub use backend::*;
 pub use backend_handle::*;
+pub use buffers::*;
 pub use error::*;
 pub use executor::Context;
+pub use inference_future::*;
 pub use inference_request::*;
-pub use inference_response::*;
-pub use memory::*;
+pub use inference_result::*;
+pub use input::*;
+pub use input_buffer::*;
+pub use memory_manager::*;
 pub use model::*;
 pub use model_instance::*;
+pub use output::*;
+pub use output_buffer::*;
+pub(crate) use raw_buffer::{RawBuffer, Sealed};
 pub use request::*;
 pub use response::*;
-pub use response_allocator::*;
 pub use server::*;
 pub use types::*;
 
@@ -285,5 +311,68 @@ pub mod __macro_support {
             .collect();
 
         Ok((model, requests))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::allocation::Allocation;
+    use crate::inference_response::InferenceResponse;
+    use crate::message::Message;
+    use crate::response_allocator::ResponseAllocator;
+    use crate::*;
+
+    fn send<T: ?Sized + Send>() {}
+    fn sync<T: ?Sized + Sync>() {}
+
+    trait NotSend<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> NotSend<()> for T {}
+    impl<T: ?Sized + Send> NotSend<u8> for T {}
+
+    trait NotSync<A> {
+        fn check() {}
+    }
+    impl<T: ?Sized> NotSync<()> for T {}
+    impl<T: ?Sized + Sync> NotSync<u8> for T {}
+
+    macro_rules! send_and_sync {
+        ($($t:ty),*) => {$(send::<$t>(); sync::<$t>();)*};
+    }
+    macro_rules! send_not_sync {
+        ($($t:ty),*) => {$(send::<$t>(); <$t as NotSync<_>>::check();)*};
+    }
+    macro_rules! neither {
+        ($($t:ty),*) => {$(<$t as NotSend<_>>::check(); <$t as NotSync<_>>::check();)*};
+    }
+
+    #[test]
+    fn thread_safety_of_every_handle_is_as_documented() {
+        send_and_sync!(
+            TritonError,
+            Server,
+            Context,
+            MemoryManager,
+            RamBuffer,
+            PinnedRamBuffer,
+            GpuBuffer,
+            UninitGpuBuffer,
+            OutputBuffer,
+            InferenceFuture,
+            InferenceResult,
+            Message,
+            ResponseAllocator,
+            Allocation
+        );
+        send_not_sync!(Request, Response, InferenceRequest, InferenceResponse);
+        neither!(
+            Model,
+            ModelInstance,
+            BackendHandle,
+            Input<'static>,
+            Output<'static>,
+            RawBuffer
+        );
     }
 }

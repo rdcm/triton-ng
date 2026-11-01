@@ -2,11 +2,19 @@ use crate::utils::cstr_to_string;
 
 pub type Error = Box<dyn std::error::Error>;
 
+/// An error from Triton or from triton-ng, with its message.
+///
+/// Owns the `TRITONSERVER_Error` it may carry and deletes it on drop. `Send + Sync`.
 #[derive(Debug)]
 pub struct TritonError {
     ptr: *mut triton_ng_sys::TRITONSERVER_Error,
     message: String,
 }
+
+// SAFETY: a TRITONSERVER_Error is an immutable code and message owned by this
+// value; reading it and deleting it are not tied to the thread that made it.
+unsafe impl Send for TritonError {}
+unsafe impl Sync for TritonError {}
 
 impl TritonError {
     pub(crate) unsafe fn new(ptr: *mut triton_ng_sys::TRITONSERVER_Error) -> Self {

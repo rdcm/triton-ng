@@ -15,6 +15,11 @@ use triton_ng_macros::triton_call;
 /// Every instance has its own runtime that runs the batches given to it, see
 /// [`crate::Backend::model_instance_execute`].
 ///
+/// Borrows the `TRITONBACKEND_ModelInstance`: Triton owns it and keeps it
+/// alive for the hook, so there is nothing to drop. Neither `Send` nor
+/// `Sync`: use it only inside the hook; batches get the instance state
+/// through [`crate::Context::instance_state`].
+///
 /// # Examples
 ///
 /// ```ignore

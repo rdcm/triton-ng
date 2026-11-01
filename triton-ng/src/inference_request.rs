@@ -1,8 +1,8 @@
 use crate::TritonError;
-use crate::memory::{InputBuffer, OutputBuffer};
 use crate::server::Server;
 use crate::types::DataType;
 use crate::utils::cstring_from_str;
+use crate::{InputBuffer, OutputBuffer};
 use std::collections::HashMap;
 use triton_ng_macros::triton_call;
 
@@ -13,6 +13,20 @@ pub(crate) type InputBuffers = Vec<Box<dyn Send>>;
 /// once the buffer is handed to Triton.
 pub(crate) type OutputBuffers = HashMap<String, Option<OutputBuffer>>;
 
+/// A BLS request to another model, submitted with [`crate::Server::infer_async`].
+///
+/// Owns the `TRITONSERVER_InferenceRequest` and its input buffers. Dropped
+/// before it is submitted, it deletes the request; once submitted, Triton
+/// owns it and the release callback deletes it. `Send`, not `Sync`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
+/// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], bytes)?;
+/// inference.add_requested_output("EMBEDDING")?;
+/// let result = ctx.server().infer_async(inference).await?;
+/// ```
 pub struct InferenceRequest {
     ptr: *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
     /// Input buffers referenced by the request. Triton does not copy input

@@ -1,5 +1,5 @@
 use crate::error::Error;
-use crate::memory::MemoryManager;
+use crate::memory_manager::MemoryManager;
 use crate::model::{Model, SharedState};
 use crate::server::Server;
 use std::any::Any;

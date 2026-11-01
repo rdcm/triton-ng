@@ -42,15 +42,27 @@ the reason.
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
 request: Triton finishes it and the result is discarded.
 
-**What can move to another thread:**
+**Handles and threads.** Every type that wraps a Triton object either owns it, and then its
+`Drop` releases it, or borrows it from Triton, and then it has no `Drop` and its lifetime is
+bounded by what Triton guarantees. Backend code only sees these types, never raw pointers.
 
-| Type | `Send` | `Sync` | Notes |
-|---|---|---|---|
-| `Request`, `Response` | yes | no | one request is used by one thread at a time |
-| `InferenceRequest`, `InferenceFuture` | yes | no | |
-| `Server`, `Context`, `MemoryManager` | yes | yes | `Clone` |
-| `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | yes | yes | see [Memory buffers](memory_buffers.md) |
-| `Model` | no | no | used only in the init and finalize hooks |
+| Type | Triton object | On drop | `Send` | `Sync` | Notes |
+|---|---|---|---|---|---|
+| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time |
+| `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
+| `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
+| `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
+| `InferenceRequest` | owns the BLS request and its input buffers | deletes it if it was never submitted | yes | no | Triton deletes it after a submit |
+| `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
+| `TritonError` | owns the error object, if any | deletes it | yes | yes | |
+| `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
+| `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |
+| `Context` | none | | yes | yes | `Clone` |
+| `Model`, `ModelInstance`, `BackendHandle` | borrow the model, instance, backend | nothing | no | no | used only in the init and finalize hooks |
+
+A unit test in the crate (`thread_safety_of_every_handle_is_as_documented`) checks every row:
+it does not compile when a type is `Send` or `Sync` where this table says it is not, or the other
+way around.
 
 **Lifetimes.** A model is not finalized while any of its requests is alive, and the server is not
 destroyed while any model is loaded, so a batch never outlives the server it calls. Buffers from

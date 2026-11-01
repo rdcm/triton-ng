@@ -1,6 +1,7 @@
 use crate::error::{Error, TritonError};
+use crate::message::Message;
 use crate::server::Server;
-use crate::utils::{Message, cstr_to_string};
+use crate::utils::cstr_to_string;
 use std::any::Any;
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -15,6 +16,22 @@ pub(crate) type SharedState = Arc<dyn Any + Send + Sync>;
 /// Model state stored behind `TRITONBACKEND_ModelSetState`.
 type BoxedState = SharedState;
 
+/// A model that uses the backend, given to the model and instance hooks.
+///
+/// Borrows the `TRITONBACKEND_Model`: Triton owns it and keeps it alive for
+/// the hook, so there is nothing to drop. Neither `Send` nor `Sync`: use it
+/// only inside the hook; batches get what they need through
+/// [`crate::Context`].
+///
+/// # Examples
+///
+/// ```ignore
+/// fn model_initialize(model: &Model) -> Result<(), Error> {
+///     let vocab = model.load_file("vocab.txt")?;
+///     model.set_state(State { vocab })?;
+///     Ok(())
+/// }
+/// ```
 pub struct Model {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Model,
 }

@@ -1,17 +1,27 @@
 use crate::TritonError;
-use crate::memory::{RawBuffer, WrittenBuffer};
+use crate::inference_result::{OutputData, OutputTensor};
 use crate::response_allocator::OutputTag;
-use crate::server::{OutputData, OutputTensor};
 use crate::types::DataType;
 use crate::utils::cstr_to_string;
+use crate::{RawBuffer, WrittenBuffer};
 use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::slice;
 use triton_ng_macros::triton_call;
 
-pub struct InferenceResponse {
+/// A response to a BLS request, read in the response callback.
+///
+/// Owns the `TRITONSERVER_InferenceResponse` and deletes it on drop, which
+/// releases its output buffers. `Send`, not `Sync`: reading the outputs
+/// takes the buffers out of their allocator tags.
+pub(crate) struct InferenceResponse {
     ptr: *mut triton_ng_sys::TRITONSERVER_InferenceResponse,
 }
+
+// SAFETY: Triton delivers the response on one of its threads and lets it be
+// deleted from any thread; output buffers are released through
+// `response_allocator`, whose callbacks are thread-safe.
+unsafe impl Send for InferenceResponse {}
 
 impl InferenceResponse {
     pub(crate) fn from_ptr(
@@ -81,7 +91,7 @@ impl InferenceResponse {
         };
 
         let data = if userp.is_null() {
-            if memory_type != crate::memory::CPU {
+            if memory_type != crate::CPU {
                 return Err(TritonError::from_message(format!(
                     "output '{name}' is not in CPU memory without a buffer"
                 )));
@@ -150,7 +160,7 @@ impl Drop for InferenceResponse {
 #[cfg(test)]
 mod tests {
     use super::written_output;
-    use crate::memory::{CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
+    use crate::{CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
 
     fn tagged_gpu() -> (Option<OutputBuffer>, RawBuffer) {
         let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());

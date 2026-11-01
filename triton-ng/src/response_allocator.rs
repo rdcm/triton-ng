@@ -1,6 +1,6 @@
 use crate::TritonError;
 use crate::inference_request::OutputBuffers;
-use crate::memory::{CPU, OutputBuffer};
+use crate::{CPU, OutputBuffer};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
@@ -57,12 +57,21 @@ impl OutputPlan {
 
 /// Allocator of BLS outputs: outputs with an [`OutputBuffer`] go to that
 /// buffer, the others to CPU memory from `malloc`.
-pub struct ResponseAllocator {
+///
+/// Owns the `TRITONSERVER_ResponseAllocator` and deletes it on drop, after
+/// the last response of its request. `Send + Sync`.
+pub(crate) struct ResponseAllocator {
     ptr: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
 }
 
+// SAFETY: the allocator is an immutable table of callbacks, which Triton
+// calls from its own threads, several at once; the callbacks share no state
+// but the request's `OutputPlan`, which is behind a mutex.
+unsafe impl Send for ResponseAllocator {}
+unsafe impl Sync for ResponseAllocator {}
+
 impl ResponseAllocator {
-    pub fn new() -> Result<Self, TritonError> {
+    pub(crate) fn new() -> Result<Self, TritonError> {
         let ptr = triton_call!(triton_ng_sys::TRITONSERVER_ResponseAllocatorNew(
             &mut _,
             Some(alloc_fn),
@@ -242,7 +251,7 @@ unsafe extern "C" fn release_fn(
 #[cfg(test)]
 mod tests {
     use super::OutputPlan;
-    use crate::memory::MemoryManager;
+    use crate::MemoryManager;
     use std::collections::HashMap;
 
     fn plan() -> OutputPlan {
@@ -257,7 +266,7 @@ mod tests {
     fn query_reports_the_memory_of_the_buffer() {
         let plan = plan();
 
-        assert_eq!(plan.placement("ho"), Some((crate::memory::GPU, 1)));
+        assert_eq!(plan.placement("ho"), Some((crate::GPU, 1)));
         assert_eq!(plan.placement("dec"), None);
     }
 
