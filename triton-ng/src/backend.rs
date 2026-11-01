@@ -82,12 +82,15 @@ pub trait Backend {
     /// Initialize for a model instance. This function is optional, a
     /// backend is not required to implement it. This function is called
     /// once when a model instance is created to allow the backend to
-    /// initialize any state associated with the instance.
+    /// initialize any state associated with the instance. Use
+    /// [`ModelInstance::set_state`] to keep state of this instance only;
+    /// batches get it through [`Context::instance_state`].
     ///
     /// Every instance gets its own runtime for its batches, configured by
     /// the model parameters `worker_threads` (threads of the runtime, 1 by
     /// default) and `max_batches_in_flight` (see
-    /// [`Backend::model_instance_execute`]).
+    /// [`Backend::model_instance_execute`]). The runtime is started before
+    /// this function and stopped again when it fails.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceInitialize.
     fn model_instance_initialize(_instance: &ModelInstance) -> Result<(), Error> {

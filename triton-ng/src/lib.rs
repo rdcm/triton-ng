@@ -96,13 +96,18 @@ pub mod __macro_support {
     }
 
     /// TRITONBACKEND_ModelInstanceInitialize. Starts the runtime of the
-    /// instance after the hook.
+    /// instance before the hook, which may store the instance state in it,
+    /// and stops it again when the hook fails.
     pub unsafe fn model_instance_initialize<B: Backend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
-        into_error_ptr(catch(|| {
-            B::model_instance_initialize(&instance)?;
-            start_executor(&instance)
-        }))
+        let result = catch(|| {
+            start_executor(&instance)?;
+            B::model_instance_initialize(&instance)
+        });
+        if result.is_err() {
+            stop_executor(&instance);
+        }
+        into_error_ptr(result)
     }
 
     /// TRITONBACKEND_ModelInstanceFinalize. Waits for the batches of the
@@ -133,7 +138,7 @@ pub mod __macro_support {
 
         let prepared = catch(|| {
             let executor = instance.executor()?;
-            let ctx = crate::executor::context(&model, instance.device_id()?)?;
+            let ctx = crate::executor::context(&model, executor, instance.device_id()?)?;
             Ok((executor, ctx))
         });
 

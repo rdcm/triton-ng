@@ -1,11 +1,13 @@
-use crate::error::TritonError;
+use crate::error::{Error, TritonError};
 use crate::executor::InstanceExecutor;
 use crate::model::Model;
 use crate::types::InstanceKind;
 use crate::utils::cstr_to_string;
 use libc::c_char;
+use std::any::Any;
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::Arc;
 use triton_ng_macros::triton_call;
 
 /// A model instance: Triton runs one per `instance_group` entry and device.
@@ -62,6 +64,27 @@ impl ModelInstance {
             &mut _
         ))?;
         Ok(Model::from_ptr(ptr))
+    }
+
+    /// Stores backend-defined state for this instance.
+    ///
+    /// Call it once, from `Backend::model_instance_initialize`; batches of the
+    /// instance get it through [`crate::Context::instance_state`]. Use it for
+    /// what must not be shared between instances, like caches of GPU buffers
+    /// of the instance's device. The state is dropped after
+    /// `Backend::model_instance_finalize`, once every batch of the instance
+    /// has finished. A second call fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    ///     instance.set_state(Mutex::new(GpuCache::new(64 << 20)))?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), Error> {
+        self.executor()?.set_state(Arc::new(state))
     }
 
     /// Stores the executor of this instance. Fails if one is already stored:

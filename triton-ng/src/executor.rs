@@ -4,7 +4,7 @@ use crate::model::{Model, SharedState};
 use crate::server::Server;
 use std::any::Any;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::{AcquireError, Semaphore};
@@ -16,7 +16,8 @@ const WORKER_THREADS: &str = "worker_threads";
 const MAX_BATCHES_IN_FLIGHT: &str = "max_batches_in_flight";
 
 /// What a batch task gets from its model: the server for BLS calls, Triton's
-/// memory manager and the state stored with [`Model::set_state`].
+/// memory manager, the state stored with [`Model::set_state`] and the state
+/// of its instance stored with [`crate::ModelInstance::set_state`].
 ///
 /// `Context` is `Send + Clone` and holds no Triton pointers, so it can be used
 /// across `.await` and passed to other tasks.
@@ -38,6 +39,7 @@ pub struct Context {
     server: Server,
     memory: MemoryManager,
     state: Option<SharedState>,
+    instance_state: Option<SharedState>,
     device_id: i32,
 }
 
@@ -69,18 +71,40 @@ impl Context {
             .ok_or_else(|| "model state has unexpected type".into())
     }
 
+    /// The state of the instance that runs the batch, stored with
+    /// [`crate::ModelInstance::set_state`]: what must not be shared between the
+    /// instances of a model, like caches of GPU buffers.
+    ///
+    /// Fails when the instance has no state or it is not a `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let cache = ctx.instance_state::<Mutex<GpuCache>>()?;
+    /// let state = cache.lock()?.take(ctx.memory(), ctx.device_id(), bytes)?;
+    /// ```
+    pub fn instance_state<T: Any>(&self) -> Result<&T, Error> {
+        self.instance_state
+            .as_deref()
+            .ok_or("model instance state is not initialized")?
+            .downcast_ref::<T>()
+            .ok_or_else(|| "model instance state has unexpected type".into())
+    }
+
     /// Device of the instance that runs the batch (GPU id for `KIND_GPU`).
     pub fn device_id(&self) -> i32 {
         self.device_id
     }
 }
 
-/// Runtime of one model instance, with the batches it runs.
+/// Runtime of one model instance, with the batches it runs and the state of
+/// the instance.
 pub(crate) struct InstanceExecutor {
     runtime: Runtime,
     tasks: TaskTracker,
     /// One permit per batch in flight, `None` when the number is not limited.
     slots: Option<Arc<Semaphore>>,
+    state: OnceLock<SharedState>,
 }
 
 impl InstanceExecutor {
@@ -111,7 +135,15 @@ impl InstanceExecutor {
             runtime,
             tasks: TaskTracker::new(),
             slots: (max_in_flight > 0).then(|| Arc::new(Semaphore::new(max_in_flight))),
+            state: OnceLock::new(),
         })
+    }
+
+    /// Stores the state of the instance. Fails if one is already stored.
+    pub(crate) fn set_state(&self, state: SharedState) -> Result<(), Error> {
+        self.state
+            .set(state)
+            .map_err(|_| "model instance state is already set".into())
     }
 
     /// Runs the batch `future` on this instance. Waits for a free slot first
@@ -145,13 +177,19 @@ impl InstanceExecutor {
     }
 }
 
-/// Server and memory manager of `model` and the device of the instance, as
-/// passed to batch tasks.
-pub(crate) fn context(model: &Model, device_id: i32) -> Result<Context, Error> {
+/// Server and memory manager of `model`, the state of the model and of the
+/// instance run by `executor`, and the device of the instance, as passed to
+/// batch tasks.
+pub(crate) fn context(
+    model: &Model,
+    executor: &InstanceExecutor,
+    device_id: i32,
+) -> Result<Context, Error> {
     Ok(Context {
         server: model.get_server()?,
         memory: MemoryManager::of_model(model)?,
         state: model.shared_state()?,
+        instance_state: executor.state.get().cloned(),
         device_id,
     })
 }
