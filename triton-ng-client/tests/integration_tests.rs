@@ -341,6 +341,23 @@ async fn infer_digit(sut: &Sut, config: &Config) -> Result<i32> {
 }
 
 #[tokio::test]
+async fn custom_backend_answers_from_cached_ram_buffers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let (digit, allocated) = infer_digit_with_memory(&sut, &config, "ram").await?;
+    let (_, allocated_after_reuse) = infer_digit_with_memory(&sut, &config, "ram").await?;
+    let (_, allocated_at_last) = infer_digit_with_memory(&sut, &config, "ram").await?;
+
+    assert_eq!(digit, expected);
+    assert!(allocated >= 1);
+    assert_eq!(allocated_after_reuse, allocated);
+    assert_eq!(allocated_at_last, allocated);
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_answers_from_cached_pinned_buffers() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

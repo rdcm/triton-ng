@@ -5,7 +5,7 @@ use std::time::Duration;
 use triton_ng::backend::Backend;
 use triton_ng::{
     BackendHandle, Context, DataType, Error, GpuBuffer, InferenceRequest, MemoryManager, Model,
-    ModelInstance, Parameter, PinnedRamBuffer, Request, Response, UninitGpuBuffer,
+    ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, Response, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -15,6 +15,7 @@ const LOGITS_BYTES: usize = 10 * 4;
 
 #[derive(Clone, Copy)]
 enum OutputMemory {
+    Ram,
     Pinned,
     Gpu,
     WrongSize,
@@ -25,6 +26,7 @@ impl FromStr for OutputMemory {
 
     fn from_str(memory: &str) -> Result<Self, Error> {
         match memory {
+            "ram" => Ok(Self::Ram),
             "pinned" => Ok(Self::Pinned),
             "gpu" => Ok(Self::Gpu),
             "wrong_size" => Ok(Self::WrongSize),
@@ -41,13 +43,26 @@ struct State {
 
 #[derive(Default)]
 struct Buffers {
+    ram: Mutex<Vec<RamBuffer>>,
     pinned: Mutex<Vec<PinnedRamBuffer>>,
     gpu: Mutex<Vec<GpuBuffer>>,
+    ram_allocated: AtomicI64,
     pinned_allocated: AtomicI64,
     gpu_allocated: AtomicI64,
 }
 
 impl Buffers {
+    fn ram(&self, memory: &MemoryManager, len: usize) -> Result<RamBuffer, Error> {
+        let mut cached = self.ram.lock().map_err(|_| "buffer cache is poisoned")?;
+        match cached.iter().position(|buffer| buffer.len() == len) {
+            Some(index) => Ok(cached.swap_remove(index)),
+            None => {
+                self.ram_allocated.fetch_add(1, Ordering::SeqCst);
+                memory.ram(len)
+            }
+        }
+    }
+
     fn pinned(&self, memory: &MemoryManager, len: usize) -> Result<PinnedRamBuffer, Error> {
         let mut cached = self.pinned.lock().map_err(|_| "buffer cache is poisoned")?;
         match cached.iter().position(|buffer| buffer.len() == len) {
@@ -76,6 +91,14 @@ impl Buffers {
                 memory.gpu(device_id, len)
             }
         }
+    }
+
+    fn put_ram(&self, buffer: RamBuffer) -> Result<(), Error> {
+        self.ram
+            .lock()
+            .map_err(|_| "buffer cache is poisoned")?
+            .push(buffer);
+        Ok(())
     }
 
     fn put_pinned(&self, buffer: PinnedRamBuffer) -> Result<(), Error> {
@@ -181,13 +204,26 @@ async fn digit_with_buffers(
     memory: OutputMemory,
 ) -> Result<i32, Error> {
     let buffers = ctx.instance_state::<Buffers>()?;
-    let mut pinned_image = ctx.memory().pinned(image.len())?;
-    pinned_image.copy_from_slice(&image);
-
     let mut inference = InferenceRequest::new(ctx.server(), &state.target_model, -1)?;
-    inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, pinned_image)?;
+    if let OutputMemory::Ram = memory {
+        let mut ram_image = ctx.memory().ram(image.len())?;
+        ram_image.copy_from_slice(&image);
+        inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, ram_image)?;
+    } else {
+        let mut pinned_image = ctx.memory().pinned(image.len())?;
+        pinned_image.copy_from_slice(&image);
+        inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, pinned_image)?;
+    }
 
     match memory {
+        OutputMemory::Ram => {
+            inference
+                .add_requested_output_into(LOGITS, buffers.ram(ctx.memory(), LOGITS_BYTES)?)?;
+            let mut result = ctx.server().infer_async(inference).await?;
+            let digit = argmax(&result.output(LOGITS)?.as_fp32_vec()?)?;
+            buffers.put_ram(result.take_ram(LOGITS)?)?;
+            Ok(digit)
+        }
         OutputMemory::Pinned => {
             inference
                 .add_requested_output_into(LOGITS, buffers.pinned(ctx.memory(), LOGITS_BYTES)?)?;
@@ -231,6 +267,10 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         .write_i32_vec(&[digit])?;
     response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
     response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+    response.set_parameter(
+        "ram_buffers_allocated",
+        buffers.ram_allocated.load(Ordering::SeqCst),
+    )?;
     response.set_parameter(
         "pinned_buffers_allocated",
         buffers.pinned_allocated.load(Ordering::SeqCst),
