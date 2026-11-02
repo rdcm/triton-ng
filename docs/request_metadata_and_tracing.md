@@ -74,11 +74,28 @@ only the release, which frees the inputs of the request and lets the model unloa
 
 **A submission that fails.** `TRITONSERVER_ServerInferAsync` takes the child trace only after the
 request passes its checks, and its error does not tell whether it did. triton-ng then leaves the
-trace to Triton: a submission rejected before the trace was taken leaks one small trace object,
-instead of risking a double free, and triton-ng logs a warning. Triton rejects a request there only
-for its content (an unknown or missing input or output, a wrong datatype, shape, batch size or
-byte size), so this happens only to a BLS call that fails every time. A model that is not ready,
-a full queue or a failed execution never leak.
+trace to Triton: a submission rejected before the trace was taken leaks one small trace object
+(about 200 bytes), instead of risking a double free, and triton-ng logs a warning. It happens only
+when the request is traced, has a child trace from `set_parent_trace`, and Triton rejects it for
+its content with `INVALID_ARG`, which in core `r25.09` is one of:
+
+| Check of `InferenceRequest::Normalize` | Rejected request |
+|---|---|
+| requested outputs | an output the model config does not have |
+| number of inputs | fewer than the required inputs of the model, or more than all its inputs |
+| input names | an input the model config does not have |
+| batch dimension, when `max_batch_size > 0` | an input without dimensions; inputs whose first dimensions differ; a first dimension greater than `max_batch_size` (shape tensors are exempt) |
+| datatype | an input whose datatype differs from the config |
+| shape | a shape without the batch dimension of another rank than `dims`, or a dimension that differs from a fixed one in `dims`; a `-1` dimension in the request |
+| byte size | data whose total size is not the element count times the element size (except non-linear format inputs) |
+| BYTES data in CPU memory | a length prefix split between buffers or running past the data, more or fewer strings than elements |
+| correlation ID, for a model with a `CONTROL_SEQUENCE_CORRID` control | a string ID to a model with an integer control, or an integer ID to one with a string control |
+
+Every one of them fails the same BLS call every time it is made, so a leak is a sign of a broken
+backend or of a backend out of sync with the config of the model it calls. Nothing else leaks: an
+unknown model fails `InferenceRequest::new` before there is a trace; a model that is not ready or
+unloading, a full queue, a missing correlation ID of a sequence model, a timeout in the queue, a
+failed execution and a cancellation all fail after Triton took the trace, and Triton releases it.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) makes every BLS call to
 `mnist_onnx` a child of its request. With the `echo_metadata` parameter it answers with the
