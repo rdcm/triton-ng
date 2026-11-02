@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, Context, DataType, Error, GpuBuffer, InferenceFuture, InferenceRequest,
-    MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, Response,
-    UninitGpuBuffer,
+    BackendHandle, Context, DataType, Error, ErrorCode, GpuBuffer, InferenceFuture,
+    InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
+    PinnedRamBuffer, RamBuffer, Request, Response, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -162,6 +162,23 @@ impl Backend for MnistBackend {
                 held.push(request);
                 continue;
             }
+            if let Some(Parameter::String(code)) = request.parameter("error_code")? {
+                match code.parse::<ErrorCode>() {
+                    Ok(code) => {
+                        request.respond_error_with_code(code, "error requested by the client")?
+                    }
+                    Err(e) => request.respond_error(&e)?,
+                }
+                continue;
+            }
+            if let Some(Parameter::String(model)) = request.parameter("infer_model")? {
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                match infer_image(&ctx, &model, image).await {
+                    Ok(_) => request.respond_error("the inference succeeded")?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
             if let Some(Parameter::String(memory)) = request.parameter("memory")? {
                 match memory.parse::<OutputMemory>() {
                     Ok(memory) => buffered.push((request, memory)),
@@ -197,6 +214,16 @@ impl Backend for MnistBackend {
 
         Ok(())
     }
+}
+
+async fn infer_image(
+    ctx: &Context,
+    model: &str,
+    image: Vec<u8>,
+) -> Result<InferenceResult, TritonError> {
+    let mut inference = InferenceRequest::new(ctx.server(), model, -1)?;
+    inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image)?;
+    ctx.server().infer_async(inference).await
 }
 
 fn host_inference(ctx: &Context, state: &State, image: Vec<u8>) -> Result<InferenceRequest, Error> {

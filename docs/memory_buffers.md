@@ -1,9 +1,9 @@
 # Memory buffers
 
-By default a BLS call copies everything through plain CPU memory: inputs come from a `Vec<u8>`,
-and every requested output is copied into a `Vec<u8>` that the result owns. When one model's
-output goes straight into the next model, as in a decoding loop, those copies through the CPU
-take most of the call time. Buffers from Triton's memory manager let a backend:
+By default a BLS call goes through plain CPU memory: inputs come from a `Vec<u8>`, and every
+requested output is written into a `Vec<u8>` that the result takes over. When one model's output
+goes straight into the next model, as in a decoding loop, the round trips through the CPU take
+most of the call time. Buffers from Triton's memory manager let a backend:
 
 - send inputs from pinned memory, which Triton copies to the GPU faster than plain memory;
 - keep an output on the GPU and pass it as the input of the next BLS call;
@@ -89,8 +89,9 @@ the `Arc` is shared until the release, and becomes unique again only after it.
 
 ## Outputs
 
-An output requested with `add_requested_output` is copied to CPU memory that the result owns,
-and is read with `bytes`, `as_fp32_vec` and the other `as_*` methods.
+An output requested with `add_requested_output` is written into CPU memory that the result
+takes over without copying it, and is read with `bytes`, `as_fp32_vec` and the other `as_*`
+methods.
 
 `add_requested_output_into` writes the output into a buffer of the backend instead:
 

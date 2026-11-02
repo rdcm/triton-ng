@@ -172,7 +172,8 @@ impl InferenceRequest {
         self.append_input_buffer(name, buffer)
     }
 
-    /// Requests the output `name`, copied to CPU memory that the result owns.
+    /// Requests the output `name`, written into CPU memory that the result
+    /// takes over without copying it.
     pub fn add_requested_output(&mut self, name: &str) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
 

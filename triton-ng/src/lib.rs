@@ -80,11 +80,12 @@ pub use triton_ng_macros::backend;
 pub mod __macro_support {
     use crate::backend::Backend;
     use crate::backend_handle::BackendHandle;
-    use crate::error::Error;
+    use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
     use crate::model::Model;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
+    use crate::response_allocator::ResponseAllocator;
     use std::ffi::c_void;
 
     /// Opaque error pointer returned by Triton backend entry points.
@@ -99,10 +100,13 @@ pub mod __macro_support {
         into_error_ptr(catch(|| B::initialize(&backend)))
     }
 
-    /// TRITONBACKEND_Finalize.
+    /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
+    /// after the hook.
     pub unsafe fn finalize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { backend_handle(backend) };
-        into_error_ptr(catch(|| B::finalize(&backend)))
+        let result = catch(|| B::finalize(&backend));
+        ResponseAllocator::release_shared();
+        into_error_ptr(result)
     }
 
     /// TRITONBACKEND_ModelInitialize.
@@ -184,10 +188,11 @@ pub mod __macro_support {
                 }
             }
             Err(e) => {
+                let code = TritonError::code_of(&e);
                 let message = e.to_string();
                 crate::log::error(&format!("model instance execute failed: {message}"));
                 for request in requests {
-                    if let Err(e) = request.respond_error(&message) {
+                    if let Err(e) = request.respond_error_with_code(code, &message) {
                         crate::log::error(&format!("failed to send error response: {e}"));
                     }
                 }
@@ -213,21 +218,20 @@ pub mod __macro_support {
     fn into_error_ptr(result: Result<(), Error>) -> ErrorPtr {
         match result {
             Ok(()) => NULL_ERROR,
-            Err(e) => make_internal_error(&e.to_string()),
+            Err(e) => make_error(TritonError::code_of(&e), &e.to_string()),
         }
     }
 
     fn make_internal_error(msg: &str) -> ErrorPtr {
+        make_error(ErrorCode::Internal, msg)
+    }
+
+    fn make_error(code: ErrorCode, msg: &str) -> ErrorPtr {
         // Replace null bytes: CString cannot contain them.
         let sanitized = msg.replace('\0', "?");
         // SAFETY: replace('\0') guarantees no null bytes remain.
         let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
-        unsafe {
-            triton_ng_sys::TRITONSERVER_ErrorNew(
-                triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL,
-                c_str.as_ptr(),
-            ) as ErrorPtr
-        }
+        unsafe { triton_ng_sys::TRITONSERVER_ErrorNew(code.to_sys(), c_str.as_ptr()) as ErrorPtr }
     }
 
     unsafe fn backend_handle(ptr: *mut c_void) -> BackendHandle {

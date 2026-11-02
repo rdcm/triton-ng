@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use common::config::Config;
 use common::sut::{Sut, create_posix_shm, remove_posix_shm};
+use tonic::Code;
 use triton_ng_client::Parameter;
 
 #[tokio::test]
@@ -432,6 +433,59 @@ async fn custom_backend_fails_output_into_buffer_of_wrong_size() -> Result<()> {
         format!("{error:#}").contains("has 40 bytes, its buffer has 4"),
         "{error:#}"
     );
+    Ok(())
+}
+
+async fn grpc_code_of_failed_inference(
+    sut: &Sut,
+    config: &Config,
+    parameter: &str,
+    value: &str,
+) -> Result<Code> {
+    let error = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([(parameter.to_string(), Parameter::String(value.to_string()))]),
+        )
+        .await
+        .err()
+        .context("the inference succeeded")?;
+    match error.downcast_ref::<triton_ng_client::Error>() {
+        Some(triton_ng_client::Error::Grpc(status)) => Ok(status.code()),
+        _ => anyhow::bail!("not a gRPC error: {error:#}"),
+    }
+}
+
+#[tokio::test]
+async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    for (code, expected) in [
+        ("INTERNAL", Code::Internal),
+        ("NOT_FOUND", Code::NotFound),
+        ("INVALID_ARG", Code::InvalidArgument),
+        ("UNAVAILABLE", Code::Unavailable),
+        ("UNSUPPORTED", Code::Unimplemented),
+        ("ALREADY_EXISTS", Code::AlreadyExists),
+        ("CANCELLED", Code::Cancelled),
+    ] {
+        let actual = grpc_code_of_failed_inference(&sut, &config, "error_code", code).await?;
+        assert_eq!(actual, expected, "{code}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_passes_on_the_code_of_a_failed_bls_call() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let code = grpc_code_of_failed_inference(&sut, &config, "infer_model", "missing_model").await?;
+
+    assert_eq!(code, Code::NotFound);
     Ok(())
 }
 

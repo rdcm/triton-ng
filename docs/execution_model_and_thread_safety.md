@@ -38,6 +38,13 @@ response. Every request is released to Triton when it is dropped. The error retu
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
+**Error codes.** Every `TritonError` has an `ErrorCode`: `respond_error` answers with `Internal`,
+`respond_error_with_code` with any code, which the client gets as the gRPC status of its call.
+A failed BLS call resolves to an error with the code Triton or the called model gave it (`NotFound`
+for an unknown model), so a backend can pass it on:
+`request.respond_error_with_code(e.code(), &e.to_string())`. A `TritonError` returned from a
+backend hook reaches Triton with its code, any other error as `Internal`.
+
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
 request: Triton finishes it and the result is discarded.

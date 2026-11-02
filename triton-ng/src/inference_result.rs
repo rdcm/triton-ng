@@ -3,7 +3,8 @@ use crate::{DataType, Error, GpuBuffer, PinnedRamBuffer, RamBuffer, WrittenBuffe
 
 /// Where the data of an output is.
 pub(crate) enum OutputData {
-    /// Copied to CPU memory owned by the result.
+    /// In CPU memory the allocator gave Triton for the output, owned by the
+    /// result.
     Host(Vec<u8>),
     /// In the buffer given with `add_requested_output_into`.
     Buffer(WrittenBuffer),
@@ -73,9 +74,20 @@ impl OutputTensor {
     }
 }
 
+/// The outputs of a successful BLS call. A failed call resolves its
+/// [`crate::InferenceFuture`] to a [`crate::TritonError`] with the code of
+/// the failure instead.
+///
+/// Owns the output data and buffers. `Send + Sync`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let result = ctx.server().infer_async(inference).await?;
+/// let logits = result.output("logits")?.as_fp32_vec()?;
+/// ```
 pub struct InferenceResult {
     pub outputs: Vec<OutputTensor>,
-    pub error: Option<String>,
 }
 
 impl InferenceResult {
@@ -148,15 +160,6 @@ impl InferenceResult {
     }
 }
 
-impl InferenceResult {
-    pub(crate) fn failed(message: impl Into<String>) -> Self {
-        Self {
-            outputs: vec![],
-            error: Some(message.into()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{InferenceResult, OutputData, OutputTensor};
@@ -177,7 +180,6 @@ mod tests {
                 output("pinned", written(memory.pinned(8).unwrap().into())),
                 output("host", OutputData::Host(vec![0; 8])),
             ],
-            error: None,
         }
     }
 

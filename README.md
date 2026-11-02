@@ -36,7 +36,13 @@ impl Backend for MyBackend {
             let mut inference = InferenceRequest::new(ctx.server(), "my_model", -1)?;
             inference.add_input_with_data("INPUT", DataType::Fp32, &[1, 10], data)?;
             inference.add_requested_output("OUTPUT")?;
-            let result = ctx.server().infer_async(inference).await?;
+            let result = match ctx.server().infer_async(inference).await {
+                Ok(result) => result,
+                Err(e) => {
+                    request.respond_error_with_code(e.code(), &e.to_string())?;
+                    continue;
+                }
+            };
 
             let mut response = Response::new(request)?;
             response
@@ -62,7 +68,7 @@ triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 
 See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
 and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
-BLS futures, threads, cancellation, shutdown and batching.
+error codes, BLS futures, threads, cancellation, shutdown and batching.
 
 ## Using the gRPC client
 
