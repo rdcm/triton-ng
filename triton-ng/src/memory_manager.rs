@@ -135,7 +135,7 @@ impl MemoryManager {
     ///
     /// ```ignore
     /// let mut image = ctx.memory().ram(28 * 28 * 4)?;
-    /// image.copy_from_slice(request.get_input("Input3")?.as_bytes()?);
+    /// image.copy_from_slice(&request.get_input("Input3")?.bytes()?);
     /// ```
     pub fn ram(&self, len: usize) -> Result<RamBuffer, Error> {
         Ok(RamBuffer(Allocation::zeroed(self, len, CPU, 0)?))

@@ -1,6 +1,7 @@
 use crate::utils::{cstr_to_string, decode_le, decode_string};
-use crate::{DataType, Error, Request};
+use crate::{CPU, CPU_PINNED, DataType, Error, RawBuffer, Request};
 use libc::c_void;
+use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::ptr;
 use std::slice;
@@ -17,7 +18,7 @@ pub struct Input<'a> {
     request: PhantomData<&'a Request>,
 }
 
-impl Input<'_> {
+impl<'a> Input<'a> {
     pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Input) -> Self {
         Self {
             ptr,
@@ -25,18 +26,27 @@ impl Input<'_> {
         }
     }
 
-    /// Copies the tensor into a contiguous host buffer.
+    /// The bytes of the tensor, borrowed from the request when Triton keeps
+    /// them in one CPU buffer (the usual case), copied into one when the
+    /// tensor is split over several buffers.
     ///
-    /// Triton may split a tensor into several buffers (`buffer_count`),
-    /// all of them are concatenated in order.
-    fn buffer(&self) -> Result<Vec<u8>, Error> {
+    /// Fails when a buffer of the tensor is in GPU memory, which the CPU
+    /// cannot read, or the buffers do not add up to the size of the tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let image = request.get_input("Input3")?.bytes()?;
+    /// let mut pinned = ctx.memory().pinned(image.len())?;
+    /// pinned.copy_from_slice(&image);
+    /// ```
+    pub fn bytes(&self) -> Result<Cow<'a, [u8]>, Error> {
         let properties = self.properties()?;
-        let mut data = Vec::with_capacity(properties.byte_size as usize);
+        let mut buffers = Vec::with_capacity(properties.buffer_count as usize);
 
         for index in 0..properties.buffer_count {
             let mut buffer: *const c_void = ptr::null();
-            let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType =
-                triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
+            let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType = CPU;
             let mut memory_type_id = 0;
             let mut buffer_byte_size = 0;
             triton_call!(triton_ng_sys::TRITONBACKEND_InputBuffer(
@@ -47,53 +57,33 @@ impl Input<'_> {
                 &mut memory_type,
                 &mut memory_type_id,
             ))?;
-
-            if buffer_byte_size == 0 {
-                continue;
-            }
-
-            if buffer.is_null() {
-                return Err(format!("input '{}' buffer {index} is null", properties.name).into());
-            }
-
-            if memory_type != triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU
-                && memory_type
-                    != triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED
-            {
-                return Err(format!(
-                    "input '{}' buffer {index} is not in host memory, only host memory is supported",
+            let len = usize::try_from(buffer_byte_size).map_err(|_| {
+                format!(
+                    "input '{}' buffer {index} of {buffer_byte_size} bytes does not fit in memory",
                     properties.name
                 )
-                .into());
-            }
-
-            let mem: &[u8] =
-                unsafe { slice::from_raw_parts(buffer as *const u8, buffer_byte_size as usize) };
-            data.extend_from_slice(mem);
+            })?;
+            buffers.push(RawBuffer {
+                ptr: buffer.cast_mut(),
+                len,
+                memory_type,
+                memory_type_id,
+            });
         }
 
-        if data.len() as u64 != properties.byte_size {
-            return Err(format!(
-                "input '{}' has {} bytes in its buffers, expected {}",
-                properties.name,
-                data.len(),
-                properties.byte_size
-            )
-            .into());
-        }
-
-        Ok(data)
+        // SAFETY: Triton keeps the input buffers of a request unchanged until
+        // the request is released, and `'a` keeps the request alive.
+        Ok(unsafe { contiguous(&properties.name, properties.byte_size, &buffers) }?)
     }
 
-    /// Raw little-endian tensor bytes.
+    /// The bytes of the tensor in a `Vec`, see [`Input::bytes`].
     pub fn as_bytes(&self) -> Result<Vec<u8>, Error> {
-        self.buffer()
+        Ok(self.bytes()?.into_owned())
     }
 
     /// First element of a BYTES tensor decoded as UTF-8 (lossy).
     pub fn as_string(&self) -> Result<String, Error> {
-        let buffer = self.buffer()?;
-        let strings = decode_string(&buffer)?;
+        let strings = decode_string(&self.bytes()?)?;
         strings
             .into_iter()
             .next()
@@ -102,14 +92,14 @@ impl Input<'_> {
 
     /// All elements of a BYTES tensor decoded as UTF-8 (lossy).
     pub fn as_strings(&self) -> Result<Vec<String>, Error> {
-        Ok(decode_string(&self.buffer()?)?)
+        Ok(decode_string(&self.bytes()?)?)
     }
 
     pub fn as_u64(&self) -> Result<u64, Error> {
-        let buffer = self.buffer()?;
+        let buffer = self.bytes()?;
 
         let bytes: [u8; 8] = buffer
-            .as_slice()
+            .as_ref()
             .try_into()
             .map_err(|_| format!("expected 8 bytes for UINT64 scalar, got {}", buffer.len()))?;
 
@@ -117,15 +107,15 @@ impl Input<'_> {
     }
 
     pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
-        decode_le(&self.buffer()?, f32::from_le_bytes)
+        decode_le(&self.bytes()?, f32::from_le_bytes)
     }
 
     pub fn as_i32_vec(&self) -> Result<Vec<i32>, Error> {
-        decode_le(&self.buffer()?, i32::from_le_bytes)
+        decode_le(&self.bytes()?, i32::from_le_bytes)
     }
 
     pub fn as_i64_vec(&self) -> Result<Vec<i64>, Error> {
-        decode_le(&self.buffer()?, i64::from_le_bytes)
+        decode_le(&self.bytes()?, i64::from_le_bytes)
     }
 
     pub fn properties(&self) -> Result<InputProperties, Error> {
@@ -173,4 +163,146 @@ pub struct InputProperties {
     pub dims_count: u32,
     pub byte_size: u64,
     pub buffer_count: u32,
+}
+
+/// The bytes of input `name` of `byte_size` bytes kept in `buffers`, borrowed
+/// when one buffer holds all of them. Empty buffers are skipped.
+///
+/// # Safety
+///
+/// Every non-empty, non-null buffer must be readable for `'a`.
+unsafe fn contiguous<'a>(
+    name: &str,
+    byte_size: u64,
+    buffers: &[RawBuffer],
+) -> Result<Cow<'a, [u8]>, String> {
+    let mut parts: Vec<&'a [u8]> = Vec::with_capacity(buffers.len());
+    for (index, buffer) in buffers.iter().enumerate() {
+        if buffer.len == 0 {
+            continue;
+        }
+        if buffer.ptr.is_null() {
+            return Err(format!("input '{name}' buffer {index} is null"));
+        }
+        if buffer.memory_type != CPU && buffer.memory_type != CPU_PINNED {
+            return Err(format!(
+                "input '{name}' buffer {index} is not in host memory, only host memory is supported"
+            ));
+        }
+        // SAFETY: the caller guarantees the buffer is readable for `'a`.
+        parts.push(unsafe { slice::from_raw_parts(buffer.ptr.cast::<u8>(), buffer.len) });
+    }
+
+    let total: u128 = parts.iter().map(|part| part.len() as u128).sum();
+    if total != u128::from(byte_size) {
+        return Err(format!(
+            "input '{name}' has {total} bytes in its buffers, expected {byte_size}"
+        ));
+    }
+
+    Ok(match parts.as_slice() {
+        [] => Cow::Borrowed(&[]),
+        [part] => Cow::Borrowed(part),
+        _ => Cow::Owned(parts.concat()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contiguous;
+    use crate::{CPU, CPU_PINNED, GPU, RawBuffer};
+    use std::borrow::Cow;
+
+    fn cpu(data: &[u8]) -> RawBuffer {
+        RawBuffer {
+            ptr: data.as_ptr().cast_mut().cast(),
+            len: data.len(),
+            memory_type: CPU,
+            memory_type_id: 0,
+        }
+    }
+
+    fn empty() -> RawBuffer {
+        RawBuffer {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            memory_type: GPU,
+            memory_type_id: 0,
+        }
+    }
+
+    #[test]
+    fn one_buffer_is_borrowed() {
+        let data = [1u8, 2, 3, 4];
+
+        let bytes = unsafe { contiguous("x", 4, &[empty(), cpu(&data), empty()]) }.unwrap();
+
+        assert!(matches!(&bytes, Cow::Borrowed(borrowed) if borrowed.as_ptr() == data.as_ptr()));
+        assert_eq!(&bytes[..], &data);
+    }
+
+    #[test]
+    fn pinned_buffer_is_borrowed() {
+        let data = [5u8; 8];
+        let pinned = RawBuffer {
+            memory_type: CPU_PINNED,
+            ..cpu(&data)
+        };
+
+        let bytes = unsafe { contiguous("x", 8, &[pinned]) }.unwrap();
+
+        assert!(matches!(bytes, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn split_tensor_is_copied_in_order() {
+        let (first, second) = ([1u8, 2], [3u8, 4, 5]);
+
+        let bytes = unsafe { contiguous("x", 5, &[cpu(&first), cpu(&second)]) }.unwrap();
+
+        assert!(matches!(&bytes, Cow::Owned(owned) if owned == &[1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn empty_tensor_has_no_bytes() {
+        let bytes = unsafe { contiguous("x", 0, &[]) }.unwrap();
+
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn buffers_of_another_size_are_refused() {
+        let data = [0u8; 4];
+
+        let error = unsafe { contiguous("x", 8, &[cpu(&data)]) }.unwrap_err();
+
+        assert!(
+            error.contains("has 4 bytes in its buffers, expected 8"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn gpu_and_null_buffers_are_refused() {
+        let data = [0u8; 4];
+        let gpu = RawBuffer {
+            memory_type: GPU,
+            ..cpu(&data)
+        };
+        let null = RawBuffer {
+            ptr: std::ptr::null_mut(),
+            ..cpu(&data)
+        };
+
+        assert!(
+            unsafe { contiguous("x", 4, &[gpu]) }
+                .unwrap_err()
+                .contains("host memory")
+        );
+        assert!(
+            unsafe { contiguous("x", 4, &[null]) }
+                .unwrap_err()
+                .contains("null")
+        );
+    }
 }
