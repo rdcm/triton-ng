@@ -18,6 +18,8 @@ pub mod inference_request;
 pub(crate) mod inference_response;
 #[path = "inference_result.rs"]
 pub mod inference_result;
+#[path = "inference_stream.rs"]
+pub mod inference_stream;
 #[path = "inference_trace.rs"]
 pub(crate) mod inference_trace;
 #[path = "input.rs"]
@@ -52,16 +54,21 @@ pub mod output_buffer;
 mod raw_buffer;
 #[path = "request.rs"]
 pub mod request;
+#[path = "request_cancel.rs"]
+mod request_cancel;
 #[path = "request_release.rs"]
 pub(crate) mod request_release;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
 pub(crate) mod response_allocator;
+#[path = "response_factory.rs"]
 mod response_factory;
+#[path = "response_sender.rs"]
 pub mod response_sender;
 #[path = "server.rs"]
 pub mod server;
+#[path = "stream_response.rs"]
 pub mod stream_response;
 #[path = "types.rs"]
 pub mod types;
@@ -76,6 +83,7 @@ pub use executor::Context;
 pub use inference_future::*;
 pub use inference_request::*;
 pub use inference_result::*;
+pub use inference_stream::*;
 pub use input::*;
 pub use input_buffer::*;
 pub use memory_manager::*;
@@ -358,6 +366,7 @@ mod tests {
     use crate::metric_args::MetricArgs;
     use crate::metric_family::MetricFamily;
     use crate::metric_parameter::MetricParameter;
+    use crate::request_cancel::RequestCancel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::response_factory::ResponseFactory;
@@ -402,6 +411,8 @@ mod tests {
             OutputBuffer,
             InferenceFuture,
             InferenceResult,
+            InferenceStream,
+            RequestCancel,
             Message,
             ResponseAllocator,
             Allocation,

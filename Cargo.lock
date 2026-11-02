@@ -1726,6 +1726,7 @@ name = "triton-ng"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "futures-core",
  "libc",
  "serde_json",
  "tokio",

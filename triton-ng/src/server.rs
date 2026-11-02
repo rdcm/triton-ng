@@ -1,13 +1,16 @@
 use crate::inference_future::{Completion, Failure};
 use crate::inference_request::InputBuffers;
 use crate::inference_response::InferenceResponse;
-use crate::inference_result::ResponseParameters;
+use crate::inference_stream::StreamResults;
 use crate::inference_trace::InferenceTrace;
 use crate::message::Message;
+use crate::request_cancel::RequestCancel;
 use crate::request_release::RequestRelease;
 use crate::response_allocator::{OutputPlan, ResponseAllocator};
 use crate::utils::cstring_from_str;
-use crate::{InferenceFuture, InferenceRequest, InferenceResult, OutputTensor, TritonError};
+use crate::{
+    ErrorCode, InferenceFuture, InferenceRequest, InferenceResult, InferenceStream, TritonError,
+};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -16,12 +19,9 @@ use triton_ng_macros::triton_call;
 /// What the response callback of one BLS request needs, handed to Triton as
 /// `response_userp` and freed with the final response.
 pub(crate) struct InferenceContext {
-    completion: Arc<Completion>,
+    receiver: Receiver,
     allocator: Arc<ResponseAllocator>,
     outputs: OutputPlan,
-    pending_outputs: Vec<OutputTensor>,
-    pending_parameters: ResponseParameters,
-    error: Option<Failure>,
     /// The client request whose trace is the parent of the trace of this
     /// request, see `RequestRelease`: responses report into the trace until
     /// they are deleted, which may happen after the release callback.
@@ -33,8 +33,63 @@ pub(crate) struct InferenceContext {
 struct ReleaseContext {
     /// Triton may read the input buffers until the request is released.
     _buffers: InputBuffers,
+    /// Told before the request is deleted, see `RequestCancel`.
+    cancel: Arc<RequestCancel>,
     /// Released after the request is deleted, see `InferenceContext`.
     _parent: Option<Arc<RequestRelease>>,
+}
+
+/// Where the response callback of a BLS request puts its results.
+enum Receiver {
+    /// [`Server::infer_async`]: exactly one response, delivered with the
+    /// final flag.
+    Single {
+        completion: Arc<Completion>,
+        result: Option<Result<InferenceResult, Failure>>,
+    },
+    /// [`Server::infer_stream`]: every response as it arrives. Dropping the
+    /// sender with the final flag ends the stream.
+    Stream(StreamResults),
+}
+
+impl Receiver {
+    fn single(completion: Arc<Completion>) -> Self {
+        Self::Single {
+            completion,
+            result: None,
+        }
+    }
+
+    fn response(&mut self, response: Result<InferenceResult, Failure>) {
+        match self {
+            Self::Single { result, .. } => {
+                *result = Some(match result.take() {
+                    None => response,
+                    Some(_) => Err(Failure {
+                        code: ErrorCode::Internal,
+                        message: "the model sent more than one response, read the responses \
+                                  of a decoupled model with Server::infer_stream"
+                            .to_string(),
+                    }),
+                });
+            }
+            // A dropped stream discards its results.
+            Self::Stream(results) => {
+                let _ = results.send(response);
+            }
+        }
+    }
+
+    fn finish(self) {
+        if let Self::Single { completion, result } = self {
+            completion.complete(result.unwrap_or_else(|| {
+                Err(Failure {
+                    code: ErrorCode::Internal,
+                    message: "the model sent no response".to_string(),
+                })
+            }));
+        }
+    }
 }
 
 /// The Triton server the backend runs in, used for BLS: inference of other
@@ -162,23 +217,64 @@ impl Server {
     /// after the final response has already been delivered.
     pub fn infer_async(&self, request: InferenceRequest) -> InferenceFuture {
         let completion = Completion::new();
-        match self.submit(request, Arc::clone(&completion)) {
-            Ok(()) => InferenceFuture::new(completion),
-            Err(e) => InferenceFuture::new(Completion::failed(e.into())),
+        match self.submit(request, Receiver::single(Arc::clone(&completion))) {
+            Ok(cancel) => InferenceFuture::new(completion, Some(cancel)),
+            Err(e) => InferenceFuture::new(Completion::failed(e.into()), None),
+        }
+    }
+
+    /// Submits inference to a decoupled model and returns the stream of its
+    /// results, one per response, see [`InferenceStream`]. Submission errors
+    /// are the only item of the stream. Request ownership is as for
+    /// [`Server::infer_async`].
+    ///
+    /// Outputs requested into a buffer
+    /// ([`InferenceRequest::add_requested_output_into`]) are not supported:
+    /// every response needs memory of its own, so the stream fails with
+    /// INVALID_ARG and the request is not submitted.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut inference = InferenceRequest::new(ctx.server(), "tokenizer_stream", -1)?;
+    /// inference.add_input_with_data("TEXT", DataType::Bytes, &[1], text)?;
+    /// inference.add_requested_output("TOKEN")?;
+    ///
+    /// let mut stream = ctx.server().infer_stream(inference);
+    /// while let Some(result) = stream.next().await {
+    ///     let token = result?.output("TOKEN")?.as_i64_vec()?;
+    ///     // ...
+    /// }
+    /// ```
+    pub fn infer_stream(&self, request: InferenceRequest) -> InferenceStream {
+        if request.has_output_buffers() {
+            return InferenceStream::failed(Failure {
+                code: ErrorCode::InvalidArg,
+                message: "infer_stream does not support outputs requested into a buffer, \
+                          every response needs memory of its own"
+                    .to_string(),
+            });
+        }
+        let (results, receiver) = InferenceStream::channel();
+        match self.submit(request, Receiver::Stream(results)) {
+            Ok(cancel) => InferenceStream::submitted(receiver, cancel),
+            Err(e) => InferenceStream::failed(e.into()),
         }
     }
 
     fn submit(
         &self,
         request: InferenceRequest,
-        completion: Arc<Completion>,
-    ) -> Result<(), TritonError> {
+        receiver: Receiver,
+    ) -> Result<Arc<RequestCancel>, TritonError> {
         let allocator = ResponseAllocator::shared()?;
 
         let (raw, buffers, outputs, trace) = request.into_raw_parts();
         let parent = trace.as_ref().map(InferenceTrace::parent);
+        let cancel = RequestCancel::new(raw);
         let buffers_ptr = Box::into_raw(Box::new(ReleaseContext {
             _buffers: buffers,
+            cancel: Arc::clone(&cancel),
             _parent: parent.clone(),
         })) as *mut c_void;
 
@@ -196,12 +292,9 @@ impl Server {
         }
 
         let context = Box::new(InferenceContext {
-            completion,
+            receiver,
             allocator,
             outputs: OutputPlan::new(outputs),
-            pending_outputs: Vec::new(),
-            pending_parameters: Vec::new(),
-            error: None,
             _parent: parent,
         });
         let context_ptr = Box::into_raw(context) as *mut c_void;
@@ -251,7 +344,7 @@ impl Server {
             return Err(e);
         }
 
-        Ok(())
+        Ok(cancel)
     }
 }
 
@@ -273,25 +366,28 @@ unsafe extern "C" fn inference_request_release(
         return;
     }
 
+    let context =
+        (!userp.is_null()).then(|| unsafe { Box::from_raw(userp as *mut ReleaseContext) });
+    if let Some(context) = &context {
+        context.cancel.released();
+    }
+
     if !request.is_null() {
         unsafe { triton_ng_sys::TRITONSERVER_InferenceRequestDelete(request) };
     }
 
-    if !userp.is_null() {
-        unsafe { drop(Box::from_raw(userp as *mut ReleaseContext)) };
-    }
+    drop(context);
 }
 
 const RELEASE_ALL: u32 =
     triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL;
 
-/// Called by Triton for each response (and once more with a null response when
-/// RESPONSE_COMPLETE_FINAL is set, to signal end-of-stream).
+/// Called by Triton for each response, the last call with FINAL set, which
+/// a decoupled model may send without a response.
 ///
 /// For one-to-one models this is called exactly once with FINAL set.
-/// For decoupled/streaming models it may be called multiple times; we
-/// accumulate outputs across all non-final callbacks and only send the
-/// collected result (and drop the context) when FINAL arrives.
+/// Every response goes to the receiver of the request, which is dropped
+/// with the context when FINAL arrives.
 unsafe extern "C" fn inference_response_complete(
     response_ptr: *mut triton_ng_sys::TRITONSERVER_InferenceResponse,
     flags: u32,
@@ -315,28 +411,83 @@ unsafe extern "C" fn inference_response_complete(
         let read =
             InferenceResponse::from_ptr(response_ptr).and_then(|response| match response.error() {
                 Some(error) => Err(error),
-                None => Ok((response.outputs()?, response.parameters()?)),
+                None => Ok(InferenceResult {
+                    outputs: response.outputs()?,
+                    parameters: response.parameters()?,
+                }),
             });
-        match read {
-            Ok((outputs, parameters)) => {
-                context.pending_outputs.extend(outputs);
-                context.pending_parameters.extend(parameters);
-            }
-            Err(error) => {
-                context.error.get_or_insert_with(|| error.into());
-            }
-        }
+        context.receiver.response(read.map_err(Failure::from));
     }
 
     if is_final {
         let context = unsafe { Box::from_raw(userp as *mut InferenceContext) };
-        let result = match context.error {
-            Some(error) => Err(error),
-            None => Ok(InferenceResult {
-                outputs: context.pending_outputs,
-                parameters: context.pending_parameters,
-            }),
+        // The rest of the context, the parent guard among it, goes after the result.
+        let InferenceContext { receiver, .. } = *context;
+        receiver.finish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Receiver;
+    use crate::inference_future::{Completion, Failure};
+    use crate::{ErrorCode, InferenceFuture, InferenceResult, InferenceStream};
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
+
+    fn result() -> Result<InferenceResult, Failure> {
+        Ok(InferenceResult {
+            outputs: vec![],
+            parameters: vec![],
+        })
+    }
+
+    fn single_result(responses: usize) -> Poll<Result<usize, String>> {
+        let completion = Completion::new();
+        let future = InferenceFuture::new(Arc::clone(&completion), None);
+        let mut receiver = Receiver::single(completion);
+        (0..responses).for_each(|_| receiver.response(result()));
+        receiver.finish();
+        future
+            .poll_result(&mut Context::from_waker(Waker::noop()))
+            .map(|r| r.map(|r| r.outputs.len()).map_err(|f| f.message))
+    }
+
+    #[test]
+    fn single_response_is_the_result() {
+        assert_eq!(single_result(1), Poll::Ready(Ok(0)));
+    }
+
+    #[test]
+    fn no_response_is_an_error() {
+        assert_eq!(
+            single_result(0),
+            Poll::Ready(Err("the model sent no response".to_string()))
+        );
+    }
+
+    #[test]
+    fn several_responses_are_an_error() {
+        let Poll::Ready(Err(message)) = single_result(3) else {
+            panic!("several responses are not an error");
         };
-        context.completion.complete(result);
+        assert!(message.contains("more than one response"), "{message}");
+    }
+
+    #[test]
+    fn stream_receiver_forwards_every_response() {
+        let (results, mut stream) = InferenceStream::channel();
+        let mut receiver = Receiver::Stream(results);
+        receiver.response(result());
+        receiver.response(Err(Failure {
+            code: ErrorCode::Cancelled,
+            message: "cancelled".to_string(),
+        }));
+        receiver.finish();
+
+        assert!(matches!(stream.try_recv(), Ok(Ok(_))));
+        assert!(matches!(stream.try_recv(), Ok(Err(f)) if f.code == ErrorCode::Cancelled));
+        assert!(stream.try_recv().is_err());
+        assert!(stream.is_closed());
     }
 }

@@ -1097,3 +1097,159 @@ async fn stream_cancelled_by_the_client_is_answered_as_cancelled() -> Result<()>
     }
     anyhow::bail!("the backend did not see the cancellation")
 }
+
+async fn infer_backend(
+    sut: &Sut,
+    config: &Config,
+    parameters: &[(&str, Parameter)],
+) -> Result<common::dto::InferResult> {
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        parameters
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.clone()))
+            .collect(),
+    )
+    .await
+}
+
+fn response_parameter(result: &common::dto::InferResult, name: &str) -> Result<Parameter> {
+    result
+        .parameters
+        .get(name)
+        .cloned()
+        .with_context(|| format!("response parameter {name} is missing"))
+}
+
+#[tokio::test]
+async fn bls_stream_returns_every_response_of_a_decoupled_model() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let result = infer_backend(&sut, &config, &[("stream_images", Parameter::Int(3))]).await?;
+
+    assert_eq!(
+        response_parameter(&result, "streamed_digits")?,
+        Parameter::Int(3)
+    );
+    let digit = result
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.backend_output_name)
+        .context("digit not found in response")?;
+    assert_eq!(digit.data_i32, vec![expected]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn bls_stream_of_a_decoupled_model_without_responses_is_empty() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let result = infer_backend(&sut, &config, &[("stream_images", Parameter::Int(0))]).await?;
+
+    assert_eq!(
+        response_parameter(&result, "streamed_digits")?,
+        Parameter::Int(0)
+    );
+    Ok(())
+}
+
+async fn infer_async_error(sut: &Sut, config: &Config, images: i64) -> Result<String> {
+    let error = infer_backend(
+        sut,
+        config,
+        &[
+            ("stream_images", Parameter::Int(images)),
+            ("via_infer_async", Parameter::Bool(true)),
+        ],
+    )
+    .await
+    .err()
+    .context("the inference succeeded")?;
+    Ok(format!("{error:#}"))
+}
+
+#[tokio::test]
+async fn infer_async_fails_when_a_decoupled_model_sends_several_responses() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = infer_async_error(&sut, &config, 2).await?;
+
+    assert!(error.contains("more than one response"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn infer_async_fails_when_a_decoupled_model_sends_no_response() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = infer_async_error(&sut, &config, 0).await?;
+
+    assert!(error.contains("sent no response"), "{error}");
+    Ok(())
+}
+
+async fn wait_for_stream_cancellation(sut: &Sut, config: &Config, before: i64) -> Result<()> {
+    for _ in 0..10_000 {
+        let (held, cancelled) = stream_counters(sut, config).await?;
+        if held == 0 && cancelled == before + 1 {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the decoupled model did not see the cancellation")
+}
+
+#[tokio::test]
+async fn cancelled_bls_stream_ends_with_the_cancellation_of_the_model() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let (_, before) = stream_counters(&sut, &config).await?;
+
+    let result = infer_backend(&sut, &config, &[("cancel_stream", string("cancel"))]).await?;
+
+    assert_eq!(
+        response_parameter(&result, "stream_ended_with")?,
+        string("CANCELLED")
+    );
+    wait_for_stream_cancellation(&sut, &config, before).await
+}
+
+#[tokio::test]
+async fn dropped_bls_stream_cancels_its_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let (_, before) = stream_counters(&sut, &config).await?;
+
+    let result = infer_backend(&sut, &config, &[("cancel_stream", string("drop"))]).await?;
+
+    assert_eq!(
+        response_parameter(&result, "stream_ended_with")?,
+        string("dropped")
+    );
+    wait_for_stream_cancellation(&sut, &config, before).await
+}
+
+#[tokio::test]
+async fn cancelled_bls_request_resolves_to_cancelled() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = infer_backend(&sut, &config, &[("cancel_bls", Parameter::Bool(true))])
+        .await
+        .err()
+        .context("the inference succeeded")?;
+
+    match error.downcast_ref::<triton_ng_client::Error>() {
+        Some(triton_ng_client::Error::Grpc(status)) => {
+            assert_eq!(status.code(), Code::Cancelled, "{status}")
+        }
+        _ => anyhow::bail!("not a gRPC error: {error:#}"),
+    }
+    wait_for_backend_counters(&sut, &config, |held, _| held == 0).await
+}

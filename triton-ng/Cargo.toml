@@ -13,6 +13,7 @@ description = "Safe Rust API for writing custom NVIDIA Triton Inference Server b
 
 [dependencies]
 byteorder = { workspace = true }
+futures-core = { workspace = true }
 libc = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

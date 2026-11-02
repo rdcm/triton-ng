@@ -65,6 +65,12 @@ impl InferenceRequest {
         })
     }
 
+    /// Whether an output is requested into a buffer, see
+    /// [`InferenceRequest::add_requested_output_into`].
+    pub(crate) fn has_output_buffers(&self) -> bool {
+        self.outputs.values().any(Option::is_some)
+    }
+
     /// Splits the request into the raw pointer, the input buffers it
     /// references, the buffers of its outputs and its trace, without running
     /// `Drop`.

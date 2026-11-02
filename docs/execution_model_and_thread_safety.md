@@ -57,7 +57,11 @@ backend hook reaches Triton with its code, any other error as `Internal`.
 
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded. A BLS request can carry the ID,
+request: Triton finishes it and the result is discarded; `InferenceFuture::cancel` cancels it. The
+future fails unless the model sends exactly one response. The responses of a decoupled model are
+read with `Server::infer_stream`, which returns an `InferenceStream` of one result per response,
+ending with the final flag of the model. Dropping the stream cancels the request. Outputs requested
+into a buffer are not supported by `infer_stream`: every response needs memory of its own. A BLS request can carry the ID,
 correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
 child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
 
@@ -75,6 +79,7 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
+| `InferenceStream` | shares the right to cancel the request with its release callback | cancels the request | yes | yes | |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
 | `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |

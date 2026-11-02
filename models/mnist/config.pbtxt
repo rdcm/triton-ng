@@ -33,6 +33,11 @@ parameters: {
 }
 
 parameters: {
+  key: "stream_model"
+  value: { string_value: "mnist_stream" }
+}
+
+parameters: {
   key: "max_batches_in_flight"
   value: { string_value: "4" }
 }
