@@ -339,9 +339,9 @@ mod tests {
     use crate::child_trace::ChildTrace;
     use crate::inference_response::InferenceResponse;
     use crate::message::Message;
-    use crate::metric::MetricHandle;
+    use crate::metric::Metric;
     use crate::metric_args::MetricArgs;
-    use crate::metric_family::FamilyHandle;
+    use crate::metric_family::MetricFamily;
     use crate::metric_label::MetricLabel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
@@ -396,8 +396,8 @@ mod tests {
             Gauge,
             HistogramFamily,
             Histogram,
-            FamilyHandle,
-            MetricHandle
+            MetricFamily,
+            Metric
         );
         send_not_sync!(
             Request,

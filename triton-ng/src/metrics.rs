@@ -10,16 +10,16 @@
 //! state of a model or instance.
 
 use crate::error::{ErrorCode, TritonError};
-use crate::metric::{MetricHandle, validate_counter_increment, validate_finite};
-use crate::metric_family::{FamilyHandle, FamilySpec, MetricKind};
+use crate::metric::{Metric, validate_counter_increment, validate_finite};
+use crate::metric_family::{FamilySpec, MetricFamily, MetricKind};
 use std::sync::Arc;
 
 fn family(
     name: &str,
     description: &str,
     kind: MetricKind,
-) -> Result<Arc<FamilyHandle>, TritonError> {
-    FamilyHandle::get_or_create(
+) -> Result<Arc<MetricFamily>, TritonError> {
+    MetricFamily::get_or_create(
         name,
         FamilySpec {
             kind,
@@ -43,7 +43,7 @@ fn invalid_arg(message: String) -> TritonError {
 /// ```
 #[derive(Clone)]
 pub struct CounterFamily {
-    family: Arc<FamilyHandle>,
+    family: Arc<MetricFamily>,
 }
 
 impl CounterFamily {
@@ -65,7 +65,7 @@ impl CounterFamily {
     /// given twice, or a value contains a NUL byte.
     pub fn counter(&self, labels: &[(&str, &str)]) -> Result<Counter, TritonError> {
         Ok(Counter {
-            metric: Arc::new(MetricHandle::new(&self.family, labels)?),
+            metric: Arc::new(Metric::new(&self.family, labels)?),
         })
     }
 }
@@ -79,7 +79,7 @@ impl CounterFamily {
 /// ```
 #[derive(Clone)]
 pub struct Counter {
-    metric: Arc<MetricHandle>,
+    metric: Arc<Metric>,
 }
 
 impl Counter {
@@ -110,7 +110,7 @@ impl Counter {
 /// ```
 #[derive(Clone)]
 pub struct GaugeFamily {
-    family: Arc<FamilyHandle>,
+    family: Arc<MetricFamily>,
 }
 
 impl GaugeFamily {
@@ -126,7 +126,7 @@ impl GaugeFamily {
     /// [`CounterFamily::counter`].
     pub fn gauge(&self, labels: &[(&str, &str)]) -> Result<Gauge, TritonError> {
         Ok(Gauge {
-            metric: Arc::new(MetricHandle::new(&self.family, labels)?),
+            metric: Arc::new(Metric::new(&self.family, labels)?),
         })
     }
 }
@@ -140,7 +140,7 @@ impl GaugeFamily {
 /// ```
 #[derive(Clone)]
 pub struct Gauge {
-    metric: Arc<MetricHandle>,
+    metric: Arc<Metric>,
 }
 
 impl Gauge {
@@ -184,7 +184,7 @@ impl Gauge {
 /// ```
 #[derive(Clone)]
 pub struct HistogramFamily {
-    family: Arc<FamilyHandle>,
+    family: Arc<MetricFamily>,
 }
 
 impl HistogramFamily {
@@ -204,7 +204,7 @@ impl HistogramFamily {
     /// Fails like [`CounterFamily::counter`].
     pub fn histogram(&self, labels: &[(&str, &str)]) -> Result<Histogram, TritonError> {
         Ok(Histogram {
-            metric: Arc::new(MetricHandle::new(&self.family, labels)?),
+            metric: Arc::new(Metric::new(&self.family, labels)?),
         })
     }
 }
@@ -220,7 +220,7 @@ impl HistogramFamily {
 /// ```
 #[derive(Clone)]
 pub struct Histogram {
-    metric: Arc<MetricHandle>,
+    metric: Arc<Metric>,
 }
 
 impl Histogram {

@@ -47,7 +47,7 @@ pub(crate) struct FamilySpec {
 /// Owns the family and deletes it on drop, once no metric holds it: a metric
 /// of a deleted family is invalidated without synchronization with its
 /// updates. `Send + Sync`.
-pub(crate) struct FamilyHandle {
+pub(crate) struct MetricFamily {
     ptr: *mut triton_ng_sys::TRITONSERVER_MetricFamily,
     name: String,
     spec: FamilySpec,
@@ -57,20 +57,20 @@ pub(crate) struct FamilyHandle {
 // the family and of its Prometheus family, so metrics of one family can be
 // made and deleted from any threads at once. The family itself is deleted
 // only by the last owner.
-unsafe impl Send for FamilyHandle {}
-unsafe impl Sync for FamilyHandle {}
+unsafe impl Send for MetricFamily {}
+unsafe impl Sync for MetricFamily {}
 
-/// The live families by name, see `FamilyHandle`. Holds no strong
+/// The live families by name, see `MetricFamily`. Holds no strong
 /// references, so a family is deleted with its last user.
-static FAMILIES: Mutex<BTreeMap<String, Weak<FamilyHandle>>> = Mutex::new(BTreeMap::new());
+static FAMILIES: Mutex<BTreeMap<String, Weak<MetricFamily>>> = Mutex::new(BTreeMap::new());
 
-fn families() -> MutexGuard<'static, BTreeMap<String, Weak<FamilyHandle>>> {
+fn families() -> MutexGuard<'static, BTreeMap<String, Weak<MetricFamily>>> {
     // The map holds only weak references, it is consistent even after a
     // panic of another thread.
     FAMILIES.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl FamilyHandle {
+impl MetricFamily {
     /// The family `name`: the live one, when its spec is the same, or a new
     /// one.
     pub(crate) fn get_or_create(name: &str, spec: FamilySpec) -> Result<Arc<Self>, TritonError> {
@@ -124,7 +124,7 @@ impl FamilyHandle {
     }
 }
 
-impl Drop for FamilyHandle {
+impl Drop for MetricFamily {
     fn drop(&mut self) {
         {
             // A family of the same name made after this one lost its last

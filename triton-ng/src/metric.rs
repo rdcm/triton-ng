@@ -1,6 +1,6 @@
 use crate::error::{ErrorCode, TritonError};
 use crate::metric_args::MetricArgs;
-use crate::metric_family::{FamilyHandle, MetricKind, validate_label_name};
+use crate::metric_family::{MetricFamily, MetricKind, validate_label_name};
 use crate::metric_label::MetricLabel;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -12,10 +12,10 @@ use triton_ng_macros::triton_call;
 /// Triton invalidates the metrics of a deleted family without
 /// synchronization with their updates, so the family must outlive them.
 /// `Send + Sync`.
-pub(crate) struct MetricHandle {
+pub(crate) struct Metric {
     ptr: *mut triton_ng_sys::TRITONSERVER_Metric,
     /// Dropped after `Drop` deletes the metric.
-    family: Arc<FamilyHandle>,
+    family: Arc<MetricFamily>,
 }
 
 // SAFETY: the Prometheus counter, gauge and histogram behind a metric are
@@ -23,12 +23,12 @@ pub(crate) struct MetricHandle {
 // used from many threads at once. Triton reads the family pointer of the
 // metric unsynchronized, but it changes only when the family is deleted,
 // which `family` prevents.
-unsafe impl Send for MetricHandle {}
-unsafe impl Sync for MetricHandle {}
+unsafe impl Send for Metric {}
+unsafe impl Sync for Metric {}
 
-impl MetricHandle {
+impl Metric {
     pub(crate) fn new(
-        family: &Arc<FamilyHandle>,
+        family: &Arc<MetricFamily>,
         labels: &[(&str, &str)],
     ) -> Result<Self, TritonError> {
         validate_labels(labels).map_err(|e| {
@@ -84,7 +84,7 @@ impl MetricHandle {
     }
 }
 
-impl Drop for MetricHandle {
+impl Drop for Metric {
     fn drop(&mut self) {
         if let Err(e) = triton_call!(triton_ng_sys::TRITONSERVER_MetricDelete(self.ptr)) {
             crate::log::error(&format!(
