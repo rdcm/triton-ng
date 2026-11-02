@@ -1,7 +1,7 @@
 use crate::error::{Error, TritonError};
 use crate::message::Message;
 use crate::server::Server;
-use crate::utils::cstr_to_string;
+use crate::utils::{cstr_to_string, parse_parameter};
 use std::any::Any;
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -271,9 +271,7 @@ impl Model {
     {
         match self.config_parameter(key)? {
             None => Ok(default),
-            Some(raw) => raw.trim().parse::<T>().map_err(|e| {
-                format!("invalid value '{raw}' of config parameter '{key}': {e}").into()
-            }),
+            Some(raw) => Ok(parse_parameter("config", key, &raw)?),
         }
     }
 

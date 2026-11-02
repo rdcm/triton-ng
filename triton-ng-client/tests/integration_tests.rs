@@ -744,6 +744,25 @@ async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Resul
 }
 
 #[tokio::test]
+async fn custom_backend_reads_its_backend_config() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("echo_backend_config".to_string(), Parameter::Bool(true))]),
+        )
+        .await?
+        .parameters;
+    assert_eq!(echoed.get("greeting"), Some(&string("hello")));
+    assert!(echoed.contains_key("backend-directory"), "{echoed:?}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

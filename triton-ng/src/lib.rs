@@ -2,6 +2,8 @@
 pub(crate) mod allocation;
 #[path = "backend.rs"]
 pub mod backend;
+#[path = "backend_config.rs"]
+pub mod backend_config;
 #[path = "buffers.rs"]
 pub mod buffers;
 #[path = "custom_backend.rs"]
@@ -76,6 +78,7 @@ pub mod types;
 pub(crate) mod utils;
 
 pub use backend::*;
+pub use backend_config::*;
 pub use buffers::*;
 pub use custom_backend::*;
 pub use error::*;

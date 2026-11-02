@@ -1,14 +1,14 @@
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    Backend, Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error,
-    ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture,
-    InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, TritonError,
-    UninitGpuBuffer,
+    Backend, BackendConfig, Context, CorrelationId, Counter, CounterFamily, CustomBackend,
+    DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily,
+    InferenceFuture, InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance,
+    Parameter, PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender,
+    TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -42,6 +42,8 @@ impl FromStr for OutputMemory {
         }
     }
 }
+
+static BACKEND_CONFIG: OnceLock<BackendConfig> = OnceLock::new();
 
 struct State {
     model: String,
@@ -167,6 +169,9 @@ struct MnistBackend;
 impl CustomBackend for MnistBackend {
     fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
+        BACKEND_CONFIG
+            .set(backend.config()?)
+            .map_err(|_| "the backend is initialized twice")?;
         Ok(())
     }
 
@@ -271,6 +276,10 @@ impl CustomBackend for MnistBackend {
                 if request.into_sender().is_ok() {
                     return Err("a request of a model that is not decoupled got a sender".into());
                 }
+                continue;
+            }
+            if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
+                echo_backend_config(request)?;
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
@@ -484,6 +493,21 @@ fn echo_metadata(request: Request) -> Result<(), Error> {
     }
     if let Some(forwarded) = forwarded {
         response.set_parameter("forwarded", forwarded)?;
+    }
+    response.send()?;
+    Ok(())
+}
+
+fn echo_backend_config(request: Request) -> Result<(), Error> {
+    let config = BACKEND_CONFIG
+        .get()
+        .ok_or("the backend config is not read")?;
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    for (key, value) in config.parameters() {
+        response.set_parameter(key, value)?;
     }
     response.send()?;
     Ok(())
