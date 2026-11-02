@@ -1,5 +1,5 @@
 use crate::utils::decode_le;
-use crate::{DataType, Error, GpuBuffer, PinnedRamBuffer, RamBuffer, WrittenBuffer};
+use crate::{DataType, Error, GpuBuffer, Parameter, PinnedRamBuffer, RamBuffer, WrittenBuffer};
 
 /// Where the data of an output is.
 pub(crate) enum OutputData {
@@ -86,11 +86,40 @@ impl OutputTensor {
 /// let result = ctx.server().infer_async(inference).await?;
 /// let logits = result.output("logits")?.as_fp32_vec()?;
 /// ```
+/// Parameters of BLS responses by name, in the order the model set them. A
+/// parameter of a type triton-ng does not read (BYTES) keeps the error, so
+/// that only reading it fails.
+pub(crate) type ResponseParameters = Vec<(String, Result<Parameter, String>)>;
+
 pub struct InferenceResult {
     pub outputs: Vec<OutputTensor>,
+    pub(crate) parameters: ResponseParameters,
 }
 
 impl InferenceResult {
+    /// The value of the response parameter `name`, which the called model
+    /// set with [`crate::Response::set_parameter`]; `None` when the response
+    /// has no such parameter. Of a decoupled model the parameters of all
+    /// its responses are searched in order.
+    ///
+    /// Fails when the parameter has the BYTES type, which is not supported.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let result = ctx.server().infer_async(inference).await?;
+    /// if let Some(Parameter::Int(tokens)) = result.parameter("tokens")? {
+    ///     response.set_parameter("encoder_tokens", tokens)?;
+    /// }
+    /// ```
+    pub fn parameter(&self, name: &str) -> Result<Option<Parameter>, Error> {
+        match self.parameters.iter().find(|(key, _)| key == name) {
+            None => Ok(None),
+            Some((_, Ok(value))) => Ok(Some(value.clone())),
+            Some((_, Err(e))) => Err(format!("response parameter '{name}': {e}").into()),
+        }
+    }
+
     /// Returns the output tensor named `name`.
     pub fn output(&self, name: &str) -> Result<&OutputTensor, Error> {
         self.outputs
@@ -163,7 +192,7 @@ impl InferenceResult {
 #[cfg(test)]
 mod tests {
     use super::{InferenceResult, OutputData, OutputTensor};
-    use crate::{DataType, MemoryManager, OutputBuffer};
+    use crate::{DataType, MemoryManager, OutputBuffer, Parameter};
 
     fn result_with_buffers() -> InferenceResult {
         let memory = MemoryManager::heap();
@@ -180,7 +209,34 @@ mod tests {
                 output("pinned", written(memory.pinned(8).unwrap().into())),
                 output("host", OutputData::Host(vec![0; 8])),
             ],
+            parameters: vec![
+                ("tokens".to_string(), Ok(Parameter::Int(42))),
+                (
+                    "blob".to_string(),
+                    Err("unsupported parameter type 4".to_string()),
+                ),
+                ("tokens".to_string(), Ok(Parameter::Int(7))),
+            ],
         }
+    }
+
+    #[test]
+    fn first_parameter_of_a_name_is_returned() {
+        let result = result_with_buffers();
+
+        assert_eq!(
+            result.parameter("tokens").unwrap(),
+            Some(Parameter::Int(42))
+        );
+        assert_eq!(result.parameter("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn only_reading_an_unsupported_parameter_fails() {
+        let result = result_with_buffers();
+
+        assert!(result.parameter("blob").is_err());
+        assert!(result.parameter("tokens").is_ok());
     }
 
     #[test]

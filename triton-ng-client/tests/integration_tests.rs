@@ -656,3 +656,244 @@ async fn log_settings_are_readable() -> Result<()> {
     assert!(!settings.is_empty());
     Ok(())
 }
+
+async fn echoed_metadata(
+    sut: &Sut,
+    config: &Config,
+    id: &str,
+    parameters: &[(&str, Parameter)],
+) -> Result<HashMap<String, Parameter>> {
+    let result = sut
+        .infer_with_id_and_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            id,
+            parameters
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.clone()))
+                .collect(),
+        )
+        .await?;
+    anyhow::ensure!(result.id == id, "response id is {}", result.id);
+    Ok(result.parameters)
+}
+
+fn string(value: &str) -> Parameter {
+    Parameter::String(value.to_string())
+}
+
+#[tokio::test]
+async fn custom_backend_reads_the_metadata_of_a_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = echoed_metadata(
+        &sut,
+        &config,
+        "metadata-1",
+        &[
+            ("echo_metadata", Parameter::Bool(true)),
+            ("sequence_id", Parameter::Int(42)),
+            ("sequence_start", Parameter::Bool(true)),
+            ("sequence_end", Parameter::Bool(false)),
+            ("timeout", Parameter::Int(5_000_000)),
+        ],
+    )
+    .await?;
+
+    assert_eq!(echoed.get("request_id"), Some(&string("metadata-1")));
+    assert_eq!(echoed.get("correlation_id"), Some(&string("42")));
+    assert_eq!(echoed.get("sequence_start"), Some(&Parameter::Bool(true)));
+    assert_eq!(echoed.get("sequence_end"), Some(&Parameter::Bool(false)));
+    assert_eq!(echoed.get("timeout_us"), Some(&Parameter::Int(5_000_000)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = echoed_metadata(
+        &sut,
+        &config,
+        "metadata-2",
+        &[
+            ("echo_metadata", Parameter::Bool(true)),
+            ("sequence_id", string("call-7")),
+        ],
+    )
+    .await?;
+    assert_eq!(echoed.get("correlation_id"), Some(&string("call-7")));
+    assert_eq!(echoed.get("sequence_start"), Some(&Parameter::Bool(false)));
+    assert_eq!(echoed.get("timeout_us"), None);
+
+    let bare = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("echo_metadata".to_string(), Parameter::Bool(true))]),
+        )
+        .await?
+        .parameters;
+    assert_eq!(bare.get("request_id"), None);
+    assert_eq!(bare.get("correlation_id"), None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = echoed_metadata(
+        &sut,
+        &config,
+        "metadata-3",
+        &[
+            ("forward_metadata", Parameter::Bool(true)),
+            ("sequence_id", Parameter::Int(41)),
+            ("sequence_start", Parameter::Bool(true)),
+            ("timeout", Parameter::Int(3_000_000)),
+        ],
+    )
+    .await?;
+
+    assert_eq!(echoed.get("request_id"), Some(&string("metadata-3/bls")));
+    assert_eq!(echoed.get("correlation_id"), Some(&string("42")));
+    assert_eq!(echoed.get("sequence_start"), Some(&Parameter::Bool(false)));
+    assert_eq!(echoed.get("sequence_end"), Some(&Parameter::Bool(true)));
+    assert_eq!(echoed.get("timeout_us"), Some(&Parameter::Int(6_000_000)));
+    assert_eq!(echoed.get("forwarded"), Some(&string("by the backend")));
+    Ok(())
+}
+
+async fn set_mnist_tracing(sut: &Sut, level: &str) -> Result<()> {
+    let settings = [
+        ("trace_level", level),
+        ("trace_rate", "1"),
+        ("log_frequency", "1"),
+    ];
+    sut.trace_settings(
+        settings
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), vec![value.to_string()]))
+            .collect(),
+        Some("mnist"),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Every trace entry written into the trace files so far.
+fn trace_entries(config: &Config) -> Result<Vec<serde_json::Value>> {
+    let mut entries = Vec::new();
+    let Ok(dir) = std::fs::read_dir(config.trace_dir()) else {
+        return Ok(entries);
+    };
+    for file in dir {
+        let path = file?.path();
+        let content = std::fs::read_to_string(&path)?;
+        if let Ok(serde_json::Value::Array(values)) = serde_json::from_str(&content) {
+            entries.extend(values);
+        }
+    }
+    Ok(entries)
+}
+
+fn has_traced_child(entries: &[serde_json::Value], request_id: &str) -> bool {
+    let parents: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["request_id"] == request_id && entry["model_name"] == "mnist")
+        .filter_map(|entry| entry["id"].as_u64())
+        .collect();
+    entries.iter().any(|entry| {
+        entry["model_name"] == "mnist_onnx"
+            && entry["parent_id"]
+                .as_u64()
+                .is_some_and(|parent| parents.contains(&parent))
+    })
+}
+
+#[tokio::test]
+async fn bls_call_is_traced_as_a_child_of_its_client_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let request_id = format!(
+        "traced-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+
+    set_mnist_tracing(&sut, "TIMESTAMPS").await?;
+    let inferred = sut
+        .infer_with_id_and_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            &request_id,
+            HashMap::new(),
+        )
+        .await;
+    set_mnist_tracing(&sut, "OFF").await?;
+    inferred?;
+
+    for _ in 0..100 {
+        if has_traced_child(&trace_entries(&config)?, &request_id) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("no trace of mnist_onnx with request {request_id} as the parent")
+}
+
+#[tokio::test]
+async fn request_answered_before_its_traced_bls_call_is_released_after_it() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let request_id = format!(
+        "answered-first-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+
+    set_mnist_tracing(&sut, "TIMESTAMPS").await?;
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..50 {
+        let request_id = format!("{request_id}-{index}");
+        tasks.spawn(async move {
+            let config = Config::load()?;
+            let sut = Sut::new(&config.triton_url).await?;
+            sut.infer_with_id_and_parameters(
+                &config.backend_model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                &request_id,
+                HashMap::from([("answer_before_bls".to_string(), Parameter::Bool(true))]),
+            )
+            .await
+        });
+    }
+    let mut answered = Ok(());
+    while let Some(result) = tasks.join_next().await {
+        if let Err(e) = result.map_err(anyhow::Error::from).and_then(|r| r) {
+            answered = Err(e);
+        }
+    }
+    set_mnist_tracing(&sut, "OFF").await?;
+    answered?;
+
+    assert!(sut.server_live().await?);
+    let first = format!("{request_id}-0");
+    for _ in 0..100 {
+        if has_traced_child(&trace_entries(&config)?, &first) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("no trace of mnist_onnx with request {first} as the parent")
+}

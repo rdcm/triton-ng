@@ -1,5 +1,6 @@
 {
   "triton_url": "http://localhost:8001",
+  "trace_dir": "../target/traces",
   "mnist_model": "mnist_onnx",
   "backend_model": "mnist",
   "input_name": "Input3",

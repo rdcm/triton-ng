@@ -1,8 +1,8 @@
 use crate::RawBuffer;
 use crate::TritonError;
-use crate::inference_result::{OutputData, OutputTensor};
+use crate::inference_result::{OutputData, OutputTensor, ResponseParameters};
 use crate::response_allocator::{OutputMemory, OutputTag};
-use crate::types::DataType;
+use crate::types::{DataType, Parameter};
 use crate::utils::cstr_to_string;
 use std::ffi::{c_char, c_void};
 use std::ptr;
@@ -51,6 +51,36 @@ impl InferenceResponse {
         ))?;
 
         (0..output_count).map(|i| self.get_output(i)).collect()
+    }
+
+    /// The parameters of the response.
+    pub fn parameters(&self) -> Result<ResponseParameters, TritonError> {
+        let mut count: u32 = 0;
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceResponseParameterCount(
+            self.ptr, &mut count,
+        ))?;
+
+        (0..count)
+            .map(|index| {
+                let mut name: *const c_char = ptr::null();
+                let mut kind: triton_ng_sys::TRITONSERVER_ParameterType = 0;
+                let mut value: *const c_void = ptr::null();
+                triton_call!(triton_ng_sys::TRITONSERVER_InferenceResponseParameter(
+                    self.ptr, index, &mut name, &mut kind, &mut value,
+                ))?;
+                if name.is_null() {
+                    return Err(TritonError::from_message(format!(
+                        "response parameter {index} has no name"
+                    )));
+                }
+                // SAFETY: Triton returns `value` matching `kind`; it and the
+                // name are owned by the response, which outlives the call,
+                // and both are copied here.
+                let name = unsafe { cstr_to_string(name) };
+                let value = unsafe { Parameter::from_sys(kind, value) };
+                Ok((name, value))
+            })
+            .collect()
     }
 
     fn get_output(&self, index: u32) -> Result<OutputTensor, TritonError> {

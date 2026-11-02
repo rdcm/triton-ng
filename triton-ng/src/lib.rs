@@ -6,6 +6,8 @@ pub mod backend;
 pub mod backend_handle;
 #[path = "buffers.rs"]
 pub mod buffers;
+#[path = "child_trace.rs"]
+pub(crate) mod child_trace;
 #[path = "error.rs"]
 pub mod error;
 #[path = "executor.rs"]
@@ -40,6 +42,8 @@ pub mod output_buffer;
 mod raw_buffer;
 #[path = "request.rs"]
 pub mod request;
+#[path = "request_release.rs"]
+pub(crate) mod request_release;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
@@ -321,8 +325,10 @@ pub mod __macro_support {
 #[cfg(test)]
 mod tests {
     use crate::allocation::Allocation;
+    use crate::child_trace::ChildTrace;
     use crate::inference_response::InferenceResponse;
     use crate::message::Message;
+    use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::*;
 
@@ -367,9 +373,16 @@ mod tests {
             InferenceResult,
             Message,
             ResponseAllocator,
-            Allocation
+            Allocation,
+            RequestRelease
         );
-        send_not_sync!(Request, Response, InferenceRequest, InferenceResponse);
+        send_not_sync!(
+            Request,
+            Response,
+            InferenceRequest,
+            InferenceResponse,
+            ChildTrace
+        );
         neither!(
             Model,
             ModelInstance,

@@ -5,6 +5,7 @@ use super::dto::InferInput;
 #[derive(serde::Deserialize)]
 pub struct Config {
     pub triton_url: String,
+    pub trace_dir: String,
     pub mnist_model: String,
     pub backend_model: String,
     pub input_name: String,
@@ -20,6 +21,10 @@ impl Config {
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read test config from {}", path.display()))?;
         serde_json::from_str(&content).context("Failed to parse test config")
+    }
+
+    pub fn trace_dir(&self) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&self.trace_dir)
     }
 
     pub fn mnist_blank_input(&self) -> InferInput {

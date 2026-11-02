@@ -47,7 +47,9 @@ backend hook reaches Triton with its code, any other error as `Internal`.
 
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded.
+request: Triton finishes it and the result is discarded. A BLS request can carry the ID,
+correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
+child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
 
 **Handles and threads.** Every type that wraps a Triton object either owns it, and then its
 `Drop` releases it, or borrows it from Triton, and then it has no `Drop` and its lifetime is
@@ -55,11 +57,11 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 
 | Type | Triton object | On drop | `Send` | `Sync` | Notes |
 |---|---|---|---|---|---|
-| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time |
+| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md) |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
-| `InferenceRequest` | owns the BLS request and its input buffers | deletes it if it was never submitted | yes | no | Triton deletes it after a submit |
+| `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |

@@ -161,7 +161,10 @@ mod tests {
     }
 
     fn succeeded() -> Result<InferenceResult, Failure> {
-        Ok(InferenceResult { outputs: vec![] })
+        Ok(InferenceResult {
+            outputs: vec![],
+            parameters: vec![],
+        })
     }
 
     #[test]

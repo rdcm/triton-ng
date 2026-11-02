@@ -138,6 +138,23 @@ impl Sut {
             .await
     }
 
+    pub async fn infer_with_id_and_parameters(
+        &self,
+        model: &str,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        id: &str,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let options = client::InferOptions {
+            id: Some(id.to_string()),
+            parameters,
+            ..Default::default()
+        };
+        self.infer_with_options(model, None, inputs, output_names, options)
+            .await
+    }
+
     async fn infer_with_options(
         &self,
         model: &str,
