@@ -1,5 +1,5 @@
 use crate::Input;
-use crate::error::{Error, TritonError};
+use crate::error::{Error, ErrorCode, TritonError};
 use crate::types::Parameter;
 use crate::utils::{cstr_to_string, cstring_from_str};
 use libc::{c_char, c_void};
@@ -171,7 +171,8 @@ impl Request {
         Ok(cancelled)
     }
 
-    /// Sends a final response carrying `message` as an internal error.
+    /// Sends a final response carrying `message` as an internal error, see
+    /// [`Request::respond_error_with_code`].
     ///
     /// Use it to fail a single request of a batch without failing the others.
     ///
@@ -182,17 +183,40 @@ impl Request {
     ///     request.respond_error(&e.to_string())?;
     /// }
     /// ```
-    pub fn respond_error(mut self, message: &str) -> Result<(), TritonError> {
-        self.respond_with(TritonError::internal(message))
+    pub fn respond_error(self, message: &str) -> Result<(), TritonError> {
+        self.respond_error_with_code(ErrorCode::Internal, message)
+    }
+
+    /// Sends a final response carrying `message` as an error with `code`,
+    /// which the client gets as the status of its call, see [`ErrorCode`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let Ok(text) = request.get_input("TEXT").and_then(|input| input.as_string()) else {
+    ///     request.respond_error_with_code(ErrorCode::InvalidArg, "TEXT must be a string")?;
+    ///     continue;
+    /// };
+    /// match ctx.server().infer_async(inference).await {
+    ///     Ok(result) => answer(request, result)?,
+    ///     Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+    /// }
+    /// ```
+    pub fn respond_error_with_code(
+        mut self,
+        code: ErrorCode,
+        message: &str,
+    ) -> Result<(), TritonError> {
+        self.respond_with(code, message)
     }
 
     /// Sends a final response with the CANCELLED status, see
     /// [`Request::is_cancelled`].
-    pub fn respond_cancelled(mut self) -> Result<(), TritonError> {
-        self.respond_with(TritonError::cancelled("request was cancelled"))
+    pub fn respond_cancelled(self) -> Result<(), TritonError> {
+        self.respond_error_with_code(ErrorCode::Cancelled, "request was cancelled")
     }
 
-    fn respond_with(&mut self, error: TritonError) -> Result<(), TritonError> {
+    fn respond_with(&mut self, code: ErrorCode, message: &str) -> Result<(), TritonError> {
         if self.responded {
             return Err(TritonError::from_message(
                 "the request already has a final response",
@@ -201,6 +225,7 @@ impl Request {
 
         // The caller keeps ownership of the error object passed to ResponseSend,
         // it is deleted on drop.
+        let error = TritonError::in_triton(code, message);
         if error.as_ptr().is_null() {
             return Err(TritonError::from_message("failed to create error object"));
         }
@@ -222,9 +247,10 @@ impl Request {
 impl Drop for Request {
     fn drop(&mut self) {
         if !self.responded
-            && let Err(e) = self.respond_with(TritonError::internal(
+            && let Err(e) = self.respond_with(
+                ErrorCode::Internal,
                 "backend did not produce a response for the request",
-            ))
+            )
         {
             crate::log::error(&format!("failed to send error response: {e}"));
         }

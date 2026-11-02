@@ -76,6 +76,8 @@ impl OutputTensor {
 
 pub struct InferenceResult {
     pub outputs: Vec<OutputTensor>,
+    /// Always `None`: a failed inference resolves its [`crate::InferenceFuture`]
+    /// to a [`crate::TritonError`] with the code of the failure.
     pub error: Option<String>,
 }
 
@@ -146,15 +148,6 @@ impl InferenceResult {
     fn put_back<T>(&mut self, name: &str, buffer: WrittenBuffer, kind: &str) -> Result<T, Error> {
         self.output_mut(name)?.data = OutputData::Buffer(buffer);
         Err(format!("output '{name}' is not in a {kind} buffer").into())
-    }
-}
-
-impl InferenceResult {
-    pub(crate) fn failed(message: impl Into<String>) -> Self {
-        Self {
-            outputs: vec![],
-            error: Some(message.into()),
-        }
     }
 }
 

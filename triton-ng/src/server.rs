@@ -1,4 +1,4 @@
-use crate::inference_future::Completion;
+use crate::inference_future::{Completion, Failure};
 use crate::inference_request::InputBuffers;
 use crate::inference_response::InferenceResponse;
 use crate::message::Message;
@@ -17,7 +17,7 @@ pub(crate) struct InferenceContext {
     allocator: Arc<ResponseAllocator>,
     outputs: OutputPlan,
     pending_outputs: Vec<OutputTensor>,
-    error: Option<String>,
+    error: Option<Failure>,
 }
 
 /// The Triton server the backend runs in, used for BLS: inference of other
@@ -119,7 +119,8 @@ impl Server {
     }
 
     /// Submits inference and returns a future of its result, see
-    /// [`InferenceFuture`]. Submission errors are reported by the future.
+    /// [`InferenceFuture`]. Submission errors are reported by the future,
+    /// with the code Triton gave them (`NotFound` for an unknown model).
     ///
     /// # Examples
     ///
@@ -146,7 +147,7 @@ impl Server {
         let completion = Completion::new();
         match self.submit(request, Arc::clone(&completion)) {
             Ok(()) => InferenceFuture::new(completion),
-            Err(e) => InferenceFuture::new(Completion::failed(e.to_string())),
+            Err(e) => InferenceFuture::new(Completion::failed(e.into())),
         }
     }
 
@@ -275,21 +276,15 @@ unsafe extern "C" fn inference_response_complete(
     let context = unsafe { &mut *(userp as *mut InferenceContext) };
 
     if !response_ptr.is_null() {
-        match InferenceResponse::from_ptr(response_ptr) {
-            Err(e) => {
-                context.error.get_or_insert_with(|| e.to_string());
-            }
-            Ok(response) => {
-                if let Some(err) = response.error() {
-                    context.error.get_or_insert_with(|| err.to_string());
-                } else {
-                    match response.outputs() {
-                        Ok(outputs) => context.pending_outputs.extend(outputs),
-                        Err(e) => {
-                            context.error.get_or_insert_with(|| e.to_string());
-                        }
-                    }
-                }
+        let outputs =
+            InferenceResponse::from_ptr(response_ptr).and_then(|response| match response.error() {
+                Some(error) => Err(error),
+                None => response.outputs(),
+            });
+        match outputs {
+            Ok(outputs) => context.pending_outputs.extend(outputs),
+            Err(error) => {
+                context.error.get_or_insert_with(|| error.into());
             }
         }
     }
@@ -297,11 +292,11 @@ unsafe extern "C" fn inference_response_complete(
     if is_final {
         let context = unsafe { Box::from_raw(userp as *mut InferenceContext) };
         let result = match context.error {
-            Some(error) => InferenceResult::failed(error),
-            None => InferenceResult {
+            Some(error) => Err(error),
+            None => Ok(InferenceResult {
                 outputs: context.pending_outputs,
                 error: None,
-            },
+            }),
         };
         context.completion.complete(result);
     }

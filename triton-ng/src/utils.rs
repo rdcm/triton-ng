@@ -1,4 +1,4 @@
-use crate::error::{Error, TritonError};
+use crate::error::{Error, ErrorCode, TritonError};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::ffi::{CString, c_char};
 use std::io::Cursor;
@@ -65,7 +65,7 @@ pub unsafe fn cstr_to_string(ptr: *const c_char) -> String {
 }
 
 pub fn cstring_from_str(s: &str) -> Result<CString, TritonError> {
-    CString::new(s).map_err(|e| TritonError::from_message(e.to_string()))
+    CString::new(s).map_err(|e| TritonError::with_code(ErrorCode::InvalidArg, e.to_string()))
 }
 
 /// Decodes a buffer of little-endian fixed-size elements.
