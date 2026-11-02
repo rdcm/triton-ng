@@ -1,5 +1,5 @@
-use crate::child_trace::ChildTrace;
 use crate::error::ErrorCode;
+use crate::inference_trace::InferenceTrace;
 use crate::server::Server;
 use crate::types::{CorrelationId, DataType, Parameter, RequestFlags};
 use crate::utils::cstring_from_str;
@@ -36,7 +36,7 @@ pub struct InferenceRequest {
     /// the release callback together with the request (see `Server::infer_async`).
     buffers: InputBuffers,
     outputs: OutputBuffers,
-    trace: Option<ChildTrace>,
+    trace: Option<InferenceTrace>,
     /// Names of the parameters set: Triton keeps duplicates, and the called
     /// model would see only one of them.
     parameters: HashSet<String>,
@@ -74,7 +74,7 @@ impl InferenceRequest {
         *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
         InputBuffers,
         OutputBuffers,
-        Option<ChildTrace>,
+        Option<InferenceTrace>,
     ) {
         let mut this = std::mem::ManuallyDrop::new(self);
         (
@@ -287,7 +287,7 @@ impl InferenceRequest {
                 "the request already has a parent trace",
             ));
         }
-        self.trace = ChildTrace::spawn(request)?;
+        self.trace = InferenceTrace::spawn(request)?;
         Ok(())
     }
 

@@ -1,8 +1,8 @@
-use crate::child_trace::ChildTrace;
 use crate::inference_future::{Completion, Failure};
 use crate::inference_request::InputBuffers;
 use crate::inference_response::InferenceResponse;
 use crate::inference_result::ResponseParameters;
+use crate::inference_trace::InferenceTrace;
 use crate::message::Message;
 use crate::request_release::RequestRelease;
 use crate::response_allocator::{OutputPlan, ResponseAllocator};
@@ -176,7 +176,7 @@ impl Server {
         let allocator = ResponseAllocator::shared()?;
 
         let (raw, buffers, outputs, trace) = request.into_raw_parts();
-        let parent = trace.as_ref().map(ChildTrace::parent);
+        let parent = trace.as_ref().map(InferenceTrace::parent);
         let buffers_ptr = Box::into_raw(Box::new(ReleaseContext {
             _buffers: buffers,
             _parent: parent.clone(),
@@ -226,9 +226,9 @@ impl Server {
 
         // The trace is handed over last: until here a failure deletes it
         // with `trace`, from here on Triton may have taken it, see
-        // `ChildTrace::into_raw`. `_parent` keeps the parent trace alive
+        // `InferenceTrace::into_raw`. `_parent` keeps the parent trace alive
         // while Triton may still release the child on a failure.
-        let (trace_ptr, _parent) = match trace.map(ChildTrace::into_raw) {
+        let (trace_ptr, _parent) = match trace.map(InferenceTrace::into_raw) {
             Some((trace_ptr, parent)) => (trace_ptr, Some(parent)),
             None => (ptr::null_mut(), None),
         };

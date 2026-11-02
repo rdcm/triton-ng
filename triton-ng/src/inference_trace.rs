@@ -8,26 +8,27 @@ use triton_ng_macros::triton_call;
 /// is made for, so that Triton reports it as a child of that request.
 ///
 /// Owns the `TRITONSERVER_InferenceTrace` until it is handed to
-/// `TRITONSERVER_ServerInferAsync`, see [`ChildTrace::into_raw`], and deletes
-/// it on drop before that (the pointer is null after the handover). A spawned trace has reported nothing yet, so
-/// deleting it is all its release takes (`InferenceTrace` has no destructor
-/// logic in core `r25.09`, `TRITONSERVER_InferenceTraceDelete` is a plain
-/// `delete`; the trace data of the frontend stays with the parent).
+/// `TRITONSERVER_ServerInferAsync`, see [`InferenceTrace::into_raw`], and deletes
+/// it on drop before that (the pointer is null after the handover). A
+/// spawned trace has reported nothing yet, so deleting it is all its release
+/// takes (the C++ `InferenceTrace` of core `r25.09` has no destructor logic,
+/// `TRITONSERVER_InferenceTraceDelete` is a plain `delete`; the trace data of
+/// the frontend stays with the parent).
 ///
 /// Holds the parent request unreleased: the frontend frees the trace data
 /// shared by a trace and its children with the parent, see [`RequestRelease`].
 /// `Send`, not `Sync`.
-pub(crate) struct ChildTrace {
+pub(crate) struct InferenceTrace {
     ptr: *mut triton_ng_sys::TRITONSERVER_InferenceTrace,
     parent: Arc<RequestRelease>,
 }
 
 // SAFETY: a spawned trace is used by nobody but its owner until it is handed
-// to Triton; deleting it does not depend on the thread. `ChildTrace` is not
+// to Triton; deleting it does not depend on the thread. `InferenceTrace` is not
 // `Sync`, the parent guard is `Send + Sync`.
-unsafe impl Send for ChildTrace {}
+unsafe impl Send for InferenceTrace {}
 
-impl ChildTrace {
+impl InferenceTrace {
     /// Spawns a child of the trace of `request`, `None` when the request is
     /// not traced.
     pub(crate) fn spawn(request: &Request) -> Result<Option<Self>, TritonError> {
@@ -74,7 +75,7 @@ impl ChildTrace {
     }
 }
 
-impl Drop for ChildTrace {
+impl Drop for InferenceTrace {
     fn drop(&mut self) {
         if self.ptr.is_null() {
             return;

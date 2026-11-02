@@ -4,8 +4,6 @@ pub(crate) mod allocation;
 pub mod backend;
 #[path = "buffers.rs"]
 pub mod buffers;
-#[path = "child_trace.rs"]
-pub(crate) mod child_trace;
 #[path = "custom_backend.rs"]
 pub mod custom_backend;
 #[path = "error.rs"]
@@ -20,6 +18,8 @@ pub mod inference_request;
 pub(crate) mod inference_response;
 #[path = "inference_result.rs"]
 pub mod inference_result;
+#[path = "inference_trace.rs"]
+pub(crate) mod inference_trace;
 #[path = "input.rs"]
 pub mod input;
 #[path = "input_buffer.rs"]
@@ -336,8 +336,8 @@ pub mod __macro_support {
 #[cfg(test)]
 mod tests {
     use crate::allocation::Allocation;
-    use crate::child_trace::ChildTrace;
     use crate::inference_response::InferenceResponse;
+    use crate::inference_trace::InferenceTrace;
     use crate::message::Message;
     use crate::metric::Metric;
     use crate::metric_args::MetricArgs;
@@ -404,7 +404,7 @@ mod tests {
             Response,
             InferenceRequest,
             InferenceResponse,
-            ChildTrace
+            InferenceTrace
         );
         neither!(
             MetricLabel,
