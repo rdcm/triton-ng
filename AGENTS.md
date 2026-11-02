@@ -43,6 +43,22 @@ author:
 - When a failure cannot be reported (in `Drop`, in a Triton callback), log it and leave Triton
   in a consistent state; prefer leaking an object to freeing it when ownership is ambiguous.
 
+## Naming
+
+A Rust type that wraps a Triton object is named after it without the prefix:
+`TRITONSERVER_<Name>` or `TRITONBACKEND_<Name>` is `<Name>` (`TRITONSERVER_Metric` is
+`Metric`, `TRITONBACKEND_Backend` is `Backend`). No `Handle`, `Raw` or similar suffixes, and
+one type per Triton object.
+
+Exceptions, where the name is taken by a more important public type:
+
+- `TRITONSERVER_Error` is `TritonError`: `Error` is the boxed error alias every backend uses.
+- `TRITONSERVER_Parameter` used for metric labels is `MetricParameter`: `Parameter` is the
+  public enum of parameter values.
+- `RequestRelease` holds the `TRITONBACKEND_Request` of a `Request` a second time: it is not a
+  wrapper but the shared right to release the request, kept by traced BLS children after the
+  `Request` is dropped.
+
 ## Tests
 
 Unit tests live next to the code they test, in a `#[cfg(test)] mod tests` at the end of the
