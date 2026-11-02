@@ -30,6 +30,27 @@ impl DataType {
         }
     }
 
+    /// Name of the type in a model config (`TYPE_FP32`), `None` for INVALID.
+    pub(crate) fn config_name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Invalid => return None,
+            Self::Bool => "TYPE_BOOL",
+            Self::Uint8 => "TYPE_UINT8",
+            Self::Uint16 => "TYPE_UINT16",
+            Self::Uint32 => "TYPE_UINT32",
+            Self::Uint64 => "TYPE_UINT64",
+            Self::Int8 => "TYPE_INT8",
+            Self::Int16 => "TYPE_INT16",
+            Self::Int32 => "TYPE_INT32",
+            Self::Int64 => "TYPE_INT64",
+            Self::Fp16 => "TYPE_FP16",
+            Self::Fp32 => "TYPE_FP32",
+            Self::Fp64 => "TYPE_FP64",
+            Self::Bytes => "TYPE_STRING",
+            Self::Bf16 => "TYPE_BF16",
+        })
+    }
+
     pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_DataType {
         use triton_ng_sys::*;
         match self {

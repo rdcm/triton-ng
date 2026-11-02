@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    Backend, BackendAttributes, BackendConfig, Context, CorrelationId, Counter, CounterFamily,
-    CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram,
-    HistogramFamily, InferenceFuture, InferenceRequest, InferenceResult, InstanceGroupKind,
-    MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request,
-    RequestFlags, Response, ResponseSender, TritonError, UninitGpuBuffer,
+    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, Context, CorrelationId, Counter,
+    CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer,
+    Histogram, HistogramFamily, InferenceFuture, InferenceRequest, InferenceResult,
+    InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
+    Request, RequestFlags, Response, ResponseSender, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -181,6 +181,17 @@ impl CustomBackend for MnistBackend {
         Ok(BackendAttributes::new()
             .preferred_instance_group(InstanceGroupKind::Cpu, 2, &[])?
             .parallel_model_instance_loading(true))
+    }
+
+    fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
+        if config.has_input(IMAGE) {
+            return Ok(());
+        }
+        config.set_max_batch_size(8)?;
+        config.set_dynamic_batching()?;
+        config.add_input(IMAGE, DataType::Fp32, &IMAGE_SHAPE[1..])?;
+        config.add_output("DIGIT", DataType::Int32, &[1])?;
+        Ok(())
     }
 
     fn model_initialize(model: &Model) -> Result<(), Error> {

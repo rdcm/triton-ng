@@ -211,6 +211,29 @@ async fn custom_backend_returns_the_digit_with_the_highest_target_model_score() 
 }
 
 #[tokio::test]
+async fn model_with_a_config_completed_by_the_backend_answers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let digit = sut
+        .infer(
+            "mnist_auto",
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            None,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.backend_output_name)
+        .context("digit not found in response")?;
+    assert_eq!(digit.shape, vec![1, 1]);
+    assert_eq!(digit.data_i32.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_answers_concurrent_requests() -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..200 {

@@ -1,7 +1,7 @@
 # Model management and configuration
 
-How a backend reads its own configuration, loads and unloads models, and takes part in loading
-its own.
+How a backend reads its own configuration, completes the configs of its models, and loads and
+unloads models.
 
 ## Backend config
 
@@ -60,6 +60,47 @@ the hook the backend sets nothing and Triton uses its defaults.
 
 The example backend prefers two CPU instances: `mnist_stream` has no `instance_group` and gets
 them, `mnist` names its group in its config and keeps it.
+
+## Completing the model config
+
+`CustomBackend::auto_complete_config` fills in what the `config.pbtxt` of a model leaves out, like
+`auto_complete_config` of python_backend. A model then needs little more than its backend:
+
+```
+name: "mnist_auto"
+backend: "custom_backend"
+```
+
+```rust
+fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
+    if config.has_input("Input3") {
+        return Ok(());
+    }
+    config.set_max_batch_size(8)?;
+    config.set_dynamic_batching()?;
+    config.add_input("Input3", DataType::Fp32, &[1, 28, 28])?;
+    config.add_output("DIGIT", DataType::Int32, &[1])?;
+    Ok(())
+}
+```
+
+- **What can be set.** Triton takes back only the max batch size, inputs and outputs, the scheduler
+  when the config names none, and `decoupled` (`set_decoupled`); `AutoCompleteConfig` offers
+  nothing else. `add_optional_input` adds an input requests may leave out.
+- **The config wins.** What the config already sets is only confirmed: an input or output of the
+  config gets the data type and dims it leaves out, and fails the load when they differ; a smaller
+  max batch size than the configured one, dynamic batching over a sequence or ensemble scheduler
+  and the other `decoupled` fail too. The hook is shared by every model of the backend, so check
+  with `has_input` and `has_output` what a model already has.
+- **When.** triton-ng calls the hook right before `model_initialize`, which already sees the
+  completed config (`Model::config_json`, `Model::is_decoupled`). Triton validates it after
+  `model_initialize` and fails the load when it is incomplete. A hook that changes nothing does
+  not touch the config. Models cannot be loaded or unloaded from the hook.
+- **Off switch.** `tritonserver --disable-auto-complete-config` turns completion off for every
+  backend: the hook is not called and the config must be complete.
+
+The example backend completes `mnist_auto`, which has only its backend and parameters; the other
+example models have complete configs and the hook leaves them alone.
 
 ## Loading and unloading models
 

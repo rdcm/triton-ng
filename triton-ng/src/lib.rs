@@ -1,5 +1,7 @@
 #[path = "allocation.rs"]
 pub(crate) mod allocation;
+#[path = "auto_complete_config.rs"]
+pub mod auto_complete_config;
 #[path = "backend.rs"]
 pub mod backend;
 #[path = "backend_attribute.rs"]
@@ -83,6 +85,7 @@ pub mod types;
 #[path = "utils.rs"]
 pub(crate) mod utils;
 
+pub use auto_complete_config::*;
 pub use backend::*;
 pub use backend_attributes::*;
 pub use backend_config::*;
@@ -116,6 +119,7 @@ pub use triton_ng_macros::backend;
 /// public API.
 #[doc(hidden)]
 pub mod __macro_support {
+    use crate::auto_complete_config::AutoCompleteConfig;
     use crate::backend::Backend;
     use crate::backend_attribute::BackendAttribute;
     use crate::custom_backend::CustomBackend;
@@ -172,7 +176,27 @@ pub mod __macro_support {
     /// TRITONBACKEND_ModelInitialize.
     pub unsafe fn model_initialize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
-        into_error_ptr(catch(|| B::model_initialize(&model)))
+        into_error_ptr(catch(|| {
+            auto_complete_config::<B>(&model)?;
+            B::model_initialize(&model)
+        }))
+    }
+
+    /// Runs `CustomBackend::auto_complete_config` and gives Triton the
+    /// completed config, when Triton asks for it.
+    fn auto_complete_config<B: CustomBackend>(model: &Model) -> Result<(), Error> {
+        if !model.auto_complete_config_enabled()? {
+            return Ok(());
+        }
+        let original = AutoCompleteConfig::from_json(&model.config_json()?)?;
+        let mut config = original.clone();
+        forbid_model_control("auto_complete_config", || {
+            B::auto_complete_config(model, &mut config)
+        })?;
+        if config != original {
+            model.set_config(&config.to_json())?;
+        }
+        Ok(())
     }
 
     /// TRITONBACKEND_ModelFinalize. Drops the model state after the hook.

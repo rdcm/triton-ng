@@ -23,6 +23,7 @@ services:
       --load-model=mnist_onnx
       --load-model=identity_gpu
       --load-model=mnist_stream
+      --load-model=mnist_auto
       --trace-config=triton,file=/traces/trace.json
       --backend-config=custom_backend,greeting=hello
     volumes:

@@ -222,6 +222,32 @@ impl Model {
         config.to_json()
     }
 
+    /// Whether Triton asks the backend to complete the config of the model:
+    /// on unless Triton runs with `--disable-auto-complete-config`.
+    pub(crate) fn auto_complete_config_enabled(&self) -> Result<bool, TritonError> {
+        let mut enabled = false;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelAutoCompleteConfig(
+            self.ptr,
+            &mut enabled
+        ))?;
+        Ok(enabled)
+    }
+
+    /// Replaces the config of the model with `json`, a model config of
+    /// version 1. Triton takes only some parts of it, see
+    /// [`crate::AutoCompleteConfig`], and validates the result after
+    /// `model_initialize`.
+    pub(crate) fn set_config(&self, json: &str) -> Result<(), TritonError> {
+        let message = Message::from_json(json)?;
+        // The core only serializes the message (TritonModel::UpdateModelConfig)
+        // and does not keep it: `message` deletes it afterwards.
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelSetConfig(
+            self.ptr,
+            1,
+            message.as_ptr()
+        ))
+    }
+
     /// Whether the model is decoupled
     /// (`model_transaction_policy { decoupled: true }`): its requests can get
     /// any number of responses, see [`crate::Request::into_sender`].

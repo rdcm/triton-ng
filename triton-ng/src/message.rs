@@ -19,6 +19,26 @@ impl Message {
         Self { ptr }
     }
 
+    /// A new message holding a copy of `json` (core `r25.09` builds a
+    /// `std::string` of it in `TRITONSERVER_MessageNewFromSerializedJson`).
+    pub(crate) fn from_json(json: &str) -> Result<Self, TritonError> {
+        let ptr = triton_call!(triton_ng_sys::TRITONSERVER_MessageNewFromSerializedJson(
+            &mut _,
+            json.as_ptr().cast(),
+            json.len(),
+        ))?;
+        if ptr.is_null() {
+            return Err(TritonError::from_message(
+                "TRITONSERVER_MessageNewFromSerializedJson returned null",
+            ));
+        }
+        Ok(Self::from_ptr(ptr))
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_Message {
+        self.ptr
+    }
+
     pub(crate) fn to_json(&self) -> Result<String, TritonError> {
         unsafe { serialize_to_json(self.ptr) }
     }
