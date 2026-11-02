@@ -64,7 +64,9 @@ let result = ctx.server().infer_async(inference).await?;
 
 The child gets its own trace ID with `parent_id` set to the trace ID of the request, and Triton
 writes it together with the parent. A request that is not traced, or a Triton built without
-tracing, makes it a no-op. A batched BLS request has one parent: pick one request of the batch.
+tracing, makes it a no-op. A batched BLS request has one parent: pick one request of the batch. A
+request answered with a stream gives its parent with `inference.set_parent_trace(sender.request())`,
+and `Server::infer_stream` takes a child trace like `infer_async`, see [Streaming](streaming.md).
 
 **Lifetimes.** Triton's frontend frees the trace data shared by a trace and its children with the
 parent, and a child that reports after that writes into freed memory. So a request with a traced

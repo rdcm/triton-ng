@@ -9,6 +9,7 @@ pub struct Config {
     pub trace_dir: String,
     pub mnist_model: String,
     pub backend_model: String,
+    pub stream_model: String,
     pub input_name: String,
     pub output_name: String,
     pub backend_output_name: String,
@@ -29,10 +30,14 @@ impl Config {
     }
 
     pub fn mnist_blank_input(&self) -> InferInput {
+        self.mnist_blank_images(1)
+    }
+
+    pub fn mnist_blank_images(&self, count: usize) -> InferInput {
         InferInput {
             name: self.input_name.clone(),
-            shape: vec![1, 1, 28, 28],
-            data: vec![0.0_f32; 784],
+            shape: vec![count as i64, 1, 28, 28],
+            data: vec![0.0_f32; 784 * count],
         }
     }
 }

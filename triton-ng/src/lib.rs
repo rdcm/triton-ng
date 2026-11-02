@@ -18,6 +18,8 @@ pub mod inference_request;
 pub(crate) mod inference_response;
 #[path = "inference_result.rs"]
 pub mod inference_result;
+#[path = "inference_stream.rs"]
+pub mod inference_stream;
 #[path = "inference_trace.rs"]
 pub(crate) mod inference_trace;
 #[path = "input.rs"]
@@ -52,14 +54,22 @@ pub mod output_buffer;
 mod raw_buffer;
 #[path = "request.rs"]
 pub mod request;
+#[path = "request_cancel.rs"]
+mod request_cancel;
 #[path = "request_release.rs"]
 pub(crate) mod request_release;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
 pub(crate) mod response_allocator;
+#[path = "response_factory.rs"]
+mod response_factory;
+#[path = "response_sender.rs"]
+pub mod response_sender;
 #[path = "server.rs"]
 pub mod server;
+#[path = "stream_response.rs"]
+pub mod stream_response;
 #[path = "types.rs"]
 pub mod types;
 #[path = "utils.rs"]
@@ -73,6 +83,7 @@ pub use executor::Context;
 pub use inference_future::*;
 pub use inference_request::*;
 pub use inference_result::*;
+pub use inference_stream::*;
 pub use input::*;
 pub use input_buffer::*;
 pub use memory_manager::*;
@@ -84,7 +95,9 @@ pub use output_buffer::*;
 pub(crate) use raw_buffer::{RawBuffer, Sealed};
 pub use request::*;
 pub use response::*;
+pub use response_sender::*;
 pub use server::*;
+pub use stream_response::*;
 pub use types::*;
 
 pub use triton_ng_macros::backend;
@@ -174,7 +187,7 @@ pub mod __macro_support {
         requests_ptr: *const *mut c_void,
         request_count: u32,
     ) -> ErrorPtr {
-        let (model, requests) =
+        let (model, raw_requests) =
             match unsafe { model_and_requests(instance, requests_ptr, request_count) } {
                 Ok(parts) => parts,
                 Err(err) => return err,
@@ -186,6 +199,16 @@ pub mod __macro_support {
             let ctx = crate::executor::context(&model, executor, instance.device_id()?)?;
             Ok((executor, ctx))
         });
+
+        // Without the executor the requests only get error responses, for
+        // which it does not matter whether the model is decoupled.
+        let decoupled = prepared
+            .as_ref()
+            .is_ok_and(|(executor, _)| executor.decoupled());
+        let requests: Vec<Request> = raw_requests
+            .into_iter()
+            .map(|r| Request::from_ptr(r, decoupled))
+            .collect();
 
         match prepared {
             Ok((executor, ctx)) => {
@@ -284,13 +307,13 @@ pub mod __macro_support {
         }
     }
 
-    /// Extracts a `Model` and `Vec<Request>` from a `ModelInstanceExecute` call.
+    /// Extracts the `Model` and the requests of a `ModelInstanceExecute` call.
     /// Returns `Err(ErrorPtr)` if `TRITONBACKEND_ModelInstanceModel` fails.
     unsafe fn model_and_requests(
         instance: *mut c_void,
         requests_ptr: *const *mut c_void,
         request_count: u32,
-    ) -> Result<(Model, Vec<Request>), ErrorPtr> {
+    ) -> Result<(Model, Vec<*mut triton_ng_sys::TRITONBACKEND_Request>), ErrorPtr> {
         if instance.is_null() {
             return Err(make_internal_error("model instance is null"));
         }
@@ -326,7 +349,7 @@ pub mod __macro_support {
         }
         let requests = raw
             .iter()
-            .map(|&r| Request::from_ptr(r as *mut triton_ng_sys::TRITONBACKEND_Request))
+            .map(|&r| r as *mut triton_ng_sys::TRITONBACKEND_Request)
             .collect();
 
         Ok((model, requests))
@@ -343,8 +366,10 @@ mod tests {
     use crate::metric_args::MetricArgs;
     use crate::metric_family::MetricFamily;
     use crate::metric_parameter::MetricParameter;
+    use crate::request_cancel::RequestCancel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
+    use crate::response_factory::ResponseFactory;
     use crate::*;
 
     fn send<T: ?Sized + Send>() {}
@@ -386,6 +411,8 @@ mod tests {
             OutputBuffer,
             InferenceFuture,
             InferenceResult,
+            InferenceStream,
+            RequestCancel,
             Message,
             ResponseAllocator,
             Allocation,
@@ -402,6 +429,9 @@ mod tests {
         send_not_sync!(
             Request,
             Response,
+            ResponseBody,
+            ResponseSender,
+            StreamResponse<'static>,
             InferenceRequest,
             InferenceResponse,
             InferenceTrace
@@ -412,6 +442,7 @@ mod tests {
             Model,
             ModelInstance,
             Backend,
+            ResponseFactory,
             Input<'static>,
             Output<'static>,
             RawBuffer

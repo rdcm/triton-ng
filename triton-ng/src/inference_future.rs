@@ -1,3 +1,4 @@
+use crate::request_cancel::RequestCancel;
 use crate::{ErrorCode, InferenceResult, TritonError};
 use std::future::Future;
 use std::pin::Pin;
@@ -94,20 +95,53 @@ impl Completion {
 ///
 /// The request is already submitted when the future is created, so it runs
 /// whether the future is polled or not. Dropping the future does not cancel
-/// the request: Triton finishes it and the result is discarded.
+/// the request: Triton finishes it and the result is discarded. Cancel it
+/// with [`InferenceFuture::cancel`].
+///
+/// The future fails when the model sends other than exactly one response:
+/// the results of a decoupled model are read with
+/// [`crate::Server::infer_stream`].
 ///
 /// The future holds no Triton pointers, it is `Send + 'static` and works
 /// with any executor. Triton wakes it from its own threads.
 pub struct InferenceFuture {
     completion: Arc<Completion>,
+    /// `None` when the request was never submitted.
+    cancel: Option<Arc<RequestCancel>>,
 }
 
 impl InferenceFuture {
-    pub(crate) fn new(completion: Arc<Completion>) -> Self {
-        Self { completion }
+    pub(crate) fn new(completion: Arc<Completion>, cancel: Option<Arc<RequestCancel>>) -> Self {
+        Self { completion, cancel }
     }
 
-    fn poll_result(&self, cx: &mut Context<'_>) -> Poll<Result<InferenceResult, Failure>> {
+    /// Asks Triton to cancel the request, e.g. when the client cancelled the
+    /// request it is made for. The future still resolves, usually to a
+    /// CANCELLED error, unless the model has already answered. Does nothing
+    /// when the request is already done.
+    ///
+    /// Fails when Triton cannot cancel the request.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let inference = ctx.server().infer_async(inference);
+    /// if request.is_cancelled()? {
+    ///     inference.cancel()?;
+    /// }
+    /// let result = inference.await;
+    /// ```
+    pub fn cancel(&self) -> Result<(), TritonError> {
+        match &self.cancel {
+            Some(cancel) => cancel.cancel(),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn poll_result(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<InferenceResult, Failure>> {
         let mut state = self.completion.lock();
         if let Some(result) = Completion::take(&mut state) {
             return Poll::Ready(result);
@@ -172,7 +206,7 @@ mod tests {
         let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
         let waker = Waker::from(Arc::clone(&counter));
         let completion = Completion::new();
-        let future = InferenceFuture::new(Arc::clone(&completion));
+        let future = InferenceFuture::new(Arc::clone(&completion), None);
 
         assert_eq!(poll(&future, &waker), Poll::Pending);
         completion.complete(succeeded());
@@ -184,7 +218,7 @@ mod tests {
     #[test]
     fn completion_from_another_thread() {
         let completion = Completion::new();
-        let future = InferenceFuture::new(Arc::clone(&completion));
+        let future = InferenceFuture::new(Arc::clone(&completion), None);
 
         std::thread::spawn(move || completion.complete(succeeded()))
             .join()
@@ -195,7 +229,7 @@ mod tests {
 
     #[test]
     fn failed_completion_resolves_to_error() {
-        let future = InferenceFuture::new(Completion::failed(internal("submit failed")));
+        let future = InferenceFuture::new(Completion::failed(internal("submit failed")), None);
 
         assert_eq!(
             poll(&future, Waker::noop()),
@@ -206,7 +240,7 @@ mod tests {
     #[test]
     fn only_first_result_is_kept() {
         let completion = Completion::new();
-        let future = InferenceFuture::new(Arc::clone(&completion));
+        let future = InferenceFuture::new(Arc::clone(&completion), None);
 
         completion.complete(succeeded());
         completion.complete(Err(internal("late")));
@@ -216,7 +250,7 @@ mod tests {
 
     #[test]
     fn polling_after_completion_is_an_error() {
-        let future = InferenceFuture::new(Completion::failed(internal("first")));
+        let future = InferenceFuture::new(Completion::failed(internal("first")), None);
 
         assert!(poll(&future, Waker::noop()).is_ready());
         assert_eq!(
@@ -231,7 +265,7 @@ mod tests {
             code: ErrorCode::NotFound,
             message: "unknown model".to_string(),
         };
-        let future = InferenceFuture::new(Completion::failed(failure));
+        let future = InferenceFuture::new(Completion::failed(failure), None);
 
         let Poll::Ready(Err(failure)) = future.poll_result(&mut Context::from_waker(Waker::noop()))
         else {

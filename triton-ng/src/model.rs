@@ -222,6 +222,36 @@ impl Model {
         config.to_json()
     }
 
+    /// Whether the model is decoupled
+    /// (`model_transaction_policy { decoupled: true }`): its requests can get
+    /// any number of responses, see [`crate::Request::into_sender`].
+    ///
+    /// Fails when the configuration cannot be read or `decoupled` is not a
+    /// boolean.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     if !model.is_decoupled()? {
+    ///         return Err("the model streams its responses, set decoupled: true".into());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn is_decoupled(&self) -> Result<bool, TritonError> {
+        let json = self.config_json()?;
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| TritonError::from_message(e.to_string()))?;
+        match &value["model_transaction_policy"]["decoupled"] {
+            serde_json::Value::Null => Ok(false),
+            serde_json::Value::Bool(decoupled) => Ok(*decoupled),
+            other => Err(TritonError::from_message(format!(
+                "model_transaction_policy.decoupled is not a boolean: {other}"
+            ))),
+        }
+    }
+
     /// Reads a string parameter from the model configuration `parameters` map.
     pub fn config_parameter(&self, key: &str) -> Result<Option<String>, TritonError> {
         let json = self.config_json()?;

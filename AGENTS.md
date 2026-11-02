@@ -58,6 +58,12 @@ Exceptions, where the name is taken by a more important public type:
 - `RequestRelease` holds the `TRITONBACKEND_Request` of a `Request` a second time: it is not a
   wrapper but the shared right to release the request, kept by traced BLS children after the
   `Request` is dropped.
+- `RequestCancel` holds the `TRITONSERVER_InferenceRequest` of a submitted BLS request a second
+  time: it is the shared right to cancel the request, kept by its `InferenceFuture` or
+  `InferenceStream` and cleared by the release callback before the request is deleted.
+- `ResponseBody` holds the `TRITONBACKEND_Response` of both `Response` (the final one) and
+  `StreamResponse` (one of a stream of a decoupled model): they build the response the same way
+  and differ only in who owns them, a `Request` or a borrowed `ResponseSender`.
 
 ## Tests
 

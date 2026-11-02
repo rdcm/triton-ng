@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -6,11 +7,13 @@ use triton_ng::{
     Backend, Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error,
     ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture,
     InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
+    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, TritonError,
+    UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
+const IMAGE_BYTES: usize = 28 * 28 * 4;
 const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
 const IDENTITY_INPUT: &str = "INPUT0";
@@ -42,8 +45,10 @@ impl FromStr for OutputMemory {
 
 struct State {
     model: String,
+    decoupled: bool,
     target_model: String,
     identity_model: String,
+    stream_model: Option<String>,
     held: AtomicI64,
     cancelled: AtomicI64,
     metrics: Metrics,
@@ -170,12 +175,14 @@ impl CustomBackend for MnistBackend {
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
+            decoupled: model.is_decoupled()?,
             target_model: model
                 .config_parameter("target_model")?
                 .ok_or("missing 'target_model' config parameter")?,
             identity_model: model
                 .config_parameter("identity_model")?
                 .ok_or("missing 'identity_model' config parameter")?,
+            stream_model: model.config_parameter("stream_model")?,
             held: AtomicI64::new(0),
             cancelled: AtomicI64::new(0),
         })?;
@@ -188,6 +195,9 @@ impl CustomBackend for MnistBackend {
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         let state = ctx.state::<State>()?;
+        if state.decoupled {
+            return stream_digits(&ctx, state, requests).await;
+        }
         let mut held = Vec::new();
         let mut buffered = Vec::new();
         let mut pending = Vec::new();
@@ -221,6 +231,46 @@ impl CustomBackend for MnistBackend {
                 let unawaited = ctx.server().infer_async(inference);
                 respond(&ctx, state, request, 0)?;
                 drop(unawaited);
+                continue;
+            }
+            if let Some(Parameter::Int(images)) = request.parameter("stream_images")? {
+                let via_infer_async =
+                    request.parameter("via_infer_async")? == Some(Parameter::Bool(true));
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                let inference = stream_inference(&ctx, state, &request, image, images, false)?;
+                if via_infer_async {
+                    match ctx.server().infer_async(inference).await {
+                        Ok(_) => request.respond_error("the inference succeeded")?,
+                        Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                    }
+                } else {
+                    answer_with_streamed_digits(&ctx, request, inference).await?;
+                }
+                continue;
+            }
+            if let Some(Parameter::String(how)) = request.parameter("cancel_stream")? {
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                let inference = stream_inference(&ctx, state, &request, image, 1, true)?;
+                cancel_stream(&ctx, request, inference, &how).await?;
+                continue;
+            }
+            if request.parameter("cancel_bls")? == Some(Parameter::Bool(true)) {
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                let mut inference = InferenceRequest::new(ctx.server(), &state.model, -1)?;
+                inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image)?;
+                inference.set_parameter("hold_until_cancelled", true)?;
+                let inference = ctx.server().infer_async(inference);
+                inference.cancel()?;
+                match inference.await {
+                    Ok(_) => request.respond_error("the inference succeeded")?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
+            if request.parameter("into_sender")? == Some(Parameter::Bool(true)) {
+                if request.into_sender().is_ok() {
+                    return Err("a request of a model that is not decoupled got a sender".into());
+                }
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
@@ -272,11 +322,139 @@ impl CustomBackend for MnistBackend {
         }
 
         for request in held {
-            hold_until_cancelled(state, request).await?;
+            hold_until_cancelled(state, respond_when_cancelled(request)).await?;
         }
 
         Ok(())
     }
+}
+
+/// Answers every request of the decoupled model with a stream of the digits
+/// of its images, one response per image.
+async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        let images = request.get_input(IMAGE)?.as_bytes()?;
+        let inferences = images
+            .chunks(IMAGE_BYTES)
+            .map(|image| {
+                let inference = host_inference(ctx, state, image.to_vec())?;
+                Ok(ctx.server().infer_async(inference))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let hold = request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true));
+        let unfinished = request.parameter("unfinished")? == Some(Parameter::Bool(true));
+
+        let mut sender = request.into_sender()?;
+        for inference in inferences {
+            let digit = argmax(&inference.await?.output(LOGITS)?.as_fp32_vec()?)?;
+            let mut response = sender.response()?;
+            response
+                .create_output("DIGIT", DataType::Int32, &[1, 1])?
+                .write_i32_vec(&[digit])?;
+            response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
+            response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+            response.send()?;
+        }
+
+        if hold {
+            hold_until_cancelled(state, finish_when_cancelled(sender)).await?;
+        } else if unfinished {
+            drop(sender);
+        } else {
+            sender.finish()?;
+        }
+    }
+    Ok(())
+}
+
+/// A request of `images` copies of `image` to the decoupled model.
+fn stream_inference(
+    ctx: &Context,
+    state: &State,
+    request: &Request,
+    image: Vec<u8>,
+    images: i64,
+    hold_until_cancelled: bool,
+) -> Result<InferenceRequest, Error> {
+    let model = state
+        .stream_model
+        .as_deref()
+        .ok_or("missing 'stream_model' config parameter")?;
+    let mut inference = InferenceRequest::new(ctx.server(), model, -1)?;
+    let shape = [images, 1, 28, 28];
+    inference.add_input_with_data(
+        IMAGE,
+        DataType::Fp32,
+        &shape,
+        image.repeat(images.try_into()?),
+    )?;
+    inference.add_requested_output("DIGIT")?;
+    if hold_until_cancelled {
+        inference.set_parameter("hold_until_cancelled", true)?;
+    }
+    inference.set_parent_trace(request)?;
+    Ok(inference)
+}
+
+/// Answers with the first streamed digit and the number of digits.
+async fn answer_with_streamed_digits(
+    ctx: &Context,
+    request: Request,
+    inference: InferenceRequest,
+) -> Result<(), Error> {
+    let mut stream = ctx.server().infer_stream(inference);
+    let mut digits = Vec::new();
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(result) => digits.extend(result.output("DIGIT")?.as_i32_vec()?),
+            Err(e) => return Ok(request.respond_error_with_code(e.code(), &e.to_string())?),
+        }
+    }
+
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[digits.first().copied().unwrap_or_default()])?;
+    response.set_parameter("streamed_digits", i64::try_from(digits.len())?)?;
+    response.send()?;
+    Ok(())
+}
+
+/// Cancels a stream after its first result, `how` is `cancel` or `drop`,
+/// and answers with how the stream ended.
+async fn cancel_stream(
+    ctx: &Context,
+    request: Request,
+    inference: InferenceRequest,
+    how: &str,
+) -> Result<(), Error> {
+    let mut stream = ctx.server().infer_stream(inference);
+    stream.next().await.ok_or("the stream is empty")??;
+    let ended_with = match how {
+        "cancel" => {
+            stream.cancel()?;
+            let mut ended_with = "final flag".to_string();
+            while let Some(result) = stream.next().await {
+                if let Err(e) = result {
+                    ended_with = e.code().to_string();
+                }
+            }
+            ended_with
+        }
+        "drop" => {
+            drop(stream);
+            "dropped".to_string()
+        }
+        other => return Ok(request.respond_error(&format!("unknown cancel_stream '{other}'"))?),
+    };
+
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    response.set_parameter("stream_ended_with", ended_with)?;
+    response.send()?;
+    Ok(())
 }
 
 /// Answers with the metadata of the request in response parameters.
@@ -501,15 +679,18 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         "gpu_buffers_allocated",
         buffers.gpu_allocated.load(Ordering::SeqCst),
     )?;
-    response.send()?;
     state.metrics.answered.increment(1.0)?;
+    response.send()?;
     Ok(())
 }
 
-async fn hold_until_cancelled(state: &State, request: Request) -> Result<(), Error> {
+async fn hold_until_cancelled(
+    state: &State,
+    answer: impl Future<Output = Result<(), Error>>,
+) -> Result<(), Error> {
     state.held.fetch_add(1, Ordering::SeqCst);
     state.metrics.held.increment(1.0)?;
-    let result = respond_when_cancelled(request).await;
+    let result = answer.await;
     if result.is_ok() {
         state.cancelled.fetch_add(1, Ordering::SeqCst);
     }
@@ -523,5 +704,13 @@ async fn respond_when_cancelled(request: Request) -> Result<(), Error> {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     request.respond_cancelled()?;
+    Ok(())
+}
+
+async fn finish_when_cancelled(sender: ResponseSender) -> Result<(), Error> {
+    while !sender.is_cancelled()? {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    sender.respond_cancelled()?;
     Ok(())
 }

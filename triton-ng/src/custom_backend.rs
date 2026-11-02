@@ -120,7 +120,10 @@ pub trait CustomBackend {
     /// calls: splitting it into tasks per request loses Triton's batching.
     ///
     /// The backend owns `requests` and must give every one exactly one final
-    /// response, see [`Request`]. A request dropped without a response, also
+    /// response, see [`Request`]; a request of a decoupled model may get a
+    /// stream of responses before it, see [`Request::into_sender`]. The batch
+    /// is in flight until its future ends, also while it streams responses.
+    /// A request dropped without a final response, also
     /// when the future returns an error or panics, gets a generic error
     /// response. The returned error is only logged: answer requests with
     /// [`Request::respond_error`] to give clients the reason.

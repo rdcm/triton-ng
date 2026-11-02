@@ -69,8 +69,11 @@ See [Execution model and thread safety](docs/execution_model_and_thread_safety.m
 and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
 error codes, BLS futures, threads, cancellation, shutdown and batching,
 [Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
-BLS calls in Triton traces, and [Metrics](docs/metrics.md) for backend metrics on Triton's
-Prometheus endpoint.
+BLS calls in Triton traces, [Streaming](docs/streaming.md) for decoupled models that answer with a
+stream of responses and for reading such streams over BLS, [Memory buffers](docs/memory_buffers.md)
+for BLS inputs and outputs in pinned and GPU memory, and [Metrics](docs/metrics.md) for backend
+metrics on Triton's Prometheus endpoint. The [documentation index](docs/README.md) lists every
+section.
 
 ## Using the gRPC client
 
@@ -98,6 +101,19 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+Streaming responses of a decoupled model over gRPC `ModelStreamInfer`:
+
+```rust
+let mut stream = client
+    .infer_stream("my_stream_model", None, inputs, ["TOKEN"], InferOptions::default())
+    .await?;
+while let Some(response) = stream.next().await {
+    println!("{:?}", response?.outputs[0].data);
+}
+```
+
+Dropping the stream cancels the request.
 
 TLS:
 
@@ -132,7 +148,7 @@ make docker-env-up   # start Triton (mounts .so and models/)
 cargo run --manifest-path=example/app/Cargo.toml --release
 ```
 
-Triton must be running with both models in READY state.
+Triton must be running with the example models in READY state.
 
 ### Run integration tests
 

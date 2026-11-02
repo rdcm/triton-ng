@@ -38,6 +38,10 @@ response. Every request is released to Triton when it is dropped. The error retu
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
+**Streams of a decoupled model.** A request of a decoupled model can get any number of responses
+before its final flag: `Request::into_sender` turns it into a `ResponseSender`, whose final methods
+consume it, so the final flag is still sent exactly once. See [Streaming](streaming.md).
+
 **Error codes.** Every `TritonError` has an `ErrorCode`: `respond_error` answers with `Internal`,
 `respond_error_with_code` with any code, which the client gets as the gRPC status of its call.
 A failed BLS call resolves to an error with the code Triton or the called model gave it (`NotFound`
@@ -47,7 +51,9 @@ backend hook reaches Triton with its code, any other error as `Internal`.
 
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded. A BLS request can carry the ID,
+request: Triton finishes it and the result is discarded; `InferenceFuture::cancel` cancels it. The
+future expects exactly one response; the responses of a decoupled model are read with
+`Server::infer_stream`, see [Streaming](streaming.md). A BLS request can carry the ID,
 correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
 child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
 
@@ -59,10 +65,13 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 |---|---|---|---|---|---|
 | `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md) |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
+| `ResponseSender` | owns the request of a decoupled model | sends a final error response if no final flag was sent, releases the request | yes | no | |
+| `StreamResponse<'_>` | owns a not final response, borrows its `ResponseSender` mutably | deletes it unless sent; the stream goes on | yes | no | the stream cannot be finished while it lives |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
+| `InferenceStream` | shares the right to cancel the request with its release callback | cancels the request | yes | yes | |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
 | `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |
@@ -82,6 +91,8 @@ the instance.
 
 **Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
 with `Request::respond_cancelled`. Triton reports a client that drops a gRPC call as a cancellation.
+`ResponseSender::is_cancelled` does the same for a stream. A backend cancels its own BLS requests
+with `InferenceFuture::cancel` and `InferenceStream::cancel`, or by dropping the stream.
 
 **Shutdown.** Before `CustomBackend::model_instance_finalize`, triton-ng waits for every batch of the
 instance and stops its runtime.
@@ -91,4 +102,5 @@ instance and stops its runtime.
 `hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
 most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
 requests are answered. A request with the `memory` parameter is answered through memory manager
-buffers cached in the instance state, see [Memory buffers](memory_buffers.md).
+buffers cached in the instance state, see [Memory buffers](memory_buffers.md). The decoupled
+`mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md).
