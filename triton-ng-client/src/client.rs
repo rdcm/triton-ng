@@ -8,11 +8,11 @@ use crate::generated::inference::model_infer_request::{
 use crate::generated::inference::{
     CudaSharedMemoryRegisterRequest, CudaSharedMemoryStatusRequest,
     CudaSharedMemoryUnregisterRequest, LogSettingsRequest, ModelConfigRequest, ModelInferRequest,
-    ModelMetadataRequest, ModelReadyRequest, ModelStatisticsRequest, RepositoryIndexRequest,
-    RepositoryModelLoadRequest, RepositoryModelUnloadRequest, ServerLiveRequest,
-    ServerMetadataRequest, ServerReadyRequest, SystemSharedMemoryRegisterRequest,
-    SystemSharedMemoryStatusRequest, SystemSharedMemoryUnregisterRequest, TraceSettingRequest,
-    trace_setting_request,
+    ModelMetadataRequest, ModelReadyRequest, ModelStatisticsRequest, ModelStreamInferResponse,
+    RepositoryIndexRequest, RepositoryModelLoadRequest, RepositoryModelUnloadRequest,
+    ServerLiveRequest, ServerMetadataRequest, ServerReadyRequest,
+    SystemSharedMemoryRegisterRequest, SystemSharedMemoryStatusRequest,
+    SystemSharedMemoryUnregisterRequest, TraceSettingRequest, trace_setting_request,
 };
 use tonic::Request;
 use tonic::transport::{Channel, ClientTlsConfig};
@@ -72,6 +72,82 @@ impl TritonClientConfig {
 
 fn ver(v: Option<&str>) -> String {
     v.unwrap_or("").to_string()
+}
+
+/// The gRPC request of an inference, see [`TritonClient::infer`].
+fn infer_request(
+    model: &str,
+    version: Option<&str>,
+    inputs: impl IntoIterator<Item = InferInput>,
+    output_names: impl IntoIterator<Item = impl AsRef<str>>,
+    options: InferOptions,
+) -> ModelInferRequest {
+    let (proto_inputs, raw_contents): (Vec<_>, Vec<_>) = inputs
+        .into_iter()
+        .map(|t| {
+            let proto = InferInputTensor {
+                name: t.name,
+                datatype: t.data.datatype().as_str().to_string(),
+                shape: t.shape,
+                contents: None,
+                parameters: Default::default(),
+            };
+            (proto, t.data.to_raw_bytes())
+        })
+        .unzip();
+
+    ModelInferRequest {
+        model_name: model.to_string(),
+        model_version: ver(version),
+        id: options.id.unwrap_or_default(),
+        inputs: proto_inputs,
+        outputs: output_names
+            .into_iter()
+            .map(|name| InferRequestedOutputTensor {
+                name: name.as_ref().to_string(),
+                parameters: Default::default(),
+            })
+            .collect(),
+        raw_input_contents: raw_contents,
+        parameters: Parameter::map_to_proto(&options.parameters),
+    }
+}
+
+/// Responses of [`TritonClient::infer_stream`], in the order the model
+/// sent them.
+///
+/// The stream ends after the final flag of the model. Dropping it earlier
+/// cancels the request.
+pub struct InferStream {
+    responses: tonic::codec::Streaming<ModelStreamInferResponse>,
+}
+
+impl InferStream {
+    /// The next response, `None` once the model has finished the request.
+    /// Fails on a gRPC error and with the error the model answered with.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// while let Some(response) = stream.next().await {
+    ///     let digit = response?.outputs[0].data.clone();
+    /// }
+    /// ```
+    pub async fn next(&mut self) -> Option<Result<InferResponse>> {
+        let message = match self.responses.message().await {
+            Ok(message) => message?,
+            Err(status) => return Some(Err(status.into())),
+        };
+        if !message.error_message.is_empty() {
+            return Some(Err(Error::Inference(message.error_message)));
+        }
+        Some(
+            message
+                .infer_response
+                .ok_or_else(|| Error::Decode("stream response without a response".into()))
+                .and_then(InferResponse::from_proto),
+        )
+    }
 }
 
 fn apply_timeout<T>(mut req: Request<T>, timeout: Option<Duration>) -> Request<T> {
@@ -291,42 +367,51 @@ impl TritonClient {
         output_names: impl IntoIterator<Item = impl AsRef<str>>,
         options: InferOptions,
     ) -> Result<InferResponse> {
-        let (proto_inputs, raw_contents): (Vec<_>, Vec<_>) = inputs
-            .into_iter()
-            .map(|t| {
-                let proto = InferInputTensor {
-                    name: t.name,
-                    datatype: t.data.datatype().as_str().to_string(),
-                    shape: t.shape,
-                    contents: None,
-                    parameters: Default::default(),
-                };
-                (proto, t.data.to_raw_bytes())
-            })
-            .unzip();
-
-        let request = ModelInferRequest {
-            model_name: model.to_string(),
-            model_version: ver(version),
-            id: options.id.unwrap_or_default(),
-            inputs: proto_inputs,
-            outputs: output_names
-                .into_iter()
-                .map(|name| InferRequestedOutputTensor {
-                    name: name.as_ref().to_string(),
-                    parameters: Default::default(),
-                })
-                .collect(),
-            raw_input_contents: raw_contents,
-            parameters: Parameter::map_to_proto(&options.parameters),
-        };
-
+        let timeout = options.timeout;
+        let request = infer_request(model, version, inputs, output_names, options);
         let r = self
             .client
             .clone()
-            .model_infer(apply_timeout(Request::new(request), options.timeout))
+            .model_infer(apply_timeout(Request::new(request), timeout))
             .await?;
         InferResponse::from_proto(r.into_inner())
+    }
+
+    /// Runs inference on a decoupled model, which answers with any number of
+    /// responses, see [`InferStream`]. Arguments are as for
+    /// [`TritonClient::infer`]; the timeout limits the whole stream.
+    ///
+    /// Dropping the stream before its end cancels the request.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut stream = client
+    ///     .infer_stream("mnist_stream", None, [images], ["DIGIT"], InferOptions::default())
+    ///     .await?;
+    /// while let Some(response) = stream.next().await {
+    ///     println!("{:?}", response?.outputs);
+    /// }
+    /// ```
+    pub async fn infer_stream(
+        &self,
+        model: &str,
+        version: Option<&str>,
+        inputs: impl IntoIterator<Item = InferInput>,
+        output_names: impl IntoIterator<Item = impl AsRef<str>>,
+        options: InferOptions,
+    ) -> Result<InferStream> {
+        let timeout = options.timeout;
+        let request = infer_request(model, version, inputs, output_names, options);
+        let requests = Request::new(tonic::codegen::tokio_stream::once(request));
+        let r = self
+            .client
+            .clone()
+            .model_stream_infer(apply_timeout(requests, timeout))
+            .await?;
+        Ok(InferStream {
+            responses: r.into_inner(),
+        })
     }
 
     /// Returns the index of all models across all repositories.

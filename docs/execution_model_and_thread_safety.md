@@ -38,6 +38,16 @@ response. Every request is released to Triton when it is dropped. The error retu
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
+**Streams of a decoupled model.** A request of a model with
+`model_transaction_policy { decoupled: true }` can get any number of responses:
+`Request::into_sender` turns it into a `ResponseSender`, and `ResponseSender::response` creates the
+next response of the stream. The stream ends with exactly one final flag: `finish` sends it without
+a response, `final_response` with one, `respond_error` and `respond_cancelled` with an error. All of
+them consume the sender, so nothing can be sent after the final flag, and a sender dropped without
+it sends a final error response. The sender owns its request and releases it with the final flag,
+so the inputs stay readable for the whole stream. `into_sender` fails, and answers the request with
+the error, when the model is not decoupled: its clients wait for exactly one response.
+
 **Error codes.** Every `TritonError` has an `ErrorCode`: `respond_error` answers with `Internal`,
 `respond_error_with_code` with any code, which the client gets as the gRPC status of its call.
 A failed BLS call resolves to an error with the code Triton or the called model gave it (`NotFound`
@@ -59,6 +69,8 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 |---|---|---|---|---|---|
 | `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md) |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
+| `ResponseSender` | owns the request of a decoupled model | sends a final error response if no final flag was sent, releases the request | yes | no | |
+| `StreamResponse<'_>` | owns a not final response, borrows its `ResponseSender` mutably | deletes it unless sent; the stream goes on | yes | no | the stream cannot be finished while it lives |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |

@@ -1,4 +1,5 @@
 use crate::Input;
+use crate::ResponseSender;
 use crate::error::{Error, ErrorCode, TritonError};
 use crate::request_release::RequestRelease;
 use crate::types::{CorrelationId, Parameter, RequestFlags};
@@ -48,6 +49,8 @@ use triton_ng_macros::triton_call;
 /// ```
 pub struct Request {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
+    /// The model is decoupled, see [`Request::into_sender`].
+    decoupled: bool,
     responded: bool,
     /// Dropped after `Drop` sends the error response, see `RequestRelease`.
     release: Arc<RequestRelease>,
@@ -60,9 +63,13 @@ pub struct Request {
 unsafe impl Send for Request {}
 
 impl Request {
-    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Request) -> Self {
+    pub(crate) fn from_ptr(
+        ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
+        decoupled: bool,
+    ) -> Self {
         Self {
             ptr,
+            decoupled,
             responded: false,
             release: Arc::new(RequestRelease::new(ptr)),
         }
@@ -269,6 +276,34 @@ impl Request {
         Ok(None)
     }
 
+    /// Turns the request into a [`ResponseSender`], which answers it with any
+    /// number of responses and then the final flag.
+    ///
+    /// Fails when the model is not decoupled
+    /// (`model_transaction_policy { decoupled: true }`): clients of other
+    /// models wait for exactly one response. The request is answered with
+    /// that error then.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut sender = request.into_sender()?;
+    /// for digit in digits {
+    ///     let mut response = sender.response()?;
+    ///     response.create_output("DIGIT", DataType::Int32, &[1])?.write_i32_vec(&[digit])?;
+    ///     response.send()?;
+    /// }
+    /// sender.finish()?;
+    /// ```
+    pub fn into_sender(self) -> Result<ResponseSender, TritonError> {
+        if !self.decoupled {
+            let message = "only requests of a decoupled model can get several responses";
+            self.respond_error(message)?;
+            return Err(TritonError::from_message(message));
+        }
+        Ok(ResponseSender::new(self))
+    }
+
     /// Returns `true` if the client cancelled the request.
     ///
     /// A cancelled request should stop being processed and be answered with
@@ -372,7 +407,7 @@ impl Drop for Request {
         if !self.responded
             && let Err(e) = self.respond_with(
                 ErrorCode::Internal,
-                "backend did not produce a response for the request",
+                "backend did not produce a final response for the request",
             )
         {
             crate::log::error(&format!("failed to send error response: {e}"));

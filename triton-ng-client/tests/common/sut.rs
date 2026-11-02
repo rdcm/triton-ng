@@ -155,6 +155,29 @@ impl Sut {
             .await
     }
 
+    pub async fn infer_stream(
+        &self,
+        model: &str,
+        inputs: Vec<InferInput>,
+        output_names: &[&str],
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<client::InferStream> {
+        let options = client::InferOptions {
+            parameters,
+            ..Default::default()
+        };
+        Ok(self
+            .inner
+            .infer_stream(
+                model,
+                None,
+                proto_inputs(inputs),
+                output_names.iter().copied(),
+                options,
+            )
+            .await?)
+    }
+
     async fn infer_with_options(
         &self,
         model: &str,
@@ -163,43 +186,17 @@ impl Sut {
         output_names: &[&str],
         options: client::InferOptions,
     ) -> Result<InferResult> {
-        let proto_inputs: Vec<client::InferInput> = inputs
-            .into_iter()
-            .map(|i| client::InferInput::fp32(i.name, i.shape, i.data))
-            .collect();
-
         let response = self
             .inner
             .infer(
                 model,
                 version,
-                proto_inputs,
+                proto_inputs(inputs),
                 output_names.iter().copied(),
                 options,
             )
             .await?;
-
-        Ok(InferResult {
-            id: response.id,
-            parameters: response.parameters,
-            outputs: response
-                .outputs
-                .into_iter()
-                .map(|o| {
-                    let (data_f32, data_i32) = match o.data {
-                        client::OutputData::Fp32(v) => (v, vec![]),
-                        client::OutputData::Int32(v) => (vec![], v),
-                        _ => (vec![], vec![]),
-                    };
-                    OutputTensor {
-                        name: o.name,
-                        shape: o.shape,
-                        data_f32,
-                        data_i32,
-                    }
-                })
-                .collect(),
-        })
+        Ok(infer_result(response))
     }
 
     pub async fn repository_index(&self, ready_only: bool) -> Result<Vec<ModelEntry>> {
@@ -334,6 +331,37 @@ impl Sut {
 }
 
 /// The Prometheus text Triton serves at `/metrics` of `address`.
+fn proto_inputs(inputs: Vec<InferInput>) -> Vec<client::InferInput> {
+    inputs
+        .into_iter()
+        .map(|i| client::InferInput::fp32(i.name, i.shape, i.data))
+        .collect()
+}
+
+pub fn infer_result(response: client::InferResponse) -> InferResult {
+    InferResult {
+        id: response.id,
+        parameters: response.parameters,
+        outputs: response
+            .outputs
+            .into_iter()
+            .map(|o| {
+                let (data_f32, data_i32) = match o.data {
+                    client::OutputData::Fp32(v) => (v, vec![]),
+                    client::OutputData::Int32(v) => (vec![], v),
+                    _ => (vec![], vec![]),
+                };
+                OutputTensor {
+                    name: o.name,
+                    shape: o.shape,
+                    data_f32,
+                    data_i32,
+                }
+            })
+            .collect(),
+    }
+}
+
 pub fn scrape_metrics(address: &str) -> Result<String> {
     use std::io::{Read, Write};
 

@@ -105,6 +105,9 @@ pub(crate) struct InstanceExecutor {
     /// One permit per batch in flight, `None` when the number is not limited.
     slots: Option<Arc<Semaphore>>,
     state: OnceLock<SharedState>,
+    /// The model is decoupled, read once instead of parsing the
+    /// configuration for every batch.
+    decoupled: bool,
 }
 
 impl InstanceExecutor {
@@ -116,7 +119,9 @@ impl InstanceExecutor {
             return Err(format!("{WORKER_THREADS} must be at least 1").into());
         }
         let max_in_flight = model.config_parameter_or(MAX_BATCHES_IN_FLIGHT, 0usize)?;
-        Ok(Self::with_limits(workers, max_in_flight, thread_name)?)
+        let mut executor = Self::with_limits(workers, max_in_flight, thread_name)?;
+        executor.decoupled = model.is_decoupled()?;
+        Ok(executor)
     }
 
     /// `workers` must be at least 1; `max_in_flight` 0 means unlimited.
@@ -136,7 +141,13 @@ impl InstanceExecutor {
             tasks: TaskTracker::new(),
             slots: (max_in_flight > 0).then(|| Arc::new(Semaphore::new(max_in_flight))),
             state: OnceLock::new(),
+            decoupled: false,
         })
+    }
+
+    /// Whether the model of the instance is decoupled, see [`Model::is_decoupled`].
+    pub(crate) fn decoupled(&self) -> bool {
+        self.decoupled
     }
 
     /// Stores the state of the instance. Fails if one is already stored.

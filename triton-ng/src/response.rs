@@ -27,33 +27,19 @@ use triton_ng_macros::triton_call;
 /// response.send()?;
 /// ```
 pub struct Response {
-    /// Null once the response was handed over to `TRITONBACKEND_ResponseSend`,
-    /// which takes ownership whatever it returns.
-    ptr: *mut triton_ng_sys::TRITONBACKEND_Response,
-    /// Dropped after the response, see `Drop`: an unsent response must be
-    /// deleted before the request gets its error response.
+    /// Dropped before the request, see `Drop` of `ResponseBody`: an unsent
+    /// response must be deleted before the request gets its error response.
+    body: ResponseBody,
     request: Request,
-    /// Outputs created but not written yet. Triton frontends read every
-    /// output of a sent response, so one without a buffer crashes the server.
-    pending_outputs: usize,
 }
-
-// SAFETY: see `Request`. Outputs are created through `&mut self`, so they are
-// never added from several threads at once, as tritonbackend.h requires.
-unsafe impl Send for Response {}
 
 impl Response {
     /// Creates the response of `request`. On error the request is dropped and
     /// gets an error response.
     pub fn new(request: Request) -> Result<Self, TritonError> {
-        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
-            &mut _,
-            request.as_ptr()
-        ))?;
         Ok(Self {
-            ptr,
+            body: ResponseBody::new(&request)?,
             request,
-            pending_outputs: 0,
         })
     }
 
@@ -65,6 +51,72 @@ impl Response {
     /// Creates an output tensor. It must be written exactly once before
     /// [`Response::send`].
     pub fn create_output(
+        &mut self,
+        name: &str,
+        datatype: DataType,
+        shape: &[i64],
+    ) -> Result<Output<'_>, TritonError> {
+        self.body.create_output(name, datatype, shape)
+    }
+
+    /// Adds the parameter `name` to the response. Clients read it from
+    /// `parameters` of the gRPC `ModelInferResponse`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut response = Response::new(request)?;
+    /// response.set_parameter("tokens", 42)?;
+    /// response.set_parameter("language", "ru")?;
+    /// response.send()?;
+    /// ```
+    pub fn set_parameter(
+        &mut self,
+        name: &str,
+        value: impl Into<Parameter>,
+    ) -> Result<(), TritonError> {
+        self.body.set_parameter(name, value)
+    }
+
+    /// Sends the response as the final one for its request.
+    pub fn send(mut self) -> Result<(), TritonError> {
+        self.body.send(FINAL)?;
+        self.request.mark_responded();
+        Ok(())
+    }
+}
+
+/// `TRITONBACKEND_Response` being built: its outputs and parameters, shared
+/// by [`Response`] and [`crate::StreamResponse`].
+///
+/// Owns the response and deletes it on drop unless it was sent. `Send`, not
+/// `Sync`.
+pub(crate) struct ResponseBody {
+    /// Null once the response was handed over to `TRITONBACKEND_ResponseSend`,
+    /// which takes ownership whatever it returns.
+    ptr: *mut triton_ng_sys::TRITONBACKEND_Response,
+    /// Outputs created but not written yet. Triton frontends read every
+    /// output of a sent response, so one without a buffer crashes the server.
+    pending_outputs: usize,
+}
+
+// SAFETY: see `Request`. Outputs are created through `&mut self`, so they are
+// never added from several threads at once, as tritonbackend.h requires.
+unsafe impl Send for ResponseBody {}
+
+impl ResponseBody {
+    pub(crate) fn new(request: &Request) -> Result<Self, TritonError> {
+        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
+            &mut _,
+            request.as_ptr()
+        ))?;
+        Ok(Self {
+            ptr,
+            pending_outputs: 0,
+        })
+    }
+
+    pub(crate) fn create_output(
         &mut self,
         name: &str,
         datatype: DataType,
@@ -99,18 +151,7 @@ impl Response {
         ))
     }
 
-    /// Adds the parameter `name` to the response. Clients read it from
-    /// `parameters` of the gRPC `ModelInferResponse`.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut response = Response::new(request)?;
-    /// response.set_parameter("tokens", 42)?;
-    /// response.set_parameter("language", "ru")?;
-    /// response.send()?;
-    /// ```
-    pub fn set_parameter(
+    pub(crate) fn set_parameter(
         &mut self,
         name: &str,
         value: impl Into<Parameter>,
@@ -149,8 +190,9 @@ impl Response {
         }
     }
 
-    /// Sends the response as the final one for its request.
-    pub fn send(mut self) -> Result<(), TritonError> {
+    /// Sends the response with `flags`. Fails without sending while an
+    /// output is not written; the response is deleted on drop then.
+    pub(crate) fn send(&mut self, flags: u32) -> Result<(), TritonError> {
         if self.pending_outputs > 0 {
             return Err(TritonError::from_message(format!(
                 "{} output(s) of the response were created but not written",
@@ -162,17 +204,13 @@ impl Response {
 
         triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
             response,
-            triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL,
+            flags,
             ptr::null_mut(),
-        ))?;
-
-        self.request.mark_responded();
-
-        Ok(())
+        ))
     }
 }
 
-impl Drop for Response {
+impl Drop for ResponseBody {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
             unsafe {
@@ -181,6 +219,9 @@ impl Drop for Response {
         }
     }
 }
+
+pub(crate) const FINAL: u32 =
+    triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL;
 
 /// Number of elements of a tensor with `shape`.
 pub(crate) fn element_count(shape: &[i64]) -> Result<usize, String> {

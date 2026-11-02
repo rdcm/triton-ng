@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -6,11 +7,13 @@ use triton_ng::{
     Backend, Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error,
     ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture,
     InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
+    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, TritonError,
+    UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
+const IMAGE_BYTES: usize = 28 * 28 * 4;
 const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
 const IDENTITY_INPUT: &str = "INPUT0";
@@ -42,6 +45,7 @@ impl FromStr for OutputMemory {
 
 struct State {
     model: String,
+    decoupled: bool,
     target_model: String,
     identity_model: String,
     held: AtomicI64,
@@ -170,6 +174,7 @@ impl CustomBackend for MnistBackend {
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
+            decoupled: model.is_decoupled()?,
             target_model: model
                 .config_parameter("target_model")?
                 .ok_or("missing 'target_model' config parameter")?,
@@ -188,6 +193,9 @@ impl CustomBackend for MnistBackend {
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         let state = ctx.state::<State>()?;
+        if state.decoupled {
+            return stream_digits(&ctx, state, requests).await;
+        }
         let mut held = Vec::new();
         let mut buffered = Vec::new();
         let mut pending = Vec::new();
@@ -221,6 +229,12 @@ impl CustomBackend for MnistBackend {
                 let unawaited = ctx.server().infer_async(inference);
                 respond(&ctx, state, request, 0)?;
                 drop(unawaited);
+                continue;
+            }
+            if request.parameter("into_sender")? == Some(Parameter::Bool(true)) {
+                if request.into_sender().is_ok() {
+                    return Err("a request of a model that is not decoupled got a sender".into());
+                }
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
@@ -272,11 +286,49 @@ impl CustomBackend for MnistBackend {
         }
 
         for request in held {
-            hold_until_cancelled(state, request).await?;
+            hold_until_cancelled(state, respond_when_cancelled(request)).await?;
         }
 
         Ok(())
     }
+}
+
+/// Answers every request of the decoupled model with a stream of the digits
+/// of its images, one response per image.
+async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        let images = request.get_input(IMAGE)?.as_bytes()?;
+        let inferences = images
+            .chunks(IMAGE_BYTES)
+            .map(|image| {
+                let inference = host_inference(ctx, state, image.to_vec())?;
+                Ok(ctx.server().infer_async(inference))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let hold = request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true));
+        let unfinished = request.parameter("unfinished")? == Some(Parameter::Bool(true));
+
+        let mut sender = request.into_sender()?;
+        for inference in inferences {
+            let digit = argmax(&inference.await?.output(LOGITS)?.as_fp32_vec()?)?;
+            let mut response = sender.response()?;
+            response
+                .create_output("DIGIT", DataType::Int32, &[1, 1])?
+                .write_i32_vec(&[digit])?;
+            response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
+            response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+            response.send()?;
+        }
+
+        if hold {
+            hold_until_cancelled(state, finish_when_cancelled(sender)).await?;
+        } else if unfinished {
+            drop(sender);
+        } else {
+            sender.finish()?;
+        }
+    }
+    Ok(())
 }
 
 /// Answers with the metadata of the request in response parameters.
@@ -506,10 +558,13 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
     Ok(())
 }
 
-async fn hold_until_cancelled(state: &State, request: Request) -> Result<(), Error> {
+async fn hold_until_cancelled(
+    state: &State,
+    answer: impl Future<Output = Result<(), Error>>,
+) -> Result<(), Error> {
     state.held.fetch_add(1, Ordering::SeqCst);
     state.metrics.held.increment(1.0)?;
-    let result = respond_when_cancelled(request).await;
+    let result = answer.await;
     if result.is_ok() {
         state.cancelled.fetch_add(1, Ordering::SeqCst);
     }
@@ -523,5 +578,13 @@ async fn respond_when_cancelled(request: Request) -> Result<(), Error> {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     request.respond_cancelled()?;
+    Ok(())
+}
+
+async fn finish_when_cancelled(sender: ResponseSender) -> Result<(), Error> {
+    while !sender.is_cancelled()? {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    sender.respond_cancelled()?;
     Ok(())
 }

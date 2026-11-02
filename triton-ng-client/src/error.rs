@@ -11,6 +11,9 @@ pub enum Error {
 
     #[error("decode error: {0}")]
     Decode(String),
+
+    #[error("inference error: {0}")]
+    Inference(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

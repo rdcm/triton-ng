@@ -6,7 +6,7 @@ mod generated;
 mod infer;
 mod types;
 
-pub use client::{TritonClient, TritonClientConfig};
+pub use client::{InferStream, TritonClient, TritonClientConfig};
 pub use datatype::Datatype;
 pub use error::{Error, Result};
 pub use infer::{

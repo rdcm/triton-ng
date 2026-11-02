@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use common::config::Config;
-use common::sut::{Sut, create_posix_shm, remove_posix_shm, scrape_metrics};
+use common::sut::{Sut, create_posix_shm, infer_result, remove_posix_shm, scrape_metrics};
 use tonic::Code;
 use triton_ng_client::Parameter;
 
@@ -944,4 +944,156 @@ async fn request_answered_before_its_traced_bls_call_is_released_after_it() -> R
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     anyhow::bail!("no trace of mnist_onnx with request {first} as the parent")
+}
+
+/// Digits streamed by the decoupled model for `images` blank images, and the
+/// error the stream ended with, if any.
+async fn streamed_digits(
+    sut: &Sut,
+    config: &Config,
+    images: usize,
+    parameter: Option<&str>,
+) -> Result<(Vec<i32>, Option<triton_ng_client::Error>)> {
+    let parameters = parameter
+        .map(|name| HashMap::from([(name.to_string(), Parameter::Bool(true))]))
+        .unwrap_or_default();
+    let mut stream = sut
+        .infer_stream(
+            &config.stream_model,
+            vec![config.mnist_blank_images(images)],
+            &[&config.backend_output_name],
+            parameters,
+        )
+        .await?;
+    let mut digits = Vec::new();
+    while let Some(response) = stream.next().await {
+        match response {
+            Ok(response) => {
+                let output = infer_result(response)
+                    .outputs
+                    .into_iter()
+                    .find(|o| o.name == config.backend_output_name)
+                    .context("digit not found in response")?;
+                anyhow::ensure!(output.shape == vec![1, 1], "shape {:?}", output.shape);
+                digits.extend(output.data_i32);
+            }
+            Err(error) => return Ok((digits, Some(error))),
+        }
+    }
+    Ok((digits, None))
+}
+
+#[tokio::test]
+async fn decoupled_model_streams_a_digit_per_image() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let (digits, error) = streamed_digits(&sut, &config, 3, None).await?;
+
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(digits, vec![expected; 3]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoupled_model_finishes_a_stream_without_responses() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (digits, error) = streamed_digits(&sut, &config, 0, None).await?;
+
+    assert!(error.is_none(), "{error:?}");
+    assert!(digits.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn stream_whose_sender_is_dropped_ends_with_an_error() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (digits, error) = streamed_digits(&sut, &config, 2, Some("unfinished")).await?;
+
+    assert_eq!(digits.len(), 2);
+    let error = error.context("the stream ended without an error")?;
+    assert!(
+        error
+            .to_string()
+            .contains("did not produce a final response"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_of_a_model_that_is_not_decoupled_gets_no_sender() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("into_sender".to_string(), Parameter::Bool(true))]),
+        )
+        .await
+        .err()
+        .context("the inference succeeded")?;
+
+    assert!(
+        format!("{error:#}").contains("only requests of a decoupled model"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+/// `held_requests` and `cancelled_requests` reported by the decoupled model.
+async fn stream_counters(sut: &Sut, config: &Config) -> Result<(i64, i64)> {
+    let mut stream = sut
+        .infer_stream(
+            &config.stream_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::new(),
+        )
+        .await?;
+    let response = stream.next().await.context("the stream is empty")??;
+    let counter = |name: &str| match response.parameters.get(name) {
+        Some(Parameter::Int(value)) => Ok(*value),
+        other => anyhow::bail!("response parameter {name} is {other:?}"),
+    };
+    Ok((counter("held_requests")?, counter("cancelled_requests")?))
+}
+
+#[tokio::test]
+async fn stream_cancelled_by_the_client_is_answered_as_cancelled() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let (_, cancelled_before) = stream_counters(&sut, &config).await?;
+
+    let mut stream = sut
+        .infer_stream(
+            &config.stream_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("hold_until_cancelled".to_string(), Parameter::Bool(true))]),
+        )
+        .await?;
+    stream.next().await.context("the stream is empty")??;
+    for _ in 0..10_000 {
+        if stream_counters(&sut, &config).await?.0 == 1 {
+            break;
+        }
+    }
+    drop(stream);
+
+    for _ in 0..10_000 {
+        let (held, cancelled) = stream_counters(&sut, &config).await?;
+        if held == 0 && cancelled == cancelled_before + 1 {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the backend did not see the cancellation")
 }
