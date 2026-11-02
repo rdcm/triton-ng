@@ -58,6 +58,9 @@ Exceptions, where the name is taken by a more important public type:
 - `RequestRelease` holds the `TRITONBACKEND_Request` of a `Request` a second time: it is not a
   wrapper but the shared right to release the request, kept by traced BLS children after the
   `Request` is dropped.
+- `ResponseBody` holds the `TRITONBACKEND_Response` of both `Response` (the final one) and
+  `StreamResponse` (one of a stream of a decoupled model): they build the response the same way
+  and differ only in who owns them, a `Request` or a borrowed `ResponseSender`.
 
 ## Tests
 
