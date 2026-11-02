@@ -1139,6 +1139,82 @@ async fn streamed_digits(
     Ok((digits, None))
 }
 
+async fn streamed_steps(
+    sut: &Sut,
+    config: &Config,
+    steps: i64,
+) -> Result<(Vec<i32>, Option<triton_ng_client::Error>)> {
+    let mut stream = sut
+        .infer_stream(
+            "mnist_steps",
+            vec![config.mnist_blank_images(1)],
+            &[&config.backend_output_name],
+            HashMap::from([("steps".to_string(), Parameter::Int(steps))]),
+        )
+        .await?;
+    let mut numbers = Vec::new();
+    while let Some(response) = stream.next().await {
+        match response {
+            Ok(response) => {
+                let output = infer_result(response)
+                    .outputs
+                    .into_iter()
+                    .find(|o| o.name == config.backend_output_name)
+                    .context("step not found in response")?;
+                numbers.extend(output.data_i32);
+            }
+            Err(error) => return Ok((numbers, Some(error))),
+        }
+    }
+    Ok((numbers, None))
+}
+
+#[tokio::test]
+async fn rescheduled_request_streams_every_step() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (numbers, error) = streamed_steps(&sut, &config, 1).await?;
+    assert_eq!((numbers, error.map(|e| e.to_string())), (vec![1], None));
+    let (numbers, error) = streamed_steps(&sut, &config, 2).await?;
+    assert_eq!((numbers, error.map(|e| e.to_string())), (vec![1, 2], None));
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_is_rescheduled_only_once() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (numbers, error) = streamed_steps(&sut, &config, 3).await?;
+    assert_eq!(numbers, vec![1, 2]);
+    let error = error.context("the third step was rescheduled")?;
+    assert!(error.to_string().contains("only once"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_of_a_model_without_iterative_sequence_is_not_rescheduled() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("reschedule".to_string(), Parameter::Bool(true))]),
+        )
+        .await
+        .err()
+        .context("the request was answered")?;
+    assert!(
+        format!("{error:#}").contains("iterative_sequence"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn decoupled_model_streams_a_digit_per_image() -> Result<()> {
     let config = Config::load()?;

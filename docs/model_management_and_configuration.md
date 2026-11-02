@@ -1,7 +1,7 @@
 # Model management and configuration
 
-How a backend reads its own configuration, completes the configs of its models, and loads and
-unloads models.
+How a backend reads its own configuration, completes the configs of its models, loads and
+unloads models, and reschedules requests.
 
 ## Backend config
 
@@ -150,3 +150,47 @@ no state. Check what you load before you load it.
 
 The example backend loads a copy of `mnist_onnx` from its file as `mnist_from_files` on the request
 parameter `load_model`, and unloads a model on `unload_model`.
+
+## Rescheduling requests
+
+With `sequence_batching { iterative_sequence: true }` a model can work on a request step by step:
+after a step it hands the request back to Triton instead of answering it, and Triton batches the
+next step together with the steps of other sequences. `Request::reschedule` does that for a model
+that answers once, `ResponseSender::reschedule` for a decoupled model that streams every step:
+
+```rust
+let Some(id) = request.correlation_id()? else {
+    continue; // a null request of the sequence batcher
+};
+let step = state.next_step(&id)?;
+
+let mut sender = request.into_sender()?;
+let mut response = sender.response()?;
+response.create_output("TOKEN", DataType::Int64, &[1, 1])?.write_i64_vec(&[step.token])?;
+response.send()?;
+
+if step.last {
+    sender.finish()?;
+} else {
+    sender.reschedule()?;
+}
+```
+
+- **The request comes back** as a new `Request` in a later batch, with the same inputs, parameters
+  and correlation ID, but without the start flag. Keep what the steps produce in the state of the
+  model, keyed by the correlation ID. The iterative sequence batcher gives requests without a
+  correlation ID their own.
+- **Null requests.** The sequence batcher fills the slots of other sequences in a batch with null
+  requests: they have no correlation ID and nobody reads their responses. Skip them.
+- **Only with `iterative_sequence`.** Triton ignores the rescheduling of a request of any other
+  model and drops it without a response, so `reschedule` refuses it, answers the request with an
+  error and fails.
+- **Only once in Triton r25.09.** Triton r25.09 hooks the rescheduling into a request only when
+  it starts a sequence, and the rescheduled request does not. A second rescheduling would drop the
+  request without a response, so `reschedule` refuses a request without the start flag the same
+  way. Fixed in r26.04 (triton-inference-server/core#456); until triton-ng targets it, a request
+  makes at most two steps. The sequence slot of a request that was rescheduled is freed only by
+  the idle timeout of the batcher (`max_sequence_idle_microseconds`, one second by default).
+
+The example model `mnist_steps` streams the number of every step of a request and reschedules it
+until it has made the `steps` the client asks for.

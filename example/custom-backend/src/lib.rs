@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -50,6 +51,8 @@ struct State {
     model: String,
     repository: PathBuf,
     decoupled: bool,
+    iterative_sequence: bool,
+    steps: Mutex<HashMap<CorrelationId, i32>>,
     target_model: String,
     identity_model: String,
     stream_model: Option<String>,
@@ -205,6 +208,8 @@ impl CustomBackend for MnistBackend {
                 .ok_or("the model directory has no parent")?
                 .to_path_buf(),
             decoupled: model.is_decoupled()?,
+            iterative_sequence: model.is_iterative_sequence()?,
+            steps: Mutex::new(HashMap::new()),
             target_model: model
                 .config_parameter("target_model")?
                 .ok_or("missing 'target_model' config parameter")?,
@@ -224,6 +229,9 @@ impl CustomBackend for MnistBackend {
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         let state = ctx.state::<State>()?;
+        if state.iterative_sequence {
+            return stream_steps(state, requests);
+        }
         if state.decoupled {
             return stream_digits(&ctx, state, requests).await;
         }
@@ -340,6 +348,12 @@ impl CustomBackend for MnistBackend {
                 }
                 continue;
             }
+            if request.parameter("reschedule")? == Some(Parameter::Bool(true)) {
+                if let Err(e) = request.reschedule() {
+                    println!("refused to reschedule: {e}");
+                }
+                continue;
+            }
             if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
                 echo_backend_config(request)?;
                 continue;
@@ -402,6 +416,55 @@ impl CustomBackend for MnistBackend {
 
 /// Answers every request of the decoupled model with a stream of the digits
 /// of its images, one response per image.
+/// Streams the number of every step of a request and reschedules it until
+/// it has made the `steps` it asks for (2 by default). Triton r25.09
+/// reschedules a request only once, so more steps end with an error.
+///
+/// The sequence batcher fills the slots of other sequences with null
+/// requests, which have no correlation ID: they are dropped unanswered.
+fn stream_steps(state: &State, requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        let Some(id) = request.correlation_id()? else {
+            continue;
+        };
+        let steps = match request.parameter("steps")? {
+            Some(Parameter::Int(steps)) => steps,
+            _ => 2,
+        };
+        let step = {
+            let mut done = state.steps.lock().map_err(|_| "steps are poisoned")?;
+            let step = done.entry(id.clone()).or_insert(0);
+            *step += 1;
+            *step
+        };
+
+        let mut sender = request.into_sender()?;
+        let mut response = sender.response()?;
+        response
+            .create_output("DIGIT", DataType::Int32, &[1, 1])?
+            .write_i32_vec(&[step])?;
+        response.send()?;
+
+        let finished = i64::from(step) >= steps;
+        let result = if finished {
+            sender.finish()
+        } else {
+            sender.reschedule()
+        };
+        if finished || result.is_err() {
+            state
+                .steps
+                .lock()
+                .map_err(|_| "steps are poisoned")?
+                .remove(&id);
+        }
+        if let Err(e) = result {
+            println!("step {step} of {id:?} failed: {e}");
+        }
+    }
+    Ok(())
+}
+
 async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> Result<(), Error> {
     for request in requests {
         let images = request.get_input(IMAGE)?.as_bytes()?;

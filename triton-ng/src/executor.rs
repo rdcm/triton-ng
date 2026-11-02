@@ -105,9 +105,19 @@ pub(crate) struct InstanceExecutor {
     /// One permit per batch in flight, `None` when the number is not limited.
     slots: Option<Arc<Semaphore>>,
     state: OnceLock<SharedState>,
-    /// The model is decoupled, read once instead of parsing the
-    /// configuration for every batch.
-    decoupled: bool,
+    /// What the requests of the model may do, read once instead of parsing
+    /// the configuration for every batch.
+    policy: RequestPolicy,
+}
+
+/// What the requests of a model may do besides getting one final response,
+/// from its configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestPolicy {
+    /// Several responses, see [`crate::Request::into_sender`].
+    pub(crate) decoupled: bool,
+    /// Rescheduling, see [`crate::Request::reschedule`].
+    pub(crate) iterative_sequence: bool,
 }
 
 impl InstanceExecutor {
@@ -120,7 +130,10 @@ impl InstanceExecutor {
         }
         let max_in_flight = model.config_parameter_or(MAX_BATCHES_IN_FLIGHT, 0usize)?;
         let mut executor = Self::with_limits(workers, max_in_flight, thread_name)?;
-        executor.decoupled = model.is_decoupled()?;
+        executor.policy = RequestPolicy {
+            decoupled: model.is_decoupled()?,
+            iterative_sequence: model.is_iterative_sequence()?,
+        };
         Ok(executor)
     }
 
@@ -141,13 +154,13 @@ impl InstanceExecutor {
             tasks: TaskTracker::new(),
             slots: (max_in_flight > 0).then(|| Arc::new(Semaphore::new(max_in_flight))),
             state: OnceLock::new(),
-            decoupled: false,
+            policy: RequestPolicy::default(),
         })
     }
 
-    /// Whether the model of the instance is decoupled, see [`Model::is_decoupled`].
-    pub(crate) fn decoupled(&self) -> bool {
-        self.decoupled
+    /// What the requests of the model of the instance may do.
+    pub(crate) fn policy(&self) -> RequestPolicy {
+        self.policy
     }
 
     /// Stores the state of the instance. Fails if one is already stored.

@@ -278,6 +278,36 @@ impl Model {
         }
     }
 
+    /// Whether the model reschedules its requests
+    /// (`sequence_batching { iterative_sequence: true }`), see
+    /// [`crate::Request::reschedule`].
+    ///
+    /// Fails when the configuration cannot be read or `iterative_sequence`
+    /// is not a boolean.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     if !model.is_iterative_sequence()? {
+    ///         return Err("the model generates step by step, set iterative_sequence: true".into());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn is_iterative_sequence(&self) -> Result<bool, TritonError> {
+        let json = self.config_json()?;
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| TritonError::from_message(e.to_string()))?;
+        match &value["sequence_batching"]["iterative_sequence"] {
+            serde_json::Value::Null => Ok(false),
+            serde_json::Value::Bool(iterative) => Ok(*iterative),
+            other => Err(TritonError::from_message(format!(
+                "sequence_batching.iterative_sequence is not a boolean: {other}"
+            ))),
+        }
+    }
+
     /// Reads a string parameter from the model configuration `parameters` map.
     pub fn config_parameter(&self, key: &str) -> Result<Option<String>, TritonError> {
         let json = self.config_json()?;

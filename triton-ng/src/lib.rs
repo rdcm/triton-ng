@@ -259,13 +259,14 @@ pub mod __macro_support {
         });
 
         // Without the executor the requests only get error responses, for
-        // which it does not matter whether the model is decoupled.
-        let decoupled = prepared
+        // which the policy of the model does not matter.
+        let policy = prepared
             .as_ref()
-            .is_ok_and(|(executor, _)| executor.decoupled());
+            .map(|(executor, _)| executor.policy())
+            .unwrap_or_default();
         let requests: Vec<Request> = raw_requests
             .into_iter()
-            .map(|r| Request::from_ptr(r, decoupled))
+            .map(|r| Request::from_ptr(r, policy))
             .collect();
 
         match prepared {
