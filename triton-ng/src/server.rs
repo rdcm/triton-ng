@@ -14,7 +14,7 @@ use triton_ng_macros::triton_call;
 /// `response_userp` and freed with the final response.
 pub(crate) struct InferenceContext {
     completion: Arc<Completion>,
-    allocator: ResponseAllocator,
+    allocator: Arc<ResponseAllocator>,
     outputs: OutputPlan,
     pending_outputs: Vec<OutputTensor>,
     error: Option<String>,
@@ -155,7 +155,7 @@ impl Server {
         request: InferenceRequest,
         completion: Arc<Completion>,
     ) -> Result<(), TritonError> {
-        let allocator = ResponseAllocator::new()?;
+        let allocator = ResponseAllocator::shared()?;
 
         let (raw, buffers, outputs) = request.into_raw_parts();
         let buffers_ptr = Box::into_raw(Box::new(buffers)) as *mut c_void;

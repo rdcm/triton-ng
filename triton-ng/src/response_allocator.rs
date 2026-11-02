@@ -5,7 +5,7 @@ use std::alloc::{Layout, alloc_zeroed};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use triton_ng_macros::triton_call;
 
 /// What `alloc_fn` stores in `buffer_userp` for every output: the memory the
@@ -100,10 +100,11 @@ impl OutputPlan {
 }
 
 /// Allocator of BLS outputs: outputs with an [`OutputBuffer`] go to that
-/// buffer, the others to CPU memory that the result takes over.
+/// buffer, the others to CPU memory that the result takes over. What it
+/// knows about a request comes from `userp`, so all BLS requests of the
+/// backend share one, see [`ResponseAllocator::shared`].
 ///
-/// Owns the `TRITONSERVER_ResponseAllocator` and deletes it on drop, after
-/// the last response of its request. `Send + Sync`.
+/// Owns the `TRITONSERVER_ResponseAllocator` and deletes it on drop. `Send + Sync`.
 pub(crate) struct ResponseAllocator {
     ptr: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
 }
@@ -134,8 +135,64 @@ impl ResponseAllocator {
         Ok(allocator)
     }
 
+    /// The allocator of the backend, created by the first BLS request.
+    /// Every request in flight holds its `Arc`, so the allocator is deleted
+    /// after [`ResponseAllocator::release_shared`] and the last response.
+    pub(crate) fn shared() -> Result<Arc<Self>, TritonError> {
+        SHARED.get_or_create(Self::new)
+    }
+
+    /// Lets the shared allocator go when the backend is finalized.
+    pub(crate) fn release_shared() {
+        SHARED.clear();
+    }
+
     pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONSERVER_ResponseAllocator {
         self.ptr
+    }
+}
+
+static SHARED: Shared<ResponseAllocator> = Shared::new();
+
+/// A value created on first use and shared until it is cleared.
+struct Shared<T> {
+    slot: RwLock<Option<Arc<T>>>,
+}
+
+impl<T> Shared<T> {
+    const fn new() -> Self {
+        Self {
+            slot: RwLock::new(None),
+        }
+    }
+
+    /// The shared value, created with `create` when there is none. A failed
+    /// `create` leaves the slot empty for the next call.
+    fn get_or_create<E>(&self, create: impl FnOnce() -> Result<T, E>) -> Result<Arc<T>, E> {
+        if let Some(value) = self
+            .slot
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            return Ok(Arc::clone(value));
+        }
+        let mut slot = self.slot.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(value) = slot.as_ref() {
+            return Ok(Arc::clone(value));
+        }
+        let value = Arc::new(create()?);
+        *slot = Some(Arc::clone(&value));
+        Ok(value)
+    }
+
+    fn clear(&self) {
+        let value = self
+            .slot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(value);
     }
 }
 
@@ -286,9 +343,11 @@ unsafe extern "C" fn release_fn(
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputPlan, zeroed_vec};
+    use super::{OutputPlan, Shared, zeroed_vec};
     use crate::MemoryManager;
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn plan() -> OutputPlan {
         let memory = MemoryManager::heap();
@@ -335,5 +394,42 @@ mod tests {
         assert_eq!(zeroed_vec(1280).unwrap(), vec![0; 1280]);
         assert!(zeroed_vec(0).unwrap().is_empty());
         assert!(zeroed_vec(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn shared_value_is_created_once_until_cleared() {
+        let shared = Shared::new();
+        let created = AtomicUsize::new(0);
+        let create = || Ok::<_, ()>(created.fetch_add(1, Ordering::SeqCst));
+
+        let first = shared.get_or_create(create).unwrap();
+        let second = shared.get_or_create(create).unwrap();
+        shared.clear();
+        let third = shared.get_or_create(create).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!((*first, *third), (0, 1));
+    }
+
+    #[test]
+    fn cleared_value_lives_while_it_is_held() {
+        let shared = Shared::new();
+        let held = shared.get_or_create(|| Ok::<_, ()>(7)).unwrap();
+
+        shared.clear();
+
+        assert_eq!(*held, 7);
+        assert_eq!(Arc::strong_count(&held), 1);
+    }
+
+    #[test]
+    fn failed_creation_is_retried() {
+        let shared = Shared::new();
+
+        assert_eq!(
+            shared.get_or_create(|| Err::<u8, _>("no memory")),
+            Err("no memory")
+        );
+        assert_eq!(*shared.get_or_create(|| Ok::<_, &str>(1)).unwrap(), 1);
     }
 }

@@ -85,6 +85,7 @@ pub mod __macro_support {
     use crate::model::Model;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
+    use crate::response_allocator::ResponseAllocator;
     use std::ffi::c_void;
 
     /// Opaque error pointer returned by Triton backend entry points.
@@ -99,10 +100,13 @@ pub mod __macro_support {
         into_error_ptr(catch(|| B::initialize(&backend)))
     }
 
-    /// TRITONBACKEND_Finalize.
+    /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
+    /// after the hook.
     pub unsafe fn finalize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { backend_handle(backend) };
-        into_error_ptr(catch(|| B::finalize(&backend)))
+        let result = catch(|| B::finalize(&backend));
+        ResponseAllocator::release_shared();
+        into_error_ptr(result)
     }
 
     /// TRITONBACKEND_ModelInitialize.
