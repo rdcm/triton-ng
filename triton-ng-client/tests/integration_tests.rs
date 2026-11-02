@@ -464,13 +464,13 @@ async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
     let sut = Sut::new(&config.triton_url).await?;
 
     for (code, expected) in [
-        ("internal", Code::Internal),
-        ("not_found", Code::NotFound),
-        ("invalid_arg", Code::InvalidArgument),
-        ("unavailable", Code::Unavailable),
-        ("unsupported", Code::Unimplemented),
-        ("already_exists", Code::AlreadyExists),
-        ("cancelled", Code::Cancelled),
+        ("INTERNAL", Code::Internal),
+        ("NOT_FOUND", Code::NotFound),
+        ("INVALID_ARG", Code::InvalidArgument),
+        ("UNAVAILABLE", Code::Unavailable),
+        ("UNSUPPORTED", Code::Unimplemented),
+        ("ALREADY_EXISTS", Code::AlreadyExists),
+        ("CANCELLED", Code::Cancelled),
     ] {
         let actual = grpc_code_of_failed_inference(&sut, &config, "error_code", code).await?;
         assert_eq!(actual, expected, "{code}");

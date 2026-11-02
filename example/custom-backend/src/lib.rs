@@ -40,19 +40,6 @@ impl FromStr for OutputMemory {
     }
 }
 
-fn error_code(name: &str) -> Result<ErrorCode, Error> {
-    match name {
-        "internal" => Ok(ErrorCode::Internal),
-        "not_found" => Ok(ErrorCode::NotFound),
-        "invalid_arg" => Ok(ErrorCode::InvalidArg),
-        "unavailable" => Ok(ErrorCode::Unavailable),
-        "unsupported" => Ok(ErrorCode::Unsupported),
-        "already_exists" => Ok(ErrorCode::AlreadyExists),
-        "cancelled" => Ok(ErrorCode::Cancelled),
-        other => Err(format!("unknown error code '{other}'").into()),
-    }
-}
-
 struct State {
     target_model: String,
     identity_model: String,
@@ -176,11 +163,11 @@ impl Backend for MnistBackend {
                 continue;
             }
             if let Some(Parameter::String(code)) = request.parameter("error_code")? {
-                match error_code(&code) {
+                match code.parse::<ErrorCode>() {
                     Ok(code) => {
                         request.respond_error_with_code(code, "error requested by the client")?
                     }
-                    Err(e) => request.respond_error(&e.to_string())?,
+                    Err(e) => request.respond_error(&e)?,
                 }
                 continue;
             }

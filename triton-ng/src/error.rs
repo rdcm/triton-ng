@@ -26,6 +26,9 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 /// `UNIMPLEMENTED`, the others into the status of the same name), so clients
 /// can retry `Unavailable` and give up on `InvalidArg`.
 ///
+/// Displays and parses as the name Triton gives the code without the
+/// `TRITONSERVER_ERROR_` prefix: `NOT_FOUND`, `INVALID_ARG` and so on.
+///
 /// # Examples
 ///
 /// ```ignore
@@ -49,6 +52,26 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// The name of the code, as in `TRITONSERVER_ERROR_<name>`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// log::error(&format!("encoder failed with {}: {e}", e.code().as_str()));
+    /// ```
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Internal => "INTERNAL",
+            Self::NotFound => "NOT_FOUND",
+            Self::InvalidArg => "INVALID_ARG",
+            Self::Unavailable => "UNAVAILABLE",
+            Self::Unsupported => "UNSUPPORTED",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::Cancelled => "CANCELLED",
+        }
+    }
+
     pub(crate) fn from_sys(code: triton_ng_sys::TRITONSERVER_Error_Code) -> Self {
         match code {
             triton_ng_sys::TRITONSERVER_errorcode_enum_TRITONSERVER_ERROR_INTERNAL => {
@@ -103,6 +126,44 @@ impl ErrorCode {
         }
     }
 }
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ErrorCode {
+    type Err = String;
+
+    /// Parses the name of a code, see [`ErrorCode::as_str`]. Fails for any
+    /// other string.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(Parameter::String(code)) = request.parameter("fail_with")? {
+    ///     request.respond_error_with_code(code.parse()?, "failure requested by the client")?;
+    /// }
+    /// ```
+    fn from_str(name: &str) -> Result<Self, String> {
+        ALL_CODES
+            .into_iter()
+            .find(|code| code.as_str() == name)
+            .ok_or_else(|| format!("unknown error code '{name}'"))
+    }
+}
+
+const ALL_CODES: [ErrorCode; 8] = [
+    ErrorCode::Unknown,
+    ErrorCode::Internal,
+    ErrorCode::NotFound,
+    ErrorCode::InvalidArg,
+    ErrorCode::Unavailable,
+    ErrorCode::Unsupported,
+    ErrorCode::AlreadyExists,
+    ErrorCode::Cancelled,
+];
 
 /// An error from Triton or from triton-ng: its [`ErrorCode`] and message.
 /// Errors of a BLS call keep the code the called model or Triton gave them.
@@ -234,18 +295,7 @@ impl Drop for TritonError {
 
 #[cfg(test)]
 mod tests {
-    use super::ErrorCode;
-
-    const CODES: [ErrorCode; 8] = [
-        ErrorCode::Unknown,
-        ErrorCode::Internal,
-        ErrorCode::NotFound,
-        ErrorCode::InvalidArg,
-        ErrorCode::Unavailable,
-        ErrorCode::Unsupported,
-        ErrorCode::AlreadyExists,
-        ErrorCode::Cancelled,
-    ];
+    use super::{ALL_CODES as CODES, ErrorCode};
 
     #[test]
     fn codes_round_trip_through_triton_values() {
@@ -262,5 +312,20 @@ mod tests {
         values
             .windows(2)
             .for_each(|pair| assert_ne!(pair[0], pair[1]));
+    }
+
+    #[test]
+    fn names_round_trip() {
+        for code in CODES {
+            assert_eq!(code.to_string().parse::<ErrorCode>(), Ok(code));
+        }
+        assert_eq!(ErrorCode::InvalidArg.to_string(), "INVALID_ARG");
+    }
+
+    #[test]
+    fn unknown_names_are_refused() {
+        for name in ["not_found", "NotFound", "", "TRITONSERVER_ERROR_NOT_FOUND"] {
+            assert!(name.parse::<ErrorCode>().is_err(), "{name}");
+        }
     }
 }
