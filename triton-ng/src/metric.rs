@@ -1,7 +1,7 @@
 use crate::error::{ErrorCode, TritonError};
 use crate::metric_args::MetricArgs;
 use crate::metric_family::{MetricFamily, MetricKind, validate_label_name};
-use crate::metric_label::MetricLabel;
+use crate::metric_parameter::MetricParameter;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use triton_ng_macros::triton_call;
@@ -40,9 +40,9 @@ impl Metric {
 
         let labels = labels
             .iter()
-            .map(|(name, value)| MetricLabel::new(name, value))
+            .map(|(name, value)| MetricParameter::new(name, value))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut label_ptrs: Vec<_> = labels.iter().map(MetricLabel::as_ptr).collect();
+        let mut label_ptrs: Vec<_> = labels.iter().map(MetricParameter::as_ptr).collect();
 
         let args = match family.kind() {
             MetricKind::Histogram(buckets) => Some(MetricArgs::histogram(buckets)?),

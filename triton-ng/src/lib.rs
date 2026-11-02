@@ -36,8 +36,8 @@ pub(crate) mod metric;
 pub(crate) mod metric_args;
 #[path = "metric_family.rs"]
 pub(crate) mod metric_family;
-#[path = "metric_label.rs"]
-pub(crate) mod metric_label;
+#[path = "metric_parameter.rs"]
+pub(crate) mod metric_parameter;
 #[path = "metrics.rs"]
 pub mod metrics;
 #[path = "model.rs"]
@@ -342,7 +342,7 @@ mod tests {
     use crate::metric::Metric;
     use crate::metric_args::MetricArgs;
     use crate::metric_family::MetricFamily;
-    use crate::metric_label::MetricLabel;
+    use crate::metric_parameter::MetricParameter;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::*;
@@ -407,7 +407,7 @@ mod tests {
             InferenceTrace
         );
         neither!(
-            MetricLabel,
+            MetricParameter,
             MetricArgs,
             Model,
             ModelInstance,

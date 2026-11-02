@@ -7,11 +7,11 @@ use crate::utils::cstring_from_str;
 ///
 /// Owns the parameter and deletes it on drop. Neither `Send` nor `Sync`: it
 /// lives only while a metric is made.
-pub(crate) struct MetricLabel {
+pub(crate) struct MetricParameter {
     ptr: *mut triton_ng_sys::TRITONSERVER_Parameter,
 }
 
-impl MetricLabel {
+impl MetricParameter {
     pub(crate) fn new(name: &str, value: &str) -> Result<Self, TritonError> {
         let name = cstring_from_str(name)?;
         let value = cstring_from_str(value)?;
@@ -36,7 +36,7 @@ impl MetricLabel {
     }
 }
 
-impl Drop for MetricLabel {
+impl Drop for MetricParameter {
     fn drop(&mut self) {
         unsafe { triton_ng_sys::TRITONSERVER_ParameterDelete(self.ptr) };
     }
