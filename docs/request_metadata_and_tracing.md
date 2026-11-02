@@ -74,8 +74,11 @@ only the release, which frees the inputs of the request and lets the model unloa
 
 **A submission that fails.** `TRITONSERVER_ServerInferAsync` takes the child trace only after the
 request passes its checks, and its error does not tell whether it did. triton-ng then leaves the
-trace to Triton: a submission rejected before the trace was taken (a missing input, for instance)
-leaks one small trace object, instead of risking a double free.
+trace to Triton: a submission rejected before the trace was taken leaks one small trace object,
+instead of risking a double free, and triton-ng logs a warning. Triton rejects a request there only
+for its content (an unknown or missing input or output, a wrong datatype, shape, batch size or
+byte size), so this happens only to a BLS call that fails every time. A model that is not ready,
+a full queue or a failed execution never leak.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) makes every BLS call to
 `mnist_onnx` a child of its request. With the `echo_metadata` parameter it answers with the

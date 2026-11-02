@@ -243,6 +243,11 @@ impl Server {
                 drop(Box::from_raw(context_ptr as *mut InferenceContext));
                 inference_request_release(raw, RELEASE_ALL, buffers_ptr);
             }
+            if !trace_ptr.is_null() {
+                crate::log::warn(&format!(
+                    "BLS request with a child trace failed to submit, the trace may have leaked: {e}"
+                ));
+            }
             return Err(e);
         }
 
