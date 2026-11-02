@@ -1,7 +1,7 @@
 use crate::error::{Error, TritonError};
 use crate::executor::InstanceExecutor;
 use crate::model::Model;
-use crate::types::InstanceKind;
+use crate::types::InstanceGroupKind;
 use crate::utils::cstr_to_string;
 use libc::c_char;
 use std::any::Any;
@@ -54,12 +54,22 @@ impl ModelInstance {
         Ok(device_id)
     }
 
-    pub fn kind(&self) -> Result<InstanceKind, TritonError> {
+    /// Kind of the instance group of this instance. Fails on a kind this
+    /// version of triton-ng does not know.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if instance.kind()? == InstanceGroupKind::Gpu {
+    ///     log::info(&format!("instance on GPU {}", instance.device_id()?));
+    /// }
+    /// ```
+    pub fn kind(&self) -> Result<InstanceGroupKind, TritonError> {
         let mut kind: triton_ng_sys::TRITONSERVER_InstanceGroupKind = 0;
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceKind(
             self.ptr, &mut kind
         ))?;
-        Ok(InstanceKind::from_sys(kind))
+        InstanceGroupKind::from_sys(kind).map_err(TritonError::from_message)
     }
 
     /// The model this instance belongs to.

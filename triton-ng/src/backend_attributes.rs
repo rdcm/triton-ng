@@ -1,27 +1,5 @@
 use crate::error::Error;
-
-/// Kind of a model instance group, mirrors `TRITONSERVER_InstanceGroupKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstanceGroupKind {
-    /// Triton picks GPU when there is one, CPU otherwise.
-    Auto,
-    Cpu,
-    Gpu,
-    /// The model decides where it runs.
-    Model,
-}
-
-impl InstanceGroupKind {
-    pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_InstanceGroupKind {
-        use triton_ng_sys::*;
-        match self {
-            Self::Auto => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_AUTO,
-            Self::Cpu => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_CPU,
-            Self::Gpu => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_GPU,
-            Self::Model => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_MODEL,
-        }
-    }
-}
+use crate::types::InstanceGroupKind;
 
 /// An instance group the backend prefers, see
 /// [`BackendAttributes::preferred_instance_group`].
