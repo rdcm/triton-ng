@@ -1,4 +1,5 @@
 use crate::backend::Backend;
+use crate::backend_attributes::BackendAttributes;
 use crate::error::Error;
 use crate::executor::Context;
 use crate::model::Model;
@@ -58,6 +59,30 @@ pub trait CustomBackend {
         Ok(())
     }
 
+    /// Attributes of the backend Triton uses when it loads models: preferred
+    /// instance groups for models without `instance_group` in their config,
+    /// and whether instances of a model are initialized in parallel. This
+    /// function is optional, the default sets nothing.
+    ///
+    /// Triton calls it right after [`CustomBackend::initialize`], and may call
+    /// it again while the backend is loaded. Triton ignores a failure of it
+    /// and keeps the attributes it had; triton-ng logs the error.
+    ///
+    /// Corresponds to TRITONBACKEND_GetBackendAttribute.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+    ///     Ok(BackendAttributes::new()
+    ///         .preferred_instance_group(InstanceGroupKind::Cpu, 1, &[])?
+    ///         .parallel_model_instance_loading(true))
+    /// }
+    /// ```
+    fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+        Ok(BackendAttributes::new())
+    }
+
     /// Initialize for a model. This function is optional, a backend is not
     /// required to implement it. This function is called once when a model
     /// that uses the backend is loaded, before any of its instances is
@@ -91,6 +116,9 @@ pub trait CustomBackend {
     /// default) and `max_batches_in_flight` (see
     /// [`CustomBackend::model_instance_execute`]). The runtime is started before
     /// this function and stopped again when it fails.
+    ///
+    /// Instances of a model are initialized one after another, unless
+    /// [`CustomBackend::attributes`] enables parallel instance loading.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceInitialize.
     fn model_instance_initialize(_instance: &ModelInstance) -> Result<(), Error> {

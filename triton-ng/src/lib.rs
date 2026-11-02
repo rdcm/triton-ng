@@ -2,6 +2,10 @@
 pub(crate) mod allocation;
 #[path = "backend.rs"]
 pub mod backend;
+#[path = "backend_attribute.rs"]
+pub(crate) mod backend_attribute;
+#[path = "backend_attributes.rs"]
+pub mod backend_attributes;
 #[path = "backend_config.rs"]
 pub mod backend_config;
 #[path = "buffers.rs"]
@@ -78,6 +82,7 @@ pub mod types;
 pub(crate) mod utils;
 
 pub use backend::*;
+pub use backend_attributes::*;
 pub use backend_config::*;
 pub use buffers::*;
 pub use custom_backend::*;
@@ -110,6 +115,7 @@ pub use triton_ng_macros::backend;
 #[doc(hidden)]
 pub mod __macro_support {
     use crate::backend::Backend;
+    use crate::backend_attribute::BackendAttribute;
     use crate::custom_backend::CustomBackend;
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
@@ -137,6 +143,26 @@ pub mod __macro_support {
         let backend = unsafe { self::backend(backend) };
         let result = catch(|| B::finalize(&backend));
         ResponseAllocator::release_shared();
+        into_error_ptr(result)
+    }
+
+    /// TRITONBACKEND_GetBackendAttribute. Logs a failure: the core drops the
+    /// returned error without a word.
+    pub unsafe fn backend_attributes<B: CustomBackend>(
+        backend: *mut c_void,
+        attributes: *mut c_void,
+    ) -> ErrorPtr {
+        let backend = unsafe { self::backend(backend) };
+        let result = catch(|| {
+            let attribute = BackendAttribute::from_ptr(
+                attributes as *mut triton_ng_sys::TRITONBACKEND_BackendAttribute,
+            )?;
+            attribute.set(&B::attributes(&backend)?)?;
+            Ok(())
+        });
+        if let Err(e) = &result {
+            crate::log::error(&format!("failed to set the backend attributes: {e}"));
+        }
         into_error_ptr(result)
     }
 
@@ -362,6 +388,7 @@ pub mod __macro_support {
 #[cfg(test)]
 mod tests {
     use crate::allocation::Allocation;
+    use crate::backend_attribute::BackendAttribute;
     use crate::inference_response::InferenceResponse;
     use crate::inference_trace::InferenceTrace;
     use crate::message::Message;
@@ -445,6 +472,7 @@ mod tests {
             Model,
             ModelInstance,
             Backend,
+            BackendAttribute,
             ResponseFactory,
             Input<'static>,
             Output<'static>,

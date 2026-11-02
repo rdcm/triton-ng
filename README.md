@@ -74,7 +74,7 @@ stream of responses and for reading such streams over BLS, [Memory buffers](docs
 for BLS inputs and outputs in pinned and GPU memory, [Metrics](docs/metrics.md) for backend
 metrics on Triton's Prometheus endpoint, and
 [Model management and configuration](docs/model_management_and_configuration.md) for the backend
-config. The [documentation index](docs/README.md) lists every
+config and attributes. The [documentation index](docs/README.md) lists every
 section.
 
 ## Using the gRPC client

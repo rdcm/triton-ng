@@ -23,6 +23,7 @@ pub struct TensorMeta {
 pub struct ModelConfig {
     pub name: String,
     pub platform: String,
+    pub instance_groups: Vec<(i32, i32)>,
 }
 
 pub struct ModelStats {

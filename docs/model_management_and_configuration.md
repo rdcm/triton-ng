@@ -28,3 +28,34 @@ for this backend wins over it.
 `BackendConfig` is a copy: Triton keeps the config it was started with, and triton-ng reads it
 without taking it. Keep what the models need in a `static` (`OnceLock`) set in `initialize`, see
 the example backend.
+
+## Backend attributes
+
+`CustomBackend::attributes` tells Triton how to deploy the models of the backend:
+
+```rust
+fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+    Ok(BackendAttributes::new()
+        .preferred_instance_group(InstanceGroupKind::Gpu, 1, &[])?
+        .preferred_instance_group(InstanceGroupKind::Cpu, 2, &[])?
+        .parallel_model_instance_loading(true))
+}
+```
+
+- **Preferred instance groups** apply to models whose config has no `instance_group`. The first
+  group is the most preferred; Triton takes the first one it can serve (a GPU group needs a GPU
+  among its devices). A group of a config that names its kind but leaves out the count or the GPUs
+  gets them from the first preferred group of that kind. A count of `0` and empty devices leave
+  them to Triton. Devices are allowed only for GPU and AUTO groups, and counts and devices must fit
+  the `int32` of the model config: triton-ng checks this when the attributes are built.
+- **Parallel instance loading** lets Triton initialize the instances of a model at the same time.
+  `model_instance_initialize` and `model_instance_finalize` then run on several threads at once:
+  what they share (the model state, statics) must be safe for that. triton-ng's own part, starting
+  and stopping the runtime of an instance, touches only that instance.
+
+Triton calls the hook right after `initialize` and may call it again later. It ignores an error
+from the hook and keeps the attributes it had, so triton-ng writes the error to the log. Without
+the hook the backend sets nothing and Triton uses its defaults.
+
+The example backend prefers two CPU instances: `mnist_stream` has no `instance_group` and gets
+them, `mnist` names its group in its config and keeps it.

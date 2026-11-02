@@ -85,9 +85,17 @@ impl Sut {
         version: Option<&str>,
     ) -> Result<Option<ModelConfig>> {
         let cfg = self.inner.model_config(model, version, None).await?;
-        Ok(cfg.map(|c| ModelConfig {
-            name: c.name().to_string(),
-            platform: c.platform().to_string(),
+        Ok(cfg.map(|c| {
+            let proto = c.into_proto();
+            ModelConfig {
+                instance_groups: proto
+                    .instance_group
+                    .iter()
+                    .map(|group| (group.kind, group.count))
+                    .collect(),
+                name: proto.name,
+                platform: proto.platform,
+            }
         }))
     }
 

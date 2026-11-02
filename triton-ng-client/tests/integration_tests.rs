@@ -763,6 +763,23 @@ async fn custom_backend_reads_its_backend_config() -> Result<()> {
 }
 
 #[tokio::test]
+async fn model_without_instance_group_gets_the_one_the_backend_prefers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let cfg = sut
+        .model_config(&config.stream_model, None)
+        .await?
+        .context("model config was None")?;
+    assert_eq!(
+        cfg.instance_groups,
+        vec![(2, 2)],
+        "expected 2 instances of KIND_CPU (2)"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
