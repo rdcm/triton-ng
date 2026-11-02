@@ -553,8 +553,8 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         "gpu_buffers_allocated",
         buffers.gpu_allocated.load(Ordering::SeqCst),
     )?;
-    response.send()?;
     state.metrics.answered.increment(1.0)?;
+    response.send()?;
     Ok(())
 }
 
