@@ -130,7 +130,7 @@ let config = TritonClientConfig::new("https://triton.example.com:8001")
 
 ### Prerequisites
 
-- Rust stable
+- Rust 1.99.0, pinned in `rust-toolchain.toml` (rustup installs it on the first build)
 - NVIDIA driver 570+ (580+ for Blackwell / RTX 50xx)
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - Docker
@@ -138,7 +138,6 @@ let config = TritonClientConfig::new("https://triton.example.com:8001")
 ### First run
 
 ```bash
-git submodule update --init --recursive
 make build           # compile custom backend → target/release/libtriton_custom_backend.so
 make download-model  # download mnist_onnx + create model version dirs
 make docker-env-up   # start Triton (mounts .so and models/)
@@ -151,6 +150,10 @@ cargo run --manifest-path=example/app/Cargo.toml --release
 ```
 
 Triton must be running with the example models in READY state.
+
+The Triton headers are vendored in `triton-ng-sys/include`, so the submodules in `deps/` are not
+needed to build. `make update-submodules` refreshes them and the headers from the Triton release
+branch named in `.gitmodules` (`r25.09`, matching the `tritonserver:25.09` image).
 
 ### Run integration tests
 

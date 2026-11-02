@@ -66,6 +66,7 @@ async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<
 | `sender.finish()` | nothing but the final flag | yes |
 | `sender.respond_error(message)`, `respond_error_with_code(code, message)` | an error | yes |
 | `sender.respond_cancelled()` | a CANCELLED error | yes |
+| `sender.reschedule()` | nothing, the request comes back in a later batch | no, see [Rescheduling requests](model_management_and_configuration.md#rescheduling-requests) |
 | dropping the sender | a generic error ("did not produce a final response") | yes |
 
 - **Exactly one final flag.** Every final method consumes the sender, so nothing can be sent after
@@ -212,7 +213,7 @@ while let Some(response) = stream.next().await {
 - No response cache for decoupled models (a limitation of Triton).
 - A cancellation may be seen one check later (a data race in core).
 - A streaming batch holds its slot of `max_batches_in_flight` until all its streams end.
-- Sequence batching of decoupled models is not tested.
+- Sequence batching of decoupled models is tested only with iterative sequences (`mnist_steps`).
 
 ## Example
 

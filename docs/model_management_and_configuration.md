@@ -6,7 +6,8 @@ unloads models, and reschedules requests.
 ## Backend config
 
 `tritonserver --backend-config=<backend>,<key>=<value>` passes settings to one backend for all of
-its models. `Backend::config` returns them as a `BackendConfig` in `initialize` and `finalize`:
+its models. `Backend::config` returns them as a `BackendConfig` in `initialize`, `finalize` and
+`attributes`:
 
 ```rust
 // tritonserver --backend-config=asr,pool-size=8 --backend-config=asr,cache-dir=/cache
@@ -58,8 +59,8 @@ Triton calls the hook right after `initialize` and may call it again later. It i
 from the hook and keeps the attributes it had, so triton-ng writes the error to the log. Without
 the hook the backend sets nothing and Triton uses its defaults.
 
-The example backend prefers two CPU instances: `mnist_stream` has no `instance_group` and gets
-them, `mnist` names its group in its config and keeps it.
+The example backend prefers two CPU instances: `mnist_stream`, `mnist_auto` and `mnist_steps` have
+no `instance_group` and get them, `mnist` names its group in its config and keeps it.
 
 ## Completing the model config
 
@@ -137,9 +138,9 @@ server.unload_model("asr_ensemble", true)?; // with its composing models
 - **Unloading does not wait.** `unload_model` returns at once; Triton unloads the model when its
   requests in flight are answered. A model can unload itself from `model_instance_execute`.
 - **Files.** Every file is named `file:<path>`, with `<path>` relative to the model directory
-  (`file:1/model.onnx`). Triton writes them to a
-  temporary directory during the call. triton-ng checks the names before the call: no absolute
-  paths, no `..`, no repeated names, and a config whenever there are files.
+  (`file:1/model.onnx`). Triton writes them to a temporary directory during the call. triton-ng
+  checks the names before the call: no absolute paths, no `..`, no repeated names, and a config
+  whenever there are files.
 - **Not in finalize hooks.** `finalize`, `model_finalize` and `model_instance_finalize` run inside a
   load or unload of Triton; both calls fail there with `Unsupported`, as in python_backend.
 
@@ -148,8 +149,9 @@ the whole server is then not ready (`/v2/health/ready`), and unloading the model
 it. A name that is not in the repository and comes without files fails before that and leaves
 no state. Check what you load before you load it.
 
-The example backend loads a copy of `mnist_onnx` from its file as `mnist_from_files` on the request
-parameter `load_model`, and unloads a model on `unload_model`.
+The example backend loads a copy of `mnist_onnx` from its file under the name given in the request
+parameter `load_model` (from the repository with `load_from: repository`), and unloads the model
+named in `unload_model`.
 
 ## Rescheduling requests
 
@@ -180,8 +182,8 @@ if step.last {
   and correlation ID, but without the start flag. Keep what the steps produce in the state of the
   model, keyed by the correlation ID. The iterative sequence batcher gives requests without a
   correlation ID their own.
-- **Null requests.** The sequence batcher fills the slots of other sequences in a batch with null
-  requests: they have no correlation ID and nobody reads their responses. Skip them.
+- **Null requests.** The sequence batcher may fill the slots of other sequences in a batch with
+  null requests: they have no correlation ID and nobody reads their responses. Skip them.
 - **Only with `iterative_sequence`.** Triton ignores the rescheduling of a request of any other
   model and drops it without a response, so `reschedule` refuses it, answers the request with an
   error and fails.
