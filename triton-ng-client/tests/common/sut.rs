@@ -333,6 +333,27 @@ impl Sut {
     }
 }
 
+/// The Prometheus text Triton serves at `/metrics` of `address`.
+pub fn scrape_metrics(address: &str) -> Result<String> {
+    use std::io::{Read, Write};
+
+    let mut stream =
+        std::net::TcpStream::connect(address).context("failed to connect to the metrics port")?;
+    write!(
+        stream,
+        "GET /metrics HTTP/1.0\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .context("metrics response has no body")?;
+    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+        bail!("metrics endpoint answered {head}");
+    }
+    Ok(body.to_string())
+}
+
 pub fn create_posix_shm(name: &str, size: i64) -> Result<()> {
     let cname = CString::new(name).context("invalid shared memory name")?;
     // SAFETY: standard POSIX shm_open call

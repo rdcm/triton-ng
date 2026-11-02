@@ -67,6 +67,8 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
 | `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |
 | `Context` | none | | yes | yes | `Clone` |
+| `CounterFamily`, `GaugeFamily`, `HistogramFamily` | share the metric family of their name | delete it with the last family and metric | yes | yes | `Clone`, see [Metrics](metrics.md) |
+| `Counter`, `Gauge`, `Histogram` | own the metric, keep its family alive | delete the metric | yes | yes | `Clone` shares the metric |
 | `Model`, `ModelInstance`, `BackendHandle` | borrow the model, instance, backend | nothing | no | no | used only in the init and finalize hooks |
 
 A unit test in the crate (`thread_safety_of_every_handle_is_as_documented`) checks every row:

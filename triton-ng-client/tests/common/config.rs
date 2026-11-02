@@ -5,6 +5,7 @@ use super::dto::InferInput;
 #[derive(serde::Deserialize)]
 pub struct Config {
     pub triton_url: String,
+    pub metrics_address: String,
     pub trace_dir: String,
     pub mnist_model: String,
     pub backend_model: String,

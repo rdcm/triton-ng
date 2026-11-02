@@ -1,12 +1,13 @@
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, Context, CorrelationId, DataType, Error, ErrorCode, GpuBuffer, InferenceFuture,
-    InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
+    BackendHandle, Context, CorrelationId, Counter, CounterFamily, DataType, Error, ErrorCode,
+    Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture, InferenceRequest,
+    InferenceResult, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
+    Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -46,6 +47,37 @@ struct State {
     identity_model: String,
     held: AtomicI64,
     cancelled: AtomicI64,
+    metrics: Metrics,
+}
+
+struct Metrics {
+    answered: Counter,
+    held: Gauge,
+    bls_seconds: Histogram,
+}
+
+impl Metrics {
+    fn new(model: &str) -> Result<Self, Error> {
+        let labels = [("model", model)];
+        Ok(Self {
+            answered: CounterFamily::new(
+                "triton_ng_example_answered_total",
+                "Requests answered with a digit",
+            )?
+            .counter(&labels)?,
+            held: GaugeFamily::new(
+                "triton_ng_example_held_requests",
+                "Requests held until the client cancels them",
+            )?
+            .gauge(&labels)?,
+            bls_seconds: HistogramFamily::new(
+                "triton_ng_example_bls_seconds",
+                "Duration of the BLS calls to the target model",
+                &[0.001, 0.01, 0.1, 1.0],
+            )?
+            .histogram(&labels)?,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +169,7 @@ impl Backend for MnistBackend {
     fn model_initialize(model: &Model) -> Result<(), Error> {
         let name = model.name()?;
         model.set_state(State {
+            metrics: Metrics::new(&name)?,
             model: name,
             target_model: model
                 .config_parameter("target_model")?
@@ -218,11 +251,15 @@ impl Backend for MnistBackend {
             let image = request.get_input(IMAGE)?.as_bytes()?;
             let mut inference = host_inference(&ctx, state, image)?;
             inference.set_parent_trace(&request)?;
-            pending.push((request, ctx.server().infer_async(inference)));
+            pending.push((request, Instant::now(), ctx.server().infer_async(inference)));
         }
 
-        for (request, inference) in pending {
+        for (request, started, inference) in pending {
             let result = inference.await?;
+            state
+                .metrics
+                .bls_seconds
+                .observe(started.elapsed().as_secs_f64())?;
             let digit = argmax(&result.output(LOGITS)?.as_fp32_vec()?)?;
             respond(&ctx, state, request, digit)?;
         }
@@ -466,16 +503,19 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         buffers.gpu_allocated.load(Ordering::SeqCst),
     )?;
     response.send()?;
+    state.metrics.answered.increment(1.0)?;
     Ok(())
 }
 
 async fn hold_until_cancelled(state: &State, request: Request) -> Result<(), Error> {
     state.held.fetch_add(1, Ordering::SeqCst);
+    state.metrics.held.increment(1.0)?;
     let result = respond_when_cancelled(request).await;
     if result.is_ok() {
         state.cancelled.fetch_add(1, Ordering::SeqCst);
     }
     state.held.fetch_sub(1, Ordering::SeqCst);
+    state.metrics.held.decrement(1.0)?;
     result
 }
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use common::config::Config;
-use common::sut::{Sut, create_posix_shm, remove_posix_shm};
+use common::sut::{Sut, create_posix_shm, remove_posix_shm, scrape_metrics};
 use tonic::Code;
 use triton_ng_client::Parameter;
 
@@ -767,6 +767,54 @@ async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Res
     assert_eq!(echoed.get("sequence_end"), Some(&Parameter::Bool(true)));
     assert_eq!(echoed.get("timeout_us"), Some(&Parameter::Int(6_000_000)));
     assert_eq!(echoed.get("forwarded"), Some(&string("by the backend")));
+    Ok(())
+}
+
+/// The value of the series `name{model="mnist"}`, `None` when it is not
+/// exported.
+fn mnist_metric(metrics: &str, name: &str) -> Result<Option<f64>> {
+    let prefix = format!("{name}{{model=\"mnist\"}} ");
+    metrics
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| {
+            value
+                .trim()
+                .parse::<f64>()
+                .context(format!("{name} is {value}"))
+        })
+        .transpose()
+}
+
+#[tokio::test]
+async fn custom_backend_metrics_are_exported_by_triton() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    infer_digit(&sut, &config).await?;
+    let before = scrape_metrics(&config.metrics_address)?;
+
+    infer_digit(&sut, &config).await?;
+    let after = scrape_metrics(&config.metrics_address)?;
+
+    let answered = "triton_ng_example_answered_total";
+    let observed = "triton_ng_example_bls_seconds_count";
+    let held = "triton_ng_example_held_requests";
+    for name in [answered, observed, held] {
+        assert!(
+            mnist_metric(&after, name)?.is_some(),
+            "{name} is missing:\n{after}"
+        );
+    }
+    assert!(mnist_metric(&after, answered)? > mnist_metric(&before, answered)?);
+    assert!(mnist_metric(&after, observed)? > mnist_metric(&before, observed)?);
+    assert!(
+        after.contains("# TYPE triton_ng_example_bls_seconds histogram"),
+        "{after}"
+    );
+    assert!(
+        after.contains("triton_ng_example_bls_seconds_bucket{model=\"mnist\",le=\"0.01\"}"),
+        "{after}"
+    );
     Ok(())
 }
 

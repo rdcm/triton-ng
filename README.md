@@ -69,8 +69,9 @@ triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
 and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
 error codes, BLS futures, threads, cancellation, shutdown and batching,
-and [Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences
-and BLS calls in Triton traces.
+[Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
+BLS calls in Triton traces, and [Metrics](docs/metrics.md) for backend metrics on Triton's
+Prometheus endpoint.
 
 ## Using the gRPC client
 

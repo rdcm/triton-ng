@@ -30,6 +30,16 @@ pub mod log;
 pub mod memory_manager;
 #[path = "message.rs"]
 pub(crate) mod message;
+#[path = "metric.rs"]
+pub(crate) mod metric;
+#[path = "metric_args.rs"]
+pub(crate) mod metric_args;
+#[path = "metric_family.rs"]
+pub(crate) mod metric_family;
+#[path = "metric_label.rs"]
+pub(crate) mod metric_label;
+#[path = "metrics.rs"]
+pub mod metrics;
 #[path = "model.rs"]
 pub mod model;
 #[path = "model_instance.rs"]
@@ -66,6 +76,7 @@ pub use inference_result::*;
 pub use input::*;
 pub use input_buffer::*;
 pub use memory_manager::*;
+pub use metrics::*;
 pub use model::*;
 pub use model_instance::*;
 pub use output::*;
@@ -328,6 +339,10 @@ mod tests {
     use crate::child_trace::ChildTrace;
     use crate::inference_response::InferenceResponse;
     use crate::message::Message;
+    use crate::metric::MetricHandle;
+    use crate::metric_args::MetricArgs;
+    use crate::metric_family::FamilyHandle;
+    use crate::metric_label::MetricLabel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::*;
@@ -374,7 +389,15 @@ mod tests {
             Message,
             ResponseAllocator,
             Allocation,
-            RequestRelease
+            RequestRelease,
+            CounterFamily,
+            Counter,
+            GaugeFamily,
+            Gauge,
+            HistogramFamily,
+            Histogram,
+            FamilyHandle,
+            MetricHandle
         );
         send_not_sync!(
             Request,
@@ -384,6 +407,8 @@ mod tests {
             ChildTrace
         );
         neither!(
+            MetricLabel,
+            MetricArgs,
             Model,
             ModelInstance,
             BackendHandle,
