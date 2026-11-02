@@ -344,21 +344,23 @@ impl InferenceRequest {
         buffer: impl InputBuffer,
     ) -> Result<(), TritonError> {
         let name_cstr = cstring_from_str(name)?;
-        let raw = buffer.raw();
-
-        // The memory of every input buffer is on the heap or in Triton's
-        // pools, so the pointer stays valid after the buffer is moved into
-        // `self.buffers`.
-        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestAppendInputData(
-            self.ptr,
-            name_cstr.as_ptr(),
-            raw.ptr.cast_const(),
-            raw.len,
-            raw.memory_type,
-            raw.memory_type_id,
-        ))?;
-
+        // The memory of every input buffer is on the heap, in Triton's pools
+        // or in a request kept alive by a `SharedInput`, so the pointers stay
+        // valid after the buffer is moved into `self.buffers`. It is kept
+        // even when appending fails, since Triton may already point into it.
+        // Triton skips empty buffers.
+        let raw_buffers = buffer.buffers();
         self.buffers.push(Box::new(buffer));
+        for raw in raw_buffers {
+            triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestAppendInputData(
+                self.ptr,
+                name_cstr.as_ptr(),
+                raw.ptr.cast_const(),
+                raw.len,
+                raw.memory_type,
+                raw.memory_type_id,
+            ))?;
+        }
 
         Ok(())
     }

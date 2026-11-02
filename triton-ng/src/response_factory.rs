@@ -1,5 +1,4 @@
 use crate::error::TritonError;
-use crate::request::Request;
 use triton_ng_macros::triton_call;
 
 /// Response factory of a request, used to send flags without a response.
@@ -10,16 +9,20 @@ use triton_ng_macros::triton_call;
 /// stays valid while this value lives, even after the request is released.
 ///
 /// Owns the `TRITONBACKEND_ResponseFactory` and deletes it on drop. Neither
-/// `Send` nor `Sync`: it lives only inside [`crate::ResponseSender::finish`].
+/// `Send` nor `Sync`: it lives only while the final flag of a
+/// [`crate::ResponseSender::finish`] is sent.
 pub(crate) struct ResponseFactory {
     ptr: *mut triton_ng_sys::TRITONBACKEND_ResponseFactory,
 }
 
 impl ResponseFactory {
-    pub(crate) fn new(request: &Request) -> Result<Self, TritonError> {
+    /// The factory of `request`, which must not be released yet.
+    pub(crate) fn new(
+        request: *mut triton_ng_sys::TRITONBACKEND_Request,
+    ) -> Result<Self, TritonError> {
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseFactoryNew(
             &mut _,
-            request.as_ptr()
+            request
         ))?;
         if ptr.is_null() {
             return Err(TritonError::from_message("response factory is null"));

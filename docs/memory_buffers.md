@@ -7,6 +7,8 @@ most of the call time. Buffers from Triton's memory manager let a backend:
 
 - send inputs from pinned memory, which Triton copies to the GPU faster than plain memory;
 - keep an output on the GPU and pass it as the input of the next BLS call;
+- pass an input of the request being answered on to a BLS call without copying it, wherever
+  Triton keeps it;
 - reuse the same memory across calls and batches instead of allocating it every time.
 
 ## Memory manager
@@ -73,6 +75,7 @@ memory with undefined content cannot become a model input.
 | `RamBuffer` | CPU memory |
 | `PinnedRamBuffer` | pinned CPU memory |
 | `GpuBuffer` | GPU memory of its device |
+| `SharedInput` | the memory the request keeps the input in, CPU or GPU |
 | `Arc<T>` of any of them | the memory of `T` |
 
 ```rust
@@ -86,6 +89,41 @@ somewhere else.
 The request owns the buffer until Triton releases the request, which can happen after the
 response has already arrived. Pass an `Arc` to keep using the buffer, for example in a cache:
 the `Arc` is shared until the release, and becomes unique again only after it.
+
+## Inputs of the request
+
+`Input::share` turns an input of the request being answered into a `SharedInput`, a BLS input
+that points into the memory the request keeps the tensor in. A backend in the middle of a GPU
+chain (a step of an ensemble, or a model called by another backend) passes a GPU tensor on this
+way, and a CPU one without the copy `Input::bytes` would make.
+
+```rust
+let features = request.get_input("features")?.share()?;
+let shape = features.shape().to_vec();
+inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
+```
+
+The data of a request input lives until the request gets its final response and is released,
+whichever is later. Triton's header promises the release, but the gRPC and HTTP frontends free
+the data of a client request once its final response is sent (r25.09: the gRPC handler reuses
+the protobuf the inputs point into; HTTP frees the request body), and CUDA shared memory regions
+are held only by the response; an ensemble frees a step input when the step request is deleted.
+So while a `SharedInput` of a request is alive:
+
+- the request is not released;
+- its final response is held back: `Response::send`, `respond_*`, `ResponseSender::finish` and
+  the error response of a dropped request return at once, and the response is sent when the
+  last shared input of the request is dropped. A failure to send it then is only logged, and
+  the client gets an error response instead. The responses of a stream that are not final go
+  out at once.
+
+A BLS request owns its inputs until Triton releases it, which can be after its result has
+arrived, so the client may get the response a little after the backend sent it. A shared input
+kept for longer, in a cache, holds the response back that long. An input cannot be shared once
+the request has its final response.
+
+`SharedInput` cannot read the memory: like `GpuBuffer` it is only an input. Read the input on
+the CPU with `Input::bytes` instead.
 
 ## Outputs
 
@@ -186,5 +224,12 @@ a RAM or pinned buffer, the logits are written into a buffer cached in the insta
 the response reports how many buffers the instance has allocated. `gpu_input` writes the logits
 into a GPU buffer and passes it, through an `Arc`, as the input of two concurrent requests to
 `identity_gpu` (Triton's `identity` backend on a GPU instance); the backend drops its own `Arc`
-before the requests finish and checks that both copies equal the logits. `wrong_size` writes the
-logits into a buffer of the wrong size and gets an error.
+before the requests finish and checks that both copies equal the logits. `gpu_forward` passes the
+GPU logits to `identity_forward`, a model of the example backend that shares its GPU input with a
+request to `identity_gpu` and answers with what comes back; the caller checks that the input was
+in GPU memory and equals the logits. `wrong_size` writes the logits into a buffer of the wrong
+size and gets an error.
+
+A request with the parameter `shared_input` set to a number of milliseconds passes its image on
+to `mnist_onnx` as a `SharedInput`, checks the logits against those of a copy, and keeps the
+shared image that long after answering: the client gets the response only then.

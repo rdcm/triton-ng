@@ -15,5 +15,6 @@ pub struct RawBuffer {
 /// Seals [`crate::InputBuffer`]: the module is private, so no type outside
 /// the crate can implement it.
 pub trait Sealed {
-    fn raw(&self) -> RawBuffer;
+    /// The memory Triton reads the input from, in order.
+    fn buffers(&self) -> Vec<RawBuffer>;
 }

@@ -18,6 +18,8 @@ pub mod custom_backend;
 pub mod error;
 #[path = "executor.rs"]
 pub mod executor;
+#[path = "final_response.rs"]
+pub(crate) mod final_response;
 #[path = "inference_future.rs"]
 pub mod inference_future;
 #[path = "inference_request.rs"]
@@ -76,6 +78,8 @@ mod response_factory;
 pub mod response_sender;
 #[path = "server.rs"]
 pub mod server;
+#[path = "shared_input.rs"]
+pub mod shared_input;
 #[path = "stream_response.rs"]
 pub mod stream_response;
 #[path = "triton_parameter.rs"]
@@ -110,6 +114,7 @@ pub use request::*;
 pub use response::*;
 pub use response_sender::*;
 pub use server::*;
+pub use shared_input::*;
 pub use stream_response::*;
 pub use types::*;
 
@@ -419,6 +424,7 @@ pub mod __macro_support {
 mod tests {
     use crate::allocation::Allocation;
     use crate::backend_attribute::BackendAttribute;
+    use crate::final_response::FinalResponse;
     use crate::inference_response::InferenceResponse;
     use crate::inference_trace::InferenceTrace;
     use crate::message::Message;
@@ -477,6 +483,8 @@ mod tests {
             ResponseAllocator,
             Allocation,
             RequestRelease,
+            FinalResponse,
+            SharedInput,
             CounterFamily,
             Counter,
             GaugeFamily,

@@ -2,6 +2,7 @@ use crate::Input;
 use crate::ResponseSender;
 use crate::error::{Error, ErrorCode, TritonError};
 use crate::executor::RequestPolicy;
+use crate::final_response::{FinalResponse, Pending};
 use crate::request_release::RequestRelease;
 use crate::types::{CorrelationId, Parameter, RequestFlags};
 use crate::utils::{cstr_to_string, cstring_from_str};
@@ -23,7 +24,9 @@ use triton_ng_macros::triton_call;
 /// Either way the request is released to Triton when it is dropped, or, when
 /// a BLS request traced as its child is still in flight (see
 /// [`crate::InferenceRequest::set_parent_trace`]), once that BLS request is
-/// done.
+/// done. While a [`crate::SharedInput`] of the request is alive, the final
+/// response is held back and sent when the last one is dropped, see
+/// [`crate::Input::share`].
 ///
 /// Owns the `TRITONBACKEND_Request` and releases it on drop. `Send`, not
 /// `Sync`: Triton allows a request to be used from one thread at a time.
@@ -56,6 +59,8 @@ pub struct Request {
     /// and [`Request::reschedule`].
     policy: RequestPolicy,
     responded: bool,
+    /// Sends the final response, see `FinalResponse`.
+    final_response: Arc<FinalResponse>,
     /// Dropped after `Drop` sends the error response, see `RequestRelease`.
     release: Arc<RequestRelease>,
 }
@@ -71,12 +76,20 @@ impl Request {
         ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
         policy: RequestPolicy,
     ) -> Self {
+        let release = Arc::new(RequestRelease::new(ptr));
         Self {
             ptr,
             policy,
             responded: false,
-            release: Arc::new(RequestRelease::new(ptr)),
+            final_response: Arc::new(FinalResponse::new(ptr, Arc::clone(&release))),
+            release,
         }
+    }
+
+    /// Holds the final response of the request back while the returned value
+    /// is alive, see `FinalResponse`.
+    pub(crate) fn final_response(&self) -> Arc<FinalResponse> {
+        Arc::clone(&self.final_response)
     }
 
     /// Keeps the request from being released while the returned value is
@@ -197,8 +210,17 @@ impl Request {
         self.ptr
     }
 
-    pub(crate) fn mark_responded(&mut self) {
+    /// Gives the final response of the request, sent now or once no shared
+    /// input is left. The request counts as answered even when sending
+    /// fails: the client then gets an error response, see `FinalResponse`.
+    pub(crate) fn send_final(&mut self, pending: Pending) -> Result<(), TritonError> {
+        if self.responded {
+            return Err(TritonError::from_message(
+                "the request already has a final response",
+            ));
+        }
         self.responded = true;
+        self.final_response.send(pending)
     }
 
     pub fn input_names(&self) -> Result<Vec<String>, TritonError> {
@@ -240,7 +262,7 @@ impl Request {
             name.as_ptr(),
             &mut _
         ))?;
-        Ok(Input::from_ptr(ptr))
+        Ok(Input::from_ptr(ptr, self))
     }
 
     /// The value of the request parameter `key`, `None` when the request has no
@@ -424,30 +446,7 @@ impl Request {
     }
 
     fn respond_with(&mut self, code: ErrorCode, message: &str) -> Result<(), TritonError> {
-        if self.responded {
-            return Err(TritonError::from_message(
-                "the request already has a final response",
-            ));
-        }
-
-        // The caller keeps ownership of the error object passed to ResponseSend,
-        // it is deleted on drop.
-        let error = TritonError::in_triton(code, message);
-        if error.as_ptr().is_null() {
-            return Err(TritonError::from_message("failed to create error object"));
-        }
-
-        let response = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(&mut _, self.ptr))?;
-
-        // ResponseSend takes ownership of the response whatever it returns.
-        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
-            response,
-            triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL,
-            error.as_ptr(),
-        ))?;
-
-        self.responded = true;
-        Ok(())
+        self.send_final(Pending::Error(code, message.to_string()))
     }
 }
 

@@ -65,11 +65,12 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 
 | Type | Triton object | On drop | `Send` | `Sync` | Notes |
 |---|---|---|---|---|---|
-| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md) |
+| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md); answered and released after its `SharedInput`s |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
 | `ResponseSender` | owns the request of a decoupled model | sends a final error response if no final flag was sent, releases the request | yes | no | |
 | `StreamResponse<'_>` | owns a not final response, borrows its `ResponseSender` mutably | deletes it unless sent; the stream goes on | yes | no | the stream cannot be finished while it lives |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
+| `SharedInput` | shares the right to answer and release its request | sends the final response held back for it, lets the request be released | yes | yes | a BLS input, see [Memory buffers](memory_buffers.md) |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |

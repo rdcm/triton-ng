@@ -61,6 +61,11 @@ Exceptions, where the name is taken by a more important public type:
 - `RequestCancel` holds the `TRITONSERVER_InferenceRequest` of a submitted BLS request a second
   time: it is the shared right to cancel the request, kept by its `InferenceFuture` or
   `InferenceStream` and cleared by the release callback before the request is deleted.
+- `FinalResponse` holds the `TRITONBACKEND_Request` of a `Request` a third time: it is the shared
+  right to send the final response, kept by every `SharedInput` of the request, which holds the
+  response back until the last one is dropped.
+- `SharedInput` is not a `TRITONBACKEND_Input` (that is `Input`, borrowed from its request) but
+  its data passed on as a BLS input, with the right to answer and release the request.
 - `ResponseBody` holds the `TRITONBACKEND_Response` of both `Response` (the final one) and
   `StreamResponse` (one of a stream of a decoupled model): they build the response the same way
   and differ only in who owns them, a `Request` or a borrowed `ResponseSender`.
