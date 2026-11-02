@@ -36,7 +36,10 @@ be answered from any thread of the runtime.
 `Request::reschedule` consumes it too and hands it back to Triton for another step of an iterative
 sequence, see [Model management and configuration](model_management_and_configuration.md). A request dropped
 without a response, including when the future returns an error or panics, gets a generic error
-response. Every request is released to Triton when it is dropped. The error returned by
+response. Every request is released to Triton when it is dropped, or later: after its traced BLS
+children are done (see [Request metadata and tracing](request_metadata_and_tracing.md)) and after
+its inputs passed on to BLS calls with `Input::share` are dropped, which also holds its final
+response back until then (see [Memory buffers](memory_buffers.md)). The error returned by
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
@@ -105,7 +108,8 @@ instance and stops its runtime.
 `hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
 most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
 requests are answered. A request with the `memory` parameter is answered through memory manager
-buffers cached in the instance state, see [Memory buffers](memory_buffers.md). The decoupled
+buffers cached in the instance state, and one with `shared_input` passes its image on to
+`mnist_onnx` without a copy, see [Memory buffers](memory_buffers.md). The decoupled
 `mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md);
 `mnist_auto` gets its config from the backend and `mnist_steps` reschedules its requests, see
 [Model management and configuration](model_management_and_configuration.md).

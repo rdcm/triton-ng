@@ -95,7 +95,7 @@ the `Arc` is shared until the release, and becomes unique again only after it.
 `Input::share` turns an input of the request being answered into a `SharedInput`, a BLS input
 that points into the memory the request keeps the tensor in. A backend in the middle of a GPU
 chain (a step of an ensemble, or a model called by another backend) passes a GPU tensor on this
-way, and a CPU one without the copy `Input::bytes` would make.
+way, and a CPU one without the copy into a `Vec` that `Input::as_bytes` makes.
 
 ```rust
 let features = request.get_input("features")?.share()?;
