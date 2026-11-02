@@ -53,8 +53,8 @@ one type per Triton object.
 Exceptions, where the name is taken by a more important public type:
 
 - `TRITONSERVER_Error` is `TritonError`: `Error` is the boxed error alias every backend uses.
-- `TRITONSERVER_Parameter` used for metric labels is `MetricParameter`: `Parameter` is the
-  public enum of parameter values.
+- `TRITONSERVER_Parameter` is `TritonParameter` (metric labels, model load parameters):
+  `Parameter` is the public enum of parameter values.
 - `RequestRelease` holds the `TRITONBACKEND_Request` of a `Request` a second time: it is not a
   wrapper but the shared right to release the request, kept by traced BLS children after the
   `Request` is dropped.

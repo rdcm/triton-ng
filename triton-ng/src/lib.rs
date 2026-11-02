@@ -1,7 +1,15 @@
 #[path = "allocation.rs"]
 pub(crate) mod allocation;
+#[path = "auto_complete_config.rs"]
+pub mod auto_complete_config;
 #[path = "backend.rs"]
 pub mod backend;
+#[path = "backend_attribute.rs"]
+pub(crate) mod backend_attribute;
+#[path = "backend_attributes.rs"]
+pub mod backend_attributes;
+#[path = "backend_config.rs"]
+pub mod backend_config;
 #[path = "buffers.rs"]
 pub mod buffers;
 #[path = "custom_backend.rs"]
@@ -38,12 +46,12 @@ pub(crate) mod metric;
 pub(crate) mod metric_args;
 #[path = "metric_family.rs"]
 pub(crate) mod metric_family;
-#[path = "metric_parameter.rs"]
-pub(crate) mod metric_parameter;
 #[path = "metrics.rs"]
 pub mod metrics;
 #[path = "model.rs"]
 pub mod model;
+#[path = "model_control.rs"]
+pub(crate) mod model_control;
 #[path = "model_instance.rs"]
 pub mod model_instance;
 #[path = "output.rs"]
@@ -70,12 +78,17 @@ pub mod response_sender;
 pub mod server;
 #[path = "stream_response.rs"]
 pub mod stream_response;
+#[path = "triton_parameter.rs"]
+pub(crate) mod triton_parameter;
 #[path = "types.rs"]
 pub mod types;
 #[path = "utils.rs"]
 pub(crate) mod utils;
 
+pub use auto_complete_config::*;
 pub use backend::*;
+pub use backend_attributes::*;
+pub use backend_config::*;
 pub use buffers::*;
 pub use custom_backend::*;
 pub use error::*;
@@ -106,11 +119,14 @@ pub use triton_ng_macros::backend;
 /// public API.
 #[doc(hidden)]
 pub mod __macro_support {
+    use crate::auto_complete_config::AutoCompleteConfig;
     use crate::backend::Backend;
+    use crate::backend_attribute::BackendAttribute;
     use crate::custom_backend::CustomBackend;
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
     use crate::model::Model;
+    use crate::model_control::forbid_model_control;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
     use crate::response_allocator::ResponseAllocator;
@@ -132,21 +148,61 @@ pub mod __macro_support {
     /// after the hook.
     pub unsafe fn finalize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { self::backend(backend) };
-        let result = catch(|| B::finalize(&backend));
+        let result = forbid_model_control("finalize", || catch(|| B::finalize(&backend)));
         ResponseAllocator::release_shared();
+        into_error_ptr(result)
+    }
+
+    /// TRITONBACKEND_GetBackendAttribute. Logs a failure: the core drops the
+    /// returned error without a word.
+    pub unsafe fn backend_attributes<B: CustomBackend>(
+        backend: *mut c_void,
+        attributes: *mut c_void,
+    ) -> ErrorPtr {
+        let backend = unsafe { self::backend(backend) };
+        let result = catch(|| {
+            let attribute = BackendAttribute::from_ptr(
+                attributes as *mut triton_ng_sys::TRITONBACKEND_BackendAttribute,
+            )?;
+            attribute.set(&B::attributes(&backend)?)?;
+            Ok(())
+        });
+        if let Err(e) = &result {
+            crate::log::error(&format!("failed to set the backend attributes: {e}"));
+        }
         into_error_ptr(result)
     }
 
     /// TRITONBACKEND_ModelInitialize.
     pub unsafe fn model_initialize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
-        into_error_ptr(catch(|| B::model_initialize(&model)))
+        into_error_ptr(catch(|| {
+            auto_complete_config::<B>(&model)?;
+            B::model_initialize(&model)
+        }))
+    }
+
+    /// Runs `CustomBackend::auto_complete_config` and gives Triton the
+    /// completed config, when Triton asks for it.
+    fn auto_complete_config<B: CustomBackend>(model: &Model) -> Result<(), Error> {
+        if !model.auto_complete_config_enabled()? {
+            return Ok(());
+        }
+        let original = AutoCompleteConfig::from_json(&model.config_json()?)?;
+        let mut config = original.clone();
+        forbid_model_control("auto_complete_config", || {
+            B::auto_complete_config(model, &mut config)
+        })?;
+        if config != original {
+            model.set_config(&config.to_json())?;
+        }
+        Ok(())
     }
 
     /// TRITONBACKEND_ModelFinalize. Drops the model state after the hook.
     pub unsafe fn model_finalize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
-        let result = catch(|| B::model_finalize(&model));
+        let result = forbid_model_control("model_finalize", || catch(|| B::model_finalize(&model)));
         if let Err(e) = model.clear_state() {
             crate::log::error(&format!("failed to clear model state: {e}"));
         }
@@ -173,7 +229,9 @@ pub mod __macro_support {
     pub unsafe fn model_instance_finalize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         stop_executor(&instance);
-        into_error_ptr(catch(|| B::model_instance_finalize(&instance)))
+        into_error_ptr(forbid_model_control("model_instance_finalize", || {
+            catch(|| B::model_instance_finalize(&instance))
+        }))
     }
 
     /// TRITONBACKEND_ModelInstanceExecute. Hands the batch over to the runtime
@@ -201,13 +259,14 @@ pub mod __macro_support {
         });
 
         // Without the executor the requests only get error responses, for
-        // which it does not matter whether the model is decoupled.
-        let decoupled = prepared
+        // which the policy of the model does not matter.
+        let policy = prepared
             .as_ref()
-            .is_ok_and(|(executor, _)| executor.decoupled());
+            .map(|(executor, _)| executor.policy())
+            .unwrap_or_default();
         let requests: Vec<Request> = raw_requests
             .into_iter()
-            .map(|r| Request::from_ptr(r, decoupled))
+            .map(|r| Request::from_ptr(r, policy))
             .collect();
 
         match prepared {
@@ -359,17 +418,18 @@ pub mod __macro_support {
 #[cfg(test)]
 mod tests {
     use crate::allocation::Allocation;
+    use crate::backend_attribute::BackendAttribute;
     use crate::inference_response::InferenceResponse;
     use crate::inference_trace::InferenceTrace;
     use crate::message::Message;
     use crate::metric::Metric;
     use crate::metric_args::MetricArgs;
     use crate::metric_family::MetricFamily;
-    use crate::metric_parameter::MetricParameter;
     use crate::request_cancel::RequestCancel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::response_factory::ResponseFactory;
+    use crate::triton_parameter::TritonParameter;
     use crate::*;
 
     fn send<T: ?Sized + Send>() {}
@@ -437,11 +497,12 @@ mod tests {
             InferenceTrace
         );
         neither!(
-            MetricParameter,
+            TritonParameter<'static>,
             MetricArgs,
             Model,
             ModelInstance,
             Backend,
+            BackendAttribute,
             ResponseFactory,
             Input<'static>,
             Output<'static>,

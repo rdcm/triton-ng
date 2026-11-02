@@ -30,6 +30,27 @@ impl DataType {
         }
     }
 
+    /// Name of the type in a model config (`TYPE_FP32`), `None` for INVALID.
+    pub(crate) fn config_name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Invalid => return None,
+            Self::Bool => "TYPE_BOOL",
+            Self::Uint8 => "TYPE_UINT8",
+            Self::Uint16 => "TYPE_UINT16",
+            Self::Uint32 => "TYPE_UINT32",
+            Self::Uint64 => "TYPE_UINT64",
+            Self::Int8 => "TYPE_INT8",
+            Self::Int16 => "TYPE_INT16",
+            Self::Int32 => "TYPE_INT32",
+            Self::Int64 => "TYPE_INT64",
+            Self::Fp16 => "TYPE_FP16",
+            Self::Fp32 => "TYPE_FP32",
+            Self::Fp64 => "TYPE_FP64",
+            Self::Bytes => "TYPE_STRING",
+            Self::Bf16 => "TYPE_BF16",
+        })
+    }
+
     pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_DataType {
         use triton_ng_sys::*;
         match self {
@@ -74,24 +95,46 @@ impl DataType {
     }
 }
 
-/// Model instance group kind — mirrors `TRITONSERVER_InstanceGroupKind`.
+/// Kind of a model instance group, mirrors `TRITONSERVER_InstanceGroupKind`:
+/// the kind of an instance ([`crate::ModelInstance::kind`]) or of a group the
+/// backend prefers ([`crate::BackendAttributes::preferred_instance_group`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstanceKind {
+pub enum InstanceGroupKind {
+    /// Triton picks GPU when there is one, CPU otherwise.
     Auto,
     Cpu,
     Gpu,
+    /// The model decides where it runs.
     Model,
 }
 
-impl InstanceKind {
+impl InstanceGroupKind {
+    pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_InstanceGroupKind {
+        use triton_ng_sys::*;
+        match self {
+            Self::Auto => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_AUTO,
+            Self::Cpu => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_CPU,
+            Self::Gpu => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_GPU,
+            Self::Model => TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_MODEL,
+        }
+    }
+
+    /// Fails on a kind this version of triton-ng does not know.
     #[allow(non_upper_case_globals)]
-    pub(crate) fn from_sys(v: triton_ng_sys::TRITONSERVER_InstanceGroupKind) -> Self {
+    pub(crate) fn from_sys(
+        v: triton_ng_sys::TRITONSERVER_InstanceGroupKind,
+    ) -> Result<Self, String> {
         use triton_ng_sys::*;
         match v {
-            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_CPU => Self::Cpu,
-            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_GPU => Self::Gpu,
-            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_MODEL => Self::Model,
-            _ => Self::Auto,
+            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_AUTO => {
+                Ok(Self::Auto)
+            }
+            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_CPU => Ok(Self::Cpu),
+            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_GPU => Ok(Self::Gpu),
+            TRITONSERVER_instancegroupkind_enum_TRITONSERVER_INSTANCEGROUPKIND_MODEL => {
+                Ok(Self::Model)
+            }
+            other => Err(format!("unknown instance group kind {other}")),
         }
     }
 }
@@ -271,9 +314,22 @@ impl RequestFlags {
 
 #[cfg(test)]
 mod tests {
-    use super::{Parameter, RequestFlags};
+    use super::{InstanceGroupKind, Parameter, RequestFlags};
     use std::ffi::{CString, c_void};
     use triton_ng_sys::*;
+
+    #[test]
+    fn instance_group_kinds_round_trip_and_unknown_ones_fail() {
+        for kind in [
+            InstanceGroupKind::Auto,
+            InstanceGroupKind::Cpu,
+            InstanceGroupKind::Gpu,
+            InstanceGroupKind::Model,
+        ] {
+            assert_eq!(InstanceGroupKind::from_sys(kind.to_sys()), Ok(kind));
+        }
+        assert!(InstanceGroupKind::from_sys(42).is_err());
+    }
 
     #[test]
     fn request_flags_round_trip() {

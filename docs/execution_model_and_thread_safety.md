@@ -32,7 +32,9 @@ buffers of the instance's device. Batches of the instance get it through
 be answered from any thread of the runtime.
 
 **Exactly one final response.** `Response::new`, `Request::respond_error` and
-`Request::respond_cancelled` consume the request, so it cannot be answered twice. A request dropped
+`Request::respond_cancelled` consume the request, so it cannot be answered twice.
+`Request::reschedule` consumes it too and hands it back to Triton for another step of an iterative
+sequence, see [Model management and configuration](model_management_and_configuration.md). A request dropped
 without a response, including when the future returns an error or panics, gets a generic error
 response. Every request is released to Triton when it is dropped. The error returned by
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
@@ -78,7 +80,7 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 | `Context` | none | | yes | yes | `Clone` |
 | `CounterFamily`, `GaugeFamily`, `HistogramFamily` | share the metric family of their name | delete it with the last family and metric | yes | yes | `Clone`, see [Metrics](metrics.md) |
 | `Counter`, `Gauge`, `Histogram` | own the metric, keep its family alive | delete the metric | yes | yes | `Clone` shares the metric |
-| `Model`, `ModelInstance`, `Backend` | borrow the model, instance, backend | nothing | no | no | used only in the init and finalize hooks |
+| `Model`, `ModelInstance`, `Backend` | borrow the model, instance, backend | nothing | no | no | used only in the hooks other than `model_instance_execute` |
 
 A unit test in the crate (`thread_safety_of_every_handle_is_as_documented`) checks every row:
 it does not compile when a type is `Send` or `Sync` where this table says it is not, or the other
@@ -103,4 +105,6 @@ instance and stops its runtime.
 most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
 requests are answered. A request with the `memory` parameter is answered through memory manager
 buffers cached in the instance state, see [Memory buffers](memory_buffers.md). The decoupled
-`mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md).
+`mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md);
+`mnist_auto` gets its config from the backend and `mnist_steps` reschedules its requests, see
+[Model management and configuration](model_management_and_configuration.md).

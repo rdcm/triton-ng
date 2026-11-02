@@ -128,6 +128,14 @@ pub fn backend(args: TokenStream, input: TokenStream) -> TokenStream {
         }
 
         #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_GetBackendAttribute(
+            backend: *mut ::std::ffi::c_void,
+            attributes: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::backend_attributes::<#ty>(backend, attributes) }
+        }
+
+        #[unsafe(no_mangle)]
         extern "C" fn TRITONBACKEND_ModelInitialize(
             model: *mut ::std::ffi::c_void,
         ) -> ::triton_ng::__macro_support::ErrorPtr {

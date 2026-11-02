@@ -1,0 +1,37 @@
+name: "mnist_steps"
+backend: "custom_backend"
+max_batch_size: 8
+
+sequence_batching {
+  iterative_sequence: true
+}
+
+model_transaction_policy {
+  decoupled: true
+}
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}

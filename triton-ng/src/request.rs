@@ -1,6 +1,7 @@
 use crate::Input;
 use crate::ResponseSender;
 use crate::error::{Error, ErrorCode, TritonError};
+use crate::executor::RequestPolicy;
 use crate::request_release::RequestRelease;
 use crate::types::{CorrelationId, Parameter, RequestFlags};
 use crate::utils::{cstr_to_string, cstring_from_str};
@@ -51,8 +52,9 @@ use triton_ng_macros::triton_call;
 /// ```
 pub struct Request {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
-    /// The model is decoupled, see [`Request::into_sender`].
-    decoupled: bool,
+    /// What the model lets its requests do, see [`Request::into_sender`]
+    /// and [`Request::reschedule`].
+    policy: RequestPolicy,
     responded: bool,
     /// Dropped after `Drop` sends the error response, see `RequestRelease`.
     release: Arc<RequestRelease>,
@@ -67,11 +69,11 @@ unsafe impl Send for Request {}
 impl Request {
     pub(crate) fn from_ptr(
         ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
-        decoupled: bool,
+        policy: RequestPolicy,
     ) -> Self {
         Self {
             ptr,
-            decoupled,
+            policy,
             responded: false,
             release: Arc::new(RequestRelease::new(ptr)),
         }
@@ -298,12 +300,57 @@ impl Request {
     /// sender.finish()?;
     /// ```
     pub fn into_sender(self) -> Result<ResponseSender, TritonError> {
-        if !self.decoupled {
+        if !self.policy.decoupled {
             let message = "only requests of a decoupled model can get several responses";
             self.respond_error(message)?;
             return Err(TritonError::from_message(message));
         }
         Ok(ResponseSender::new(self))
+    }
+
+    /// Hands the request back to Triton without a final response, to be
+    /// executed again in a later batch: one step of a generation that Triton
+    /// batches with the steps of other sequences
+    /// (`sequence_batching { iterative_sequence: true }`).
+    ///
+    /// The request comes back as a new [`Request`] with the same inputs and
+    /// correlation ID, and with neither the start nor the end flag of a
+    /// sequence; keep what a step produced in the state of the model, by
+    /// correlation ID. Clients of a model that is not decoupled get only the
+    /// final response; a decoupled model sends the steps through
+    /// [`ResponseSender::reschedule`].
+    ///
+    /// Triton `r25.09` reschedules a request only once: it hooks the
+    /// rescheduling into the request only when it starts a sequence, and the
+    /// rescheduled request does not (fixed in `r26.04`, core #456). The
+    /// second time the request would leave Triton without a response, so it
+    /// is refused: the request comes back once and must then get its final
+    /// response.
+    ///
+    /// Fails, and answers the request with the error, when the model has no
+    /// `iterative_sequence` or the request does not start a sequence: Triton
+    /// would otherwise drop the request without a response.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// for request in requests {
+    ///     let id = request.correlation_id()?.ok_or("no correlation ID")?;
+    ///     if state.step(&id)? < STEPS {
+    ///         request.reschedule()?;
+    ///     } else {
+    ///         answer(request, state.finish(&id)?)?;
+    ///     }
+    /// }
+    /// ```
+    pub fn reschedule(mut self) -> Result<(), TritonError> {
+        if let Some(message) = reschedule_refusal(self.policy, self.flags()?) {
+            self.respond_error(message)?;
+            return Err(TritonError::from_message(message));
+        }
+        self.release.reschedule();
+        self.responded = true;
+        Ok(())
     }
 
     /// Returns `true` if the client cancelled the request.
@@ -404,6 +451,18 @@ impl Request {
     }
 }
 
+/// Why a request with `flags` of a model with `policy` cannot be
+/// rescheduled, see [`Request::reschedule`].
+fn reschedule_refusal(policy: RequestPolicy, flags: RequestFlags) -> Option<&'static str> {
+    if !policy.iterative_sequence {
+        return Some("only requests of a model with iterative_sequence can be rescheduled");
+    }
+    if !flags.sequence_start {
+        return Some("Triton r25.09 reschedules a request only once, when it starts a sequence");
+    }
+    None
+}
+
 impl Drop for Request {
     fn drop(&mut self) {
         if !self.responded
@@ -414,5 +473,30 @@ impl Drop for Request {
         {
             crate::log::error(&format!("failed to send error response: {e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reschedule_refusal;
+    use crate::executor::RequestPolicy;
+    use crate::types::RequestFlags;
+
+    fn flags(sequence_start: bool) -> RequestFlags {
+        RequestFlags {
+            sequence_start,
+            sequence_end: false,
+        }
+    }
+
+    #[test]
+    fn only_a_request_starting_an_iterative_sequence_is_rescheduled() {
+        let iterative = RequestPolicy {
+            decoupled: true,
+            iterative_sequence: true,
+        };
+        assert_eq!(reschedule_refusal(iterative, flags(true)), None);
+        assert!(reschedule_refusal(iterative, flags(false)).is_some());
+        assert!(reschedule_refusal(RequestPolicy::default(), flags(true)).is_some());
     }
 }

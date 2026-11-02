@@ -1,4 +1,6 @@
+use crate::auto_complete_config::AutoCompleteConfig;
 use crate::backend::Backend;
+use crate::backend_attributes::BackendAttributes;
 use crate::error::Error;
 use crate::executor::Context;
 use crate::model::Model;
@@ -58,6 +60,59 @@ pub trait CustomBackend {
         Ok(())
     }
 
+    /// Attributes of the backend Triton uses when it loads models: preferred
+    /// instance groups for models without `instance_group` in their config,
+    /// and whether instances of a model are initialized in parallel. This
+    /// function is optional, the default sets nothing.
+    ///
+    /// Triton calls it right after [`CustomBackend::initialize`], and may call
+    /// it again while the backend is loaded. Triton ignores a failure of it
+    /// and keeps the attributes it had; triton-ng logs the error.
+    ///
+    /// Corresponds to TRITONBACKEND_GetBackendAttribute.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+    ///     Ok(BackendAttributes::new()
+    ///         .preferred_instance_group(InstanceGroupKind::Cpu, 1, &[])?
+    ///         .parallel_model_instance_loading(true))
+    /// }
+    /// ```
+    fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+        Ok(BackendAttributes::new())
+    }
+
+    /// Completes the config of a model that is being loaded: fills in the max
+    /// batch size, inputs and outputs, scheduler and `decoupled` that its
+    /// `config.pbtxt` leaves out. This function is optional, the default
+    /// changes nothing.
+    ///
+    /// Called right before [`CustomBackend::model_initialize`], unless
+    /// Triton runs with `--disable-auto-complete-config`. Triton validates
+    /// the completed config after `model_initialize`, so that hook already
+    /// reads it through [`Model::config_json`] and [`Model::is_decoupled`].
+    /// Models cannot be loaded or unloaded from it, see
+    /// [`crate::Server::load_model`]. A failure fails the load of the model.
+    ///
+    /// Like `auto_complete_config` of python_backend.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
+    ///     config.set_max_batch_size(16)?;
+    ///     config.set_dynamic_batching()?;
+    ///     config.add_input("AUDIO", DataType::Fp32, &[-1])?;
+    ///     config.add_output("TEXT", DataType::Bytes, &[1])?;
+    ///     Ok(())
+    /// }
+    /// ```
+    fn auto_complete_config(_model: &Model, _config: &mut AutoCompleteConfig) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Initialize for a model. This function is optional, a backend is not
     /// required to implement it. This function is called once when a model
     /// that uses the backend is loaded, before any of its instances is
@@ -91,6 +146,9 @@ pub trait CustomBackend {
     /// default) and `max_batches_in_flight` (see
     /// [`CustomBackend::model_instance_execute`]). The runtime is started before
     /// this function and stopped again when it fails.
+    ///
+    /// Instances of a model are initialized one after another, unless
+    /// [`CustomBackend::attributes`] enables parallel instance loading.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceInitialize.
     fn model_instance_initialize(_instance: &ModelInstance) -> Result<(), Error> {

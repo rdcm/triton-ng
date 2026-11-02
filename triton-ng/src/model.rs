@@ -1,7 +1,7 @@
 use crate::error::{Error, TritonError};
 use crate::message::Message;
 use crate::server::Server;
-use crate::utils::cstr_to_string;
+use crate::utils::{cstr_to_string, parse_parameter};
 use std::any::Any;
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -222,6 +222,32 @@ impl Model {
         config.to_json()
     }
 
+    /// Whether Triton asks the backend to complete the config of the model:
+    /// on unless Triton runs with `--disable-auto-complete-config`.
+    pub(crate) fn auto_complete_config_enabled(&self) -> Result<bool, TritonError> {
+        let mut enabled = false;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelAutoCompleteConfig(
+            self.ptr,
+            &mut enabled
+        ))?;
+        Ok(enabled)
+    }
+
+    /// Replaces the config of the model with `json`, a model config of
+    /// version 1. Triton takes only some parts of it, see
+    /// [`crate::AutoCompleteConfig`], and validates the result after
+    /// `model_initialize`.
+    pub(crate) fn set_config(&self, json: &str) -> Result<(), TritonError> {
+        let message = Message::from_json(json)?;
+        // The core only serializes the message (TritonModel::UpdateModelConfig)
+        // and does not keep it: `message` deletes it afterwards.
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelSetConfig(
+            self.ptr,
+            1,
+            message.as_ptr()
+        ))
+    }
+
     /// Whether the model is decoupled
     /// (`model_transaction_policy { decoupled: true }`): its requests can get
     /// any number of responses, see [`crate::Request::into_sender`].
@@ -252,6 +278,36 @@ impl Model {
         }
     }
 
+    /// Whether the model reschedules its requests
+    /// (`sequence_batching { iterative_sequence: true }`), see
+    /// [`crate::Request::reschedule`].
+    ///
+    /// Fails when the configuration cannot be read or `iterative_sequence`
+    /// is not a boolean.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     if !model.is_iterative_sequence()? {
+    ///         return Err("the model generates step by step, set iterative_sequence: true".into());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn is_iterative_sequence(&self) -> Result<bool, TritonError> {
+        let json = self.config_json()?;
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| TritonError::from_message(e.to_string()))?;
+        match &value["sequence_batching"]["iterative_sequence"] {
+            serde_json::Value::Null => Ok(false),
+            serde_json::Value::Bool(iterative) => Ok(*iterative),
+            other => Err(TritonError::from_message(format!(
+                "sequence_batching.iterative_sequence is not a boolean: {other}"
+            ))),
+        }
+    }
+
     /// Reads a string parameter from the model configuration `parameters` map.
     pub fn config_parameter(&self, key: &str) -> Result<Option<String>, TritonError> {
         let json = self.config_json()?;
@@ -271,9 +327,7 @@ impl Model {
     {
         match self.config_parameter(key)? {
             None => Ok(default),
-            Some(raw) => raw.trim().parse::<T>().map_err(|e| {
-                format!("invalid value '{raw}' of config parameter '{key}': {e}").into()
-            }),
+            Some(raw) => Ok(parse_parameter("config", key, &raw)?),
         }
     }
 

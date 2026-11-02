@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    Backend, Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error,
-    ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture,
-    InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, TritonError,
-    UninitGpuBuffer,
+    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, Context, CorrelationId, Counter,
+    CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer,
+    Histogram, HistogramFamily, InferenceFuture, InferenceRequest, InferenceResult,
+    InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
+    Request, RequestFlags, Response, ResponseSender, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -43,9 +45,14 @@ impl FromStr for OutputMemory {
     }
 }
 
+static BACKEND_CONFIG: OnceLock<BackendConfig> = OnceLock::new();
+
 struct State {
     model: String,
+    repository: PathBuf,
     decoupled: bool,
+    iterative_sequence: bool,
+    steps: Mutex<HashMap<CorrelationId, i32>>,
     target_model: String,
     identity_model: String,
     stream_model: Option<String>,
@@ -167,6 +174,26 @@ struct MnistBackend;
 impl CustomBackend for MnistBackend {
     fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
+        BACKEND_CONFIG
+            .set(backend.config()?)
+            .map_err(|_| "the backend is initialized twice")?;
+        Ok(())
+    }
+
+    fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+        Ok(BackendAttributes::new()
+            .preferred_instance_group(InstanceGroupKind::Cpu, 2, &[])?
+            .parallel_model_instance_loading(true))
+    }
+
+    fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
+        if config.has_input(IMAGE) {
+            return Ok(());
+        }
+        config.set_max_batch_size(8)?;
+        config.set_dynamic_batching()?;
+        config.add_input(IMAGE, DataType::Fp32, &IMAGE_SHAPE[1..])?;
+        config.add_output("DIGIT", DataType::Int32, &[1])?;
         Ok(())
     }
 
@@ -175,7 +202,14 @@ impl CustomBackend for MnistBackend {
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
+            repository: model
+                .directory()?
+                .parent()
+                .ok_or("the model directory has no parent")?
+                .to_path_buf(),
             decoupled: model.is_decoupled()?,
+            iterative_sequence: model.is_iterative_sequence()?,
+            steps: Mutex::new(HashMap::new()),
             target_model: model
                 .config_parameter("target_model")?
                 .ok_or("missing 'target_model' config parameter")?,
@@ -195,6 +229,9 @@ impl CustomBackend for MnistBackend {
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         let state = ctx.state::<State>()?;
+        if state.iterative_sequence {
+            return stream_steps(state, requests);
+        }
         if state.decoupled {
             return stream_digits(&ctx, state, requests).await;
         }
@@ -273,6 +310,54 @@ impl CustomBackend for MnistBackend {
                 }
                 continue;
             }
+            if let Some(Parameter::String(model)) = request.parameter("load_model")? {
+                let file = match request.parameter("load_file")? {
+                    Some(Parameter::String(file)) => file,
+                    _ => "file:1/model.onnx".to_string(),
+                };
+                let onnx = state
+                    .repository
+                    .join(&state.target_model)
+                    .join("1/model.onnx");
+                let from_repository = request.parameter("load_from")?
+                    == Some(Parameter::String("repository".to_string()));
+                let server = ctx.server().clone();
+                let loaded = tokio::task::spawn_blocking(move || {
+                    if from_repository {
+                        return server.load_model(&model, None, &[]);
+                    }
+                    let onnx = std::fs::read(onnx)
+                        .map_err(|e| TritonError::from_message(e.to_string()))?;
+                    server.load_model(
+                        &model,
+                        Some(r#"{"backend": "onnxruntime"}"#),
+                        &[(&file, &onnx)],
+                    )
+                })
+                .await?;
+                match loaded {
+                    Ok(()) => answer_done(request)?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
+            if let Some(Parameter::String(model)) = request.parameter("unload_model")? {
+                match ctx.server().unload_model(&model, false) {
+                    Ok(()) => answer_done(request)?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
+            if request.parameter("reschedule")? == Some(Parameter::Bool(true)) {
+                if let Err(e) = request.reschedule() {
+                    println!("refused to reschedule: {e}");
+                }
+                continue;
+            }
+            if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
+                echo_backend_config(request)?;
+                continue;
+            }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
                 echo_metadata(request)?;
                 continue;
@@ -331,6 +416,55 @@ impl CustomBackend for MnistBackend {
 
 /// Answers every request of the decoupled model with a stream of the digits
 /// of its images, one response per image.
+/// Streams the number of every step of a request and reschedules it until
+/// it has made the `steps` it asks for (2 by default). Triton r25.09
+/// reschedules a request only once, so more steps end with an error.
+///
+/// The sequence batcher fills the slots of other sequences with null
+/// requests, which have no correlation ID: they are dropped unanswered.
+fn stream_steps(state: &State, requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        let Some(id) = request.correlation_id()? else {
+            continue;
+        };
+        let steps = match request.parameter("steps")? {
+            Some(Parameter::Int(steps)) => steps,
+            _ => 2,
+        };
+        let step = {
+            let mut done = state.steps.lock().map_err(|_| "steps are poisoned")?;
+            let step = done.entry(id.clone()).or_insert(0);
+            *step += 1;
+            *step
+        };
+
+        let mut sender = request.into_sender()?;
+        let mut response = sender.response()?;
+        response
+            .create_output("DIGIT", DataType::Int32, &[1, 1])?
+            .write_i32_vec(&[step])?;
+        response.send()?;
+
+        let finished = i64::from(step) >= steps;
+        let result = if finished {
+            sender.finish()
+        } else {
+            sender.reschedule()
+        };
+        if finished || result.is_err() {
+            state
+                .steps
+                .lock()
+                .map_err(|_| "steps are poisoned")?
+                .remove(&id);
+        }
+        if let Err(e) = result {
+            println!("step {step} of {id:?} failed: {e}");
+        }
+    }
+    Ok(())
+}
+
 async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> Result<(), Error> {
     for request in requests {
         let images = request.get_input(IMAGE)?.as_bytes()?;
@@ -484,6 +618,30 @@ fn echo_metadata(request: Request) -> Result<(), Error> {
     }
     if let Some(forwarded) = forwarded {
         response.set_parameter("forwarded", forwarded)?;
+    }
+    response.send()?;
+    Ok(())
+}
+
+fn answer_done(request: Request) -> Result<(), Error> {
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    response.send()?;
+    Ok(())
+}
+
+fn echo_backend_config(request: Request) -> Result<(), Error> {
+    let config = BACKEND_CONFIG
+        .get()
+        .ok_or("the backend config is not read")?;
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    for (key, value) in config.parameters() {
+        response.set_parameter(key, value)?;
     }
     response.send()?;
     Ok(())

@@ -71,9 +71,11 @@ error codes, BLS futures, threads, cancellation, shutdown and batching,
 [Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
 BLS calls in Triton traces, [Streaming](docs/streaming.md) for decoupled models that answer with a
 stream of responses and for reading such streams over BLS, [Memory buffers](docs/memory_buffers.md)
-for BLS inputs and outputs in pinned and GPU memory, and [Metrics](docs/metrics.md) for backend
-metrics on Triton's Prometheus endpoint. The [documentation index](docs/README.md) lists every
-section.
+for BLS inputs and outputs in pinned and GPU memory, [Metrics](docs/metrics.md) for backend
+metrics on Triton's Prometheus endpoint, and
+[Model management and configuration](docs/model_management_and_configuration.md) for the backend
+config and attributes, completing model configs, loading models from a backend and
+rescheduling requests. The [documentation index](docs/README.md) lists every section.
 
 ## Using the gRPC client
 
@@ -128,7 +130,7 @@ let config = TritonClientConfig::new("https://triton.example.com:8001")
 
 ### Prerequisites
 
-- Rust stable
+- Rust 1.99.0, pinned in `rust-toolchain.toml` (rustup installs it on the first build)
 - NVIDIA driver 570+ (580+ for Blackwell / RTX 50xx)
 - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - Docker
@@ -136,7 +138,6 @@ let config = TritonClientConfig::new("https://triton.example.com:8001")
 ### First run
 
 ```bash
-git submodule update --init --recursive
 make build           # compile custom backend → target/release/libtriton_custom_backend.so
 make download-model  # download mnist_onnx + create model version dirs
 make docker-env-up   # start Triton (mounts .so and models/)
@@ -149,6 +150,10 @@ cargo run --manifest-path=example/app/Cargo.toml --release
 ```
 
 Triton must be running with the example models in READY state.
+
+The Triton headers are vendored in `triton-ng-sys/include`, so the submodules in `deps/` are not
+needed to build. `make update-submodules` refreshes them and the headers from the Triton release
+branch named in `.gitmodules` (`r25.09`, matching the `tritonserver:25.09` image).
 
 ### Run integration tests
 

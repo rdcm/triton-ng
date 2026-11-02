@@ -92,6 +92,30 @@ impl ResponseSender {
         self.request.respond_error_with_code(code, message)
     }
 
+    /// Hands the request back to Triton without ending the stream, to send
+    /// its next responses in a later batch, see [`Request::reschedule`]. The
+    /// client keeps getting the responses of every step as one stream.
+    ///
+    /// Fails, and ends the stream with the error, when the model has no
+    /// `iterative_sequence`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut sender = request.into_sender()?;
+    /// let mut response = sender.response()?;
+    /// response.create_output("TOKEN", DataType::Int64, &[1])?.write_i64_vec(&[token])?;
+    /// response.send()?;
+    /// if more_tokens {
+    ///     sender.reschedule()?;
+    /// } else {
+    ///     sender.finish()?;
+    /// }
+    /// ```
+    pub fn reschedule(self) -> Result<(), TritonError> {
+        self.request.reschedule()
+    }
+
     /// Ends the stream with the CANCELLED status, see
     /// [`ResponseSender::is_cancelled`].
     pub fn respond_cancelled(self) -> Result<(), TritonError> {

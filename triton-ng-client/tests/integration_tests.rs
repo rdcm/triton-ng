@@ -211,6 +211,29 @@ async fn custom_backend_returns_the_digit_with_the_highest_target_model_score() 
 }
 
 #[tokio::test]
+async fn model_with_a_config_completed_by_the_backend_answers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let digit = sut
+        .infer(
+            "mnist_auto",
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            None,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.backend_output_name)
+        .context("digit not found in response")?;
+    assert_eq!(digit.shape, vec![1, 1]);
+    assert_eq!(digit.data_i32.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_answers_concurrent_requests() -> Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..200 {
@@ -744,6 +767,139 @@ async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Resul
 }
 
 #[tokio::test]
+async fn custom_backend_reads_its_backend_config() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("echo_backend_config".to_string(), Parameter::Bool(true))]),
+        )
+        .await?
+        .parameters;
+    assert_eq!(echoed.get("greeting"), Some(&string("hello")));
+    assert!(echoed.contains_key("backend-directory"), "{echoed:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_without_instance_group_gets_the_one_the_backend_prefers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let cfg = sut
+        .model_config(&config.stream_model, None)
+        .await?
+        .context("model config was None")?;
+    assert_eq!(
+        cfg.instance_groups,
+        vec![(2, 2)],
+        "expected 2 instances of KIND_CPU (2)"
+    );
+    Ok(())
+}
+
+async fn model_control(
+    sut: &Sut,
+    config: &Config,
+    parameters: &[(&str, &str)],
+) -> Result<std::result::Result<(), Code>> {
+    let result = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            parameters
+                .iter()
+                .map(|(name, value)| (name.to_string(), string(value)))
+                .collect(),
+        )
+        .await;
+    match result {
+        Ok(_) => Ok(Ok(())),
+        Err(error) => match error.downcast_ref::<triton_ng_client::Error>() {
+            Some(triton_ng_client::Error::Grpc(status)) => Ok(Err(status.code())),
+            _ => anyhow::bail!("not a gRPC error: {error:#}"),
+        },
+    }
+}
+
+#[tokio::test]
+async fn custom_backend_loads_a_model_from_files_and_unloads_it() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let model = "mnist_from_files";
+
+    assert_eq!(
+        model_control(&sut, &config, &[("load_model", model)]).await?,
+        Ok(())
+    );
+    assert!(sut.model_ready(model, None).await?);
+    let result = sut
+        .infer(
+            model,
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.output_name],
+            None,
+        )
+        .await?;
+    let scores = result
+        .outputs
+        .iter()
+        .find(|o| o.name == config.output_name)
+        .context("output tensor not found in response")?;
+    assert_eq!(scores.data_f32.len(), 10);
+
+    assert_eq!(
+        model_control(&sut, &config, &[("unload_model", model)]).await?,
+        Ok(())
+    );
+    for _ in 0..10_000 {
+        if !sut.model_ready(model, None).await? {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("model {model} is still ready")
+}
+
+#[tokio::test]
+async fn custom_backend_cannot_load_a_file_outside_the_model_directory() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let code = model_control(
+        &sut,
+        &config,
+        &[
+            ("load_model", "mnist_escaped"),
+            ("load_file", "file:../mnist_escaped.onnx"),
+        ],
+    )
+    .await?;
+    assert_eq!(code, Err(Code::InvalidArgument));
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_reports_a_model_missing_from_the_repository() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let code = model_control(
+        &sut,
+        &config,
+        &[("load_model", "no_such_model"), ("load_from", "repository")],
+    )
+    .await?;
+    assert!(code.is_err(), "the model loaded");
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
@@ -981,6 +1137,82 @@ async fn streamed_digits(
         }
     }
     Ok((digits, None))
+}
+
+async fn streamed_steps(
+    sut: &Sut,
+    config: &Config,
+    steps: i64,
+) -> Result<(Vec<i32>, Option<triton_ng_client::Error>)> {
+    let mut stream = sut
+        .infer_stream(
+            "mnist_steps",
+            vec![config.mnist_blank_images(1)],
+            &[&config.backend_output_name],
+            HashMap::from([("steps".to_string(), Parameter::Int(steps))]),
+        )
+        .await?;
+    let mut numbers = Vec::new();
+    while let Some(response) = stream.next().await {
+        match response {
+            Ok(response) => {
+                let output = infer_result(response)
+                    .outputs
+                    .into_iter()
+                    .find(|o| o.name == config.backend_output_name)
+                    .context("step not found in response")?;
+                numbers.extend(output.data_i32);
+            }
+            Err(error) => return Ok((numbers, Some(error))),
+        }
+    }
+    Ok((numbers, None))
+}
+
+#[tokio::test]
+async fn rescheduled_request_streams_every_step() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (numbers, error) = streamed_steps(&sut, &config, 1).await?;
+    assert_eq!((numbers, error.map(|e| e.to_string())), (vec![1], None));
+    let (numbers, error) = streamed_steps(&sut, &config, 2).await?;
+    assert_eq!((numbers, error.map(|e| e.to_string())), (vec![1, 2], None));
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_is_rescheduled_only_once() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (numbers, error) = streamed_steps(&sut, &config, 3).await?;
+    assert_eq!(numbers, vec![1, 2]);
+    let error = error.context("the third step was rescheduled")?;
+    assert!(error.to_string().contains("only once"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_of_a_model_without_iterative_sequence_is_not_rescheduled() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("reschedule".to_string(), Parameter::Bool(true))]),
+        )
+        .await
+        .err()
+        .context("the request was answered")?;
+    assert!(
+        format!("{error:#}").contains("iterative_sequence"),
+        "{error:#}"
+    );
+    Ok(())
 }
 
 #[tokio::test]

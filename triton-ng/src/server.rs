@@ -4,9 +4,11 @@ use crate::inference_response::InferenceResponse;
 use crate::inference_stream::StreamResults;
 use crate::inference_trace::InferenceTrace;
 use crate::message::Message;
+use crate::model_control::{check_load_arguments, check_model_control_allowed};
 use crate::request_cancel::RequestCancel;
 use crate::request_release::RequestRelease;
 use crate::response_allocator::{OutputPlan, ResponseAllocator};
+use crate::triton_parameter::TritonParameter;
 use crate::utils::cstring_from_str;
 use crate::{
     ErrorCode, InferenceFuture, InferenceRequest, InferenceResult, InferenceStream, TritonError,
@@ -188,6 +190,120 @@ impl Server {
         )?);
 
         metadata.to_json()
+    }
+
+    /// Loads the model `model_name`, or reloads it when it is loaded, and
+    /// returns once it is ready, like `pb_utils.load_model` of python_backend.
+    ///
+    /// Without `config` and `files` the model comes from the model
+    /// repository. `config` replaces its `config.pbtxt` with the JSON of a
+    /// model config. `files` give the model directory instead of the
+    /// repository: every name is `file:<path>` with `<path>` relative to the
+    /// model directory (`file:1/model.onnx`), and they need `config`. Triton
+    /// writes the files to a temporary directory during the call, nothing of
+    /// them is kept.
+    ///
+    /// Blocks the calling thread until the model is loaded, which takes
+    /// seconds for a big model. In `model_instance_execute` that thread runs
+    /// the other batches of the instance; to keep them going, call it through
+    /// `tokio::task::spawn_blocking`.
+    ///
+    /// Works only with `--model-control-mode=explicit`, and only after the
+    /// server has started: models listed with `--load-model` cannot load
+    /// others from their hooks (`Unavailable`). Fails with `Unsupported` in
+    /// the finalize hooks and `auto_complete_config`, which run inside a load
+    /// or unload of Triton; with `InvalidArg` when `config` is not a JSON
+    /// object or a file name is malformed, given twice or leaves the model
+    /// directory; and with the error of Triton when the model fails to load.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// server.load_model("punctuation", None, &[])?;
+    ///
+    /// let config = r#"{"backend": "onnxruntime", "max_batch_size": 8}"#;
+    /// let onnx = std::fs::read("/weights/punctuation_v2.onnx")?;
+    /// server.load_model("punctuation_v2", Some(config), &[("file:1/model.onnx", &onnx)])?;
+    /// ```
+    pub fn load_model(
+        &self,
+        model_name: &str,
+        config: Option<&str>,
+        files: &[(&str, &[u8])],
+    ) -> Result<(), TritonError> {
+        check_model_control_allowed("loaded")
+            .map_err(|e| TritonError::with_code(ErrorCode::Unsupported, e))?;
+        check_load_arguments(model_name, config, files)
+            .map_err(|e| TritonError::with_code(ErrorCode::InvalidArg, e))?;
+
+        let model_name = cstring_from_str(model_name)?;
+        let mut parameters = Vec::with_capacity(files.len() + 1);
+        if let Some(config) = config {
+            parameters.push(TritonParameter::string("config", config)?);
+        }
+        for (name, data) in files {
+            parameters.push(TritonParameter::bytes(name, data)?);
+        }
+        let parameter_ptrs: Vec<_> = parameters.iter().map(TritonParameter::as_ptr).collect();
+
+        // The core reads the parameters, and the bytes of the files they point
+        // at, only during the call (ModelRepositoryManager::LoadUnloadModel
+        // writes the files out before it returns); `parameters` and `files`
+        // outlive it.
+        triton_call!(triton_ng_sys::TRITONSERVER_ServerLoadModelWithParameters(
+            self.ptr,
+            model_name.as_ptr(),
+            parameter_ptrs.as_ptr().cast_mut(),
+            parameter_ptrs.len() as u64,
+        ))
+    }
+
+    /// Starts to unload the model `model_name`, and the models loaded along
+    /// with it (the composing models of an ensemble) when
+    /// `unload_dependents`, like `pb_utils.unload_model` of python_backend.
+    ///
+    /// Does not wait for the model to unload: Triton unloads it once its
+    /// requests in flight are answered, so a model may unload itself from
+    /// `model_instance_execute`. Unloading a model that is not loaded
+    /// succeeds.
+    ///
+    /// Works only with `--model-control-mode=explicit` and after the server
+    /// has started (`Unavailable` otherwise). Fails with `Unsupported` in the
+    /// finalize hooks and `auto_complete_config`, see
+    /// [`Server::load_model`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// ctx.server().unload_model("punctuation_v1", false)?;
+    /// ctx.server().unload_model("asr_ensemble", true)?;
+    /// ```
+    pub fn unload_model(
+        &self,
+        model_name: &str,
+        unload_dependents: bool,
+    ) -> Result<(), TritonError> {
+        check_model_control_allowed("unloaded")
+            .map_err(|e| TritonError::with_code(ErrorCode::Unsupported, e))?;
+        if model_name.is_empty() {
+            return Err(TritonError::with_code(
+                ErrorCode::InvalidArg,
+                "the model name is empty",
+            ));
+        }
+
+        let model_name = cstring_from_str(model_name)?;
+        if unload_dependents {
+            triton_call!(triton_ng_sys::TRITONSERVER_ServerUnloadModelAndDependents(
+                self.ptr,
+                model_name.as_ptr(),
+            ))
+        } else {
+            triton_call!(triton_ng_sys::TRITONSERVER_ServerUnloadModel(
+                self.ptr,
+                model_name.as_ptr(),
+            ))
+        }
     }
 
     /// Submits inference and returns a future of its result, see

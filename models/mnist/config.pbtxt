@@ -6,6 +6,13 @@ dynamic_batching {
   max_queue_delay_microseconds: 1000
 }
 
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
 input [
   {
     name: "Input3"

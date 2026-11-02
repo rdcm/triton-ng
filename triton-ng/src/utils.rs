@@ -68,6 +68,18 @@ pub fn cstring_from_str(s: &str) -> Result<CString, TritonError> {
     CString::new(s).map_err(|e| TritonError::with_code(ErrorCode::InvalidArg, e.to_string()))
 }
 
+/// Parses the string value `raw` of the parameter `key`, `kind` names where
+/// the parameter comes from in the error.
+pub(crate) fn parse_parameter<T>(kind: &str, key: &str, raw: &str) -> Result<T, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    raw.trim()
+        .parse::<T>()
+        .map_err(|e| format!("invalid value '{raw}' of {kind} parameter '{key}': {e}"))
+}
+
 /// Decodes a buffer of little-endian fixed-size elements.
 pub(crate) fn decode_le<T, const N: usize>(
     buffer: &[u8],
@@ -91,7 +103,7 @@ pub(crate) fn decode_le<T, const N: usize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{count_strings, decode_string, encode_string};
+    use super::{count_strings, decode_string, encode_string, parse_parameter};
 
     fn encoded(values: &[&str]) -> Result<Vec<u8>, std::io::Error> {
         let mut data = Vec::new();
@@ -122,6 +134,23 @@ mod tests {
         data.extend(b"abc");
         assert!(decode_string(&data).is_err());
         assert!(count_strings(&data).is_err());
+    }
+
+    #[test]
+    fn parameter_is_parsed_without_surrounding_spaces() {
+        assert_eq!(parse_parameter::<u32>("config", "threads", " 4 "), Ok(4));
+    }
+
+    #[test]
+    fn invalid_parameter_names_its_kind_key_and_value() {
+        assert_eq!(
+            parse_parameter::<u32>("backend config", "threads", "four"),
+            Err(
+                "invalid value 'four' of backend config parameter 'threads': \
+                 invalid digit found in string"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
