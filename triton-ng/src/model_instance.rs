@@ -13,7 +13,7 @@ use triton_ng_macros::triton_call;
 /// A model instance: Triton runs one per `instance_group` entry and device.
 ///
 /// Every instance has its own runtime that runs the batches given to it, see
-/// [`crate::Backend::model_instance_execute`].
+/// [`crate::CustomBackend::model_instance_execute`].
 ///
 /// Borrows the `TRITONBACKEND_ModelInstance`: Triton owns it and keeps it
 /// alive for the hook, so there is nothing to drop. Neither `Send` nor
@@ -73,11 +73,11 @@ impl ModelInstance {
 
     /// Stores backend-defined state for this instance.
     ///
-    /// Call it once, from `Backend::model_instance_initialize`; batches of the
+    /// Call it once, from `CustomBackend::model_instance_initialize`; batches of the
     /// instance get it through [`crate::Context::instance_state`]. Use it for
     /// what must not be shared between instances, like caches of GPU buffers
     /// of the instance's device. The state is dropped after
-    /// `Backend::model_instance_finalize`, once every batch of the instance
+    /// `CustomBackend::model_instance_finalize`, once every batch of the instance
     /// has finished. A second call fails.
     ///
     /// # Examples

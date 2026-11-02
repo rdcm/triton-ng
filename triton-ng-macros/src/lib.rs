@@ -68,7 +68,7 @@ pub fn triton_call(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Registers an `impl Backend for T` block as the Triton backend of the crate.
+/// Registers an `impl CustomBackend for T` block as the Triton backend of the crate.
 ///
 /// Keeps the impl as it is and exports the `TRITONBACKEND_*` entry points
 /// Triton looks up in the backend library, each one calling the matching
@@ -81,7 +81,7 @@ pub fn triton_call(input: TokenStream) -> TokenStream {
 /// struct MyBackend;
 ///
 /// #[triton_ng::backend]
-/// impl Backend for MyBackend {
+/// impl CustomBackend for MyBackend {
 ///     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
 ///         // ...
 ///         Ok(())
@@ -103,7 +103,7 @@ pub fn backend(args: TokenStream, input: TokenStream) -> TokenStream {
     if item.trait_.is_none() {
         return syn::Error::new_spanned(
             &item.self_ty,
-            "#[backend] must be placed on `impl Backend for T`",
+            "#[backend] must be placed on `impl CustomBackend for T`",
         )
         .to_compile_error()
         .into();

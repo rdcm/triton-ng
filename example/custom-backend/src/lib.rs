@@ -2,12 +2,11 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use triton_ng::backend::Backend;
 use triton_ng::{
-    BackendHandle, Context, CorrelationId, Counter, CounterFamily, DataType, Error, ErrorCode,
-    Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture, InferenceRequest,
-    InferenceResult, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
-    Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
+    Backend, Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error,
+    ErrorCode, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceFuture,
+    InferenceRequest, InferenceResult, MemoryManager, Model, ModelInstance, Parameter,
+    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -160,8 +159,8 @@ impl Buffers {
 struct MnistBackend;
 
 #[triton_ng::backend]
-impl Backend for MnistBackend {
-    fn initialize(backend: &BackendHandle) -> Result<(), Error> {
+impl CustomBackend for MnistBackend {
+    fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
         Ok(())
     }

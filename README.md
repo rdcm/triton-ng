@@ -19,16 +19,15 @@ Provides two things:
 
 ## Writing a custom backend
 
-Implement the `Backend` trait and register it with `#[triton_ng::backend]`:
+Implement the `CustomBackend` trait and register it with `#[triton_ng::backend]`:
 
 ```rust
-use triton_ng::backend::Backend;
-use triton_ng::{Context, DataType, Error, InferenceRequest, Request, Response};
+use triton_ng::{CustomBackend, Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
 
 #[triton_ng::backend]
-impl Backend for MyBackend {
+impl CustomBackend for MyBackend {
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
             let data = request.get_input("INPUT")?.as_bytes()?;

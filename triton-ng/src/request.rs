@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use triton_ng_macros::triton_call;
 
-/// Inference request passed to [`crate::Backend::model_instance_execute`].
+/// Inference request passed to [`crate::CustomBackend::model_instance_execute`].
 ///
 /// The backend owns the request and can answer it from any thread of the
 /// instance runtime. The
