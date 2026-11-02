@@ -44,12 +44,12 @@ pub(crate) mod metric;
 pub(crate) mod metric_args;
 #[path = "metric_family.rs"]
 pub(crate) mod metric_family;
-#[path = "metric_parameter.rs"]
-pub(crate) mod metric_parameter;
 #[path = "metrics.rs"]
 pub mod metrics;
 #[path = "model.rs"]
 pub mod model;
+#[path = "model_control.rs"]
+pub(crate) mod model_control;
 #[path = "model_instance.rs"]
 pub mod model_instance;
 #[path = "output.rs"]
@@ -76,6 +76,8 @@ pub mod response_sender;
 pub mod server;
 #[path = "stream_response.rs"]
 pub mod stream_response;
+#[path = "triton_parameter.rs"]
+pub(crate) mod triton_parameter;
 #[path = "types.rs"]
 pub mod types;
 #[path = "utils.rs"]
@@ -120,6 +122,7 @@ pub mod __macro_support {
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
     use crate::model::Model;
+    use crate::model_control::forbid_model_control;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
     use crate::response_allocator::ResponseAllocator;
@@ -141,7 +144,7 @@ pub mod __macro_support {
     /// after the hook.
     pub unsafe fn finalize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { self::backend(backend) };
-        let result = catch(|| B::finalize(&backend));
+        let result = forbid_model_control("finalize", || catch(|| B::finalize(&backend)));
         ResponseAllocator::release_shared();
         into_error_ptr(result)
     }
@@ -175,7 +178,7 @@ pub mod __macro_support {
     /// TRITONBACKEND_ModelFinalize. Drops the model state after the hook.
     pub unsafe fn model_finalize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
-        let result = catch(|| B::model_finalize(&model));
+        let result = forbid_model_control("model_finalize", || catch(|| B::model_finalize(&model)));
         if let Err(e) = model.clear_state() {
             crate::log::error(&format!("failed to clear model state: {e}"));
         }
@@ -202,7 +205,9 @@ pub mod __macro_support {
     pub unsafe fn model_instance_finalize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         stop_executor(&instance);
-        into_error_ptr(catch(|| B::model_instance_finalize(&instance)))
+        into_error_ptr(forbid_model_control("model_instance_finalize", || {
+            catch(|| B::model_instance_finalize(&instance))
+        }))
     }
 
     /// TRITONBACKEND_ModelInstanceExecute. Hands the batch over to the runtime
@@ -395,11 +400,11 @@ mod tests {
     use crate::metric::Metric;
     use crate::metric_args::MetricArgs;
     use crate::metric_family::MetricFamily;
-    use crate::metric_parameter::MetricParameter;
     use crate::request_cancel::RequestCancel;
     use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::response_factory::ResponseFactory;
+    use crate::triton_parameter::TritonParameter;
     use crate::*;
 
     fn send<T: ?Sized + Send>() {}
@@ -467,7 +472,7 @@ mod tests {
             InferenceTrace
         );
         neither!(
-            MetricParameter,
+            TritonParameter<'static>,
             MetricArgs,
             Model,
             ModelInstance,

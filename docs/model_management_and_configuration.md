@@ -1,6 +1,7 @@
 # Model management and configuration
 
-How a backend reads its own configuration and takes part in loading models.
+How a backend reads its own configuration, loads and unloads models, and takes part in loading
+its own.
 
 ## Backend config
 
@@ -59,3 +60,52 @@ the hook the backend sets nothing and Triton uses its defaults.
 
 The example backend prefers two CPU instances: `mnist_stream` has no `instance_group` and gets
 them, `mnist` names its group in its config and keeps it.
+
+## Loading and unloading models
+
+A backend loads and unloads models of the server like python_backend's `pb_utils.load_model` and
+`pb_utils.unload_model`:
+
+```rust
+// From the model repository, or reloaded when its files changed.
+server.load_model("punctuation", None, &[])?;
+
+// With another config.
+server.load_model("punctuation", Some(r#"{"backend": "onnxruntime", "max_batch_size": 8}"#), &[])?;
+
+// From files instead of the repository: they need a config.
+let onnx = std::fs::read("/weights/punctuation_v2.onnx")?;
+server.load_model(
+    "punctuation_v2",
+    Some(r#"{"backend": "onnxruntime"}"#),
+    &[("file:1/model.onnx", &onnx)],
+)?;
+
+server.unload_model("punctuation_v1", false)?;
+server.unload_model("asr_ensemble", true)?; // with its composing models
+```
+
+- **Explicit model control only.** Triton must run with `--model-control-mode=explicit`, and the
+  server must have started: a model loaded at startup (`--load-model`) cannot load others from its
+  hooks, Triton answers `Unavailable`. Load models from `model_instance_execute`, or from the hooks
+  of models loaded later.
+- **Loading blocks.** `load_model` returns when the model is ready or has failed, which takes
+  seconds for a big model. In `model_instance_execute` it blocks a thread of the runtime of the
+  instance, and the other batches on it wait. Call it through `tokio::task::spawn_blocking` to keep
+  them going.
+- **Unloading does not wait.** `unload_model` returns at once; Triton unloads the model when its
+  requests in flight are answered. A model can unload itself from `model_instance_execute`.
+- **Files.** Every file is named `file:<path>`, with `<path>` relative to the model directory
+  (`file:1/model.onnx`). Triton writes them to a
+  temporary directory during the call. triton-ng checks the names before the call: no absolute
+  paths, no `..`, no repeated names, and a config whenever there are files.
+- **Not in finalize hooks.** `finalize`, `model_finalize` and `model_instance_finalize` run inside a
+  load or unload of Triton; both calls fail there with `Unsupported`, as in python_backend.
+
+A model that fails to load keeps a failed state in Triton. With strict readiness (the default)
+the whole server is then not ready (`/v2/health/ready`), and unloading the model does not clear
+it. A name that is not in the repository and comes without files fails before that and leaves
+no state. Check what you load before you load it.
+
+The example backend loads a copy of `mnist_onnx` from its file as `mnist_from_files` on the request
+parameter `load_model`, and unloads a model on `unload_model`.

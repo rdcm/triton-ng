@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -47,6 +48,7 @@ static BACKEND_CONFIG: OnceLock<BackendConfig> = OnceLock::new();
 
 struct State {
     model: String,
+    repository: PathBuf,
     decoupled: bool,
     target_model: String,
     identity_model: String,
@@ -186,6 +188,11 @@ impl CustomBackend for MnistBackend {
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
+            repository: model
+                .directory()?
+                .parent()
+                .ok_or("the model directory has no parent")?
+                .to_path_buf(),
             decoupled: model.is_decoupled()?,
             target_model: model
                 .config_parameter("target_model")?
@@ -281,6 +288,44 @@ impl CustomBackend for MnistBackend {
             if request.parameter("into_sender")? == Some(Parameter::Bool(true)) {
                 if request.into_sender().is_ok() {
                     return Err("a request of a model that is not decoupled got a sender".into());
+                }
+                continue;
+            }
+            if let Some(Parameter::String(model)) = request.parameter("load_model")? {
+                let file = match request.parameter("load_file")? {
+                    Some(Parameter::String(file)) => file,
+                    _ => "file:1/model.onnx".to_string(),
+                };
+                let onnx = state
+                    .repository
+                    .join(&state.target_model)
+                    .join("1/model.onnx");
+                let from_repository = request.parameter("load_from")?
+                    == Some(Parameter::String("repository".to_string()));
+                let server = ctx.server().clone();
+                let loaded = tokio::task::spawn_blocking(move || {
+                    if from_repository {
+                        return server.load_model(&model, None, &[]);
+                    }
+                    let onnx = std::fs::read(onnx)
+                        .map_err(|e| TritonError::from_message(e.to_string()))?;
+                    server.load_model(
+                        &model,
+                        Some(r#"{"backend": "onnxruntime"}"#),
+                        &[(&file, &onnx)],
+                    )
+                })
+                .await?;
+                match loaded {
+                    Ok(()) => answer_done(request)?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
+            if let Some(Parameter::String(model)) = request.parameter("unload_model")? {
+                match ctx.server().unload_model(&model, false) {
+                    Ok(()) => answer_done(request)?,
+                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
                 }
                 continue;
             }
@@ -500,6 +545,15 @@ fn echo_metadata(request: Request) -> Result<(), Error> {
     if let Some(forwarded) = forwarded {
         response.set_parameter("forwarded", forwarded)?;
     }
+    response.send()?;
+    Ok(())
+}
+
+fn answer_done(request: Request) -> Result<(), Error> {
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
     response.send()?;
     Ok(())
 }
