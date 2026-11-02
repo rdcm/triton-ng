@@ -99,8 +99,8 @@ pub struct InferenceResult {
 impl InferenceResult {
     /// The value of the response parameter `name`, which the called model
     /// set with [`crate::Response::set_parameter`]; `None` when the response
-    /// has no such parameter. Of a decoupled model the parameters of all
-    /// its responses are searched in order.
+    /// has no such parameter. A result is one response: every result of an
+    /// [`crate::InferenceStream`] has the parameters of its own response.
     ///
     /// Fails when the parameter has the BYTES type, which is not supported.
     ///

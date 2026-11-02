@@ -38,15 +38,9 @@ response. Every request is released to Triton when it is dropped. The error retu
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
-**Streams of a decoupled model.** A request of a model with
-`model_transaction_policy { decoupled: true }` can get any number of responses:
-`Request::into_sender` turns it into a `ResponseSender`, and `ResponseSender::response` creates the
-next response of the stream. The stream ends with exactly one final flag: `finish` sends it without
-a response, `final_response` with one, `respond_error` and `respond_cancelled` with an error. All of
-them consume the sender, so nothing can be sent after the final flag, and a sender dropped without
-it sends a final error response. The sender owns its request and releases it with the final flag,
-so the inputs stay readable for the whole stream. `into_sender` fails, and answers the request with
-the error, when the model is not decoupled: its clients wait for exactly one response.
+**Streams of a decoupled model.** A request of a decoupled model can get any number of responses
+before its final flag: `Request::into_sender` turns it into a `ResponseSender`, whose final methods
+consume it, so the final flag is still sent exactly once. See [Streaming](streaming.md).
 
 **Error codes.** Every `TritonError` has an `ErrorCode`: `respond_error` answers with `Internal`,
 `respond_error_with_code` with any code, which the client gets as the gRPC status of its call.
@@ -58,10 +52,8 @@ backend hook reaches Triton with its code, any other error as `Internal`.
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
 request: Triton finishes it and the result is discarded; `InferenceFuture::cancel` cancels it. The
-future fails unless the model sends exactly one response. The responses of a decoupled model are
-read with `Server::infer_stream`, which returns an `InferenceStream` of one result per response,
-ending with the final flag of the model. Dropping the stream cancels the request. Outputs requested
-into a buffer are not supported by `infer_stream`: every response needs memory of its own. A BLS request can carry the ID,
+future expects exactly one response; the responses of a decoupled model are read with
+`Server::infer_stream`, see [Streaming](streaming.md). A BLS request can carry the ID,
 correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
 child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
 
@@ -99,6 +91,8 @@ the instance.
 
 **Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
 with `Request::respond_cancelled`. Triton reports a client that drops a gRPC call as a cancellation.
+`ResponseSender::is_cancelled` does the same for a stream. A backend cancels its own BLS requests
+with `InferenceFuture::cancel` and `InferenceStream::cancel`, or by dropping the stream.
 
 **Shutdown.** Before `CustomBackend::model_instance_finalize`, triton-ng waits for every batch of the
 instance and stops its runtime.
@@ -108,4 +102,5 @@ instance and stops its runtime.
 `hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
 most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
 requests are answered. A request with the `memory` parameter is answered through memory manager
-buffers cached in the instance state, see [Memory buffers](memory_buffers.md).
+buffers cached in the instance state, see [Memory buffers](memory_buffers.md). The decoupled
+`mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md).

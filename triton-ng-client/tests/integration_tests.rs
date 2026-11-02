@@ -1253,3 +1253,24 @@ async fn cancelled_bls_request_resolves_to_cancelled() -> Result<()> {
     }
     wait_for_backend_counters(&sut, &config, |held, _| held == 0).await
 }
+
+#[tokio::test]
+async fn unary_inference_of_a_decoupled_model_is_rejected() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer(
+            &config.stream_model,
+            None,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            None,
+        )
+        .await
+        .err()
+        .context("the inference succeeded")?;
+
+    assert!(format!("{error:#}").contains("decoupled"), "{error:#}");
+    Ok(())
+}

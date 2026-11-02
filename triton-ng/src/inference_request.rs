@@ -413,9 +413,9 @@ impl InferenceRequest {
     /// `take_ram`), so the memory can be cached and reused.
     ///
     /// The inference fails when the output size differs from the length of
-    /// the buffer, and when the model returns the output more than once
-    /// (decoupled models): the buffer receives one output. Fails right away
-    /// when `name` is requested twice.
+    /// the buffer. The buffer receives one output, so
+    /// [`crate::Server::infer_stream`] refuses a request with outputs in
+    /// buffers. Fails right away when `name` is requested twice.
     ///
     /// # Examples
     ///

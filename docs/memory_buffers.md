@@ -109,8 +109,9 @@ let logits: PinnedRamBuffer = result.take_pinned("logits")?;
   when Triton's dynamic batcher merged it with other requests, so its size is known in advance:
   `rows × the other dimensions × element size`. When the model returns another size, the BLS
   call fails. Outputs whose size depends on the data have to use `add_requested_output`.
-- **One output per buffer.** A buffer receives one output. A model that returns the output
-  more than once (decoupled models) fails the call.
+- **One output per buffer.** A buffer receives one output, so `Server::infer_stream` refuses
+  a request with outputs in buffers: every response of a stream needs memory of its own, see
+  [Streaming](streaming.md).
 - **Taking the buffer back.** `take_gpu`, `take_pinned` and `take_ram` hand the buffer over.
   Taking it as the wrong type fails and leaves it in the result; after a take, `bytes` and
   `as_*` of that output fail. A buffer left in the result is freed with the result.

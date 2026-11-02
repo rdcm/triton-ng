@@ -85,5 +85,8 @@ Triton            instance runtime
   |                  -> batch 3 starts, returns
 ```
 
+A batch is in flight until its future ends, so a batch of a decoupled model holds its slot until
+every stream of it is finished, see [Streaming](streaming.md).
+
 Leave the limit out when the load is already bounded before Triton, e.g. by the consumers of a
 message queue. Set it when Triton is the only place that sees the load.

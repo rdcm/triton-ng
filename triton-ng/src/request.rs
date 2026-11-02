@@ -16,7 +16,9 @@ use triton_ng_macros::triton_call;
 /// instance runtime. The
 /// request gets exactly one final response, sent by [`crate::Response::send`],
 /// [`Request::respond_error`] or [`Request::respond_cancelled`], all of which
-/// consume it. A request dropped without a response gets an error response.
+/// consume it. A request of a decoupled model can instead get a stream of
+/// responses through [`Request::into_sender`]. A request dropped without a
+/// final response gets an error response.
 /// Either way the request is released to Triton when it is dropped, or, when
 /// a BLS request traced as its child is still in flight (see
 /// [`crate::InferenceRequest::set_parent_trace`]), once that BLS request is
