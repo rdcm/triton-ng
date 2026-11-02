@@ -1,0 +1,41 @@
+name: "identity_forward"
+backend: "custom_backend"
+max_batch_size: 0
+
+input [
+  {
+    name: "INPUT0"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  }
+]
+
+output [
+  {
+    name: "OUTPUT0"
+    data_type: TYPE_FP32
+    dims: [ 1, 10 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
+
+parameters: {
+  key: "forwards_input"
+  value: { string_value: "true" }
+}

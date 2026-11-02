@@ -1,5 +1,6 @@
 use crate::Output;
 use crate::error::TritonError;
+use crate::final_response::Pending;
 use crate::request::Request;
 use crate::types::{DataType, Parameter};
 use crate::utils::cstring_from_str;
@@ -78,11 +79,16 @@ impl Response {
         self.body.set_parameter(name, value)
     }
 
-    /// Sends the response as the final one for its request.
+    /// Sends the response as the final one for its request. While a
+    /// [`crate::SharedInput`] of the request is alive, the response is sent
+    /// when the last one is dropped, and a failure to send it then is only
+    /// logged.
+    ///
+    /// Fails without sending while an output is not written; the request
+    /// gets an error response then.
     pub fn send(mut self) -> Result<(), TritonError> {
-        self.body.send(FINAL)?;
-        self.request.mark_responded();
-        Ok(())
+        let response = self.body.take()?;
+        self.request.send_final(Pending::Response(response))
     }
 }
 
@@ -190,23 +196,34 @@ impl ResponseBody {
         }
     }
 
-    /// Sends the response with `flags`. Fails without sending while an
-    /// output is not written; the response is deleted on drop then.
+    /// Sends the response with `flags`, see [`ResponseBody::take`].
     pub(crate) fn send(&mut self, flags: u32) -> Result<(), TritonError> {
+        let response = self.take()?;
+
+        // ResponseSend takes ownership of the response whatever it returns.
+        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
+            response,
+            flags,
+            ptr::null_mut(),
+        ))
+    }
+
+    /// Hands the response over to be sent: the caller owns it then and must
+    /// pass it to `TRITONBACKEND_ResponseSend`. Fails while an output is not
+    /// written; the response is deleted on drop then.
+    pub(crate) fn take(
+        &mut self,
+    ) -> Result<*mut triton_ng_sys::TRITONBACKEND_Response, TritonError> {
         if self.pending_outputs > 0 {
             return Err(TritonError::from_message(format!(
                 "{} output(s) of the response were created but not written",
                 self.pending_outputs
             )));
         }
-
-        let response = std::mem::replace(&mut self.ptr, ptr::null_mut());
-
-        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
-            response,
-            flags,
-            ptr::null_mut(),
-        ))
+        if self.ptr.is_null() {
+            return Err(TritonError::from_message("the response was already sent"));
+        }
+        Ok(std::mem::replace(&mut self.ptr, ptr::null_mut()))
     }
 }
 

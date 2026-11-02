@@ -71,7 +71,8 @@ error codes, BLS futures, threads, cancellation, shutdown and batching,
 [Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
 BLS calls in Triton traces, [Streaming](docs/streaming.md) for decoupled models that answer with a
 stream of responses and for reading such streams over BLS, [Memory buffers](docs/memory_buffers.md)
-for BLS inputs and outputs in pinned and GPU memory, [Metrics](docs/metrics.md) for backend
+for BLS inputs and outputs in pinned and GPU memory and for passing inputs of a request on to BLS
+calls without a copy, [Metrics](docs/metrics.md) for backend
 metrics on Triton's Prometheus endpoint, and
 [Model management and configuration](docs/model_management_and_configuration.md) for the backend
 config and attributes, completing model configs, loading models from a backend and

@@ -83,7 +83,8 @@ async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<
 - **The sender owns the request.** The inputs stay readable for the whole stream
   (`sender.request()`), and BLS calls can be children of the trace of the request
   (`inference.set_parent_trace(sender.request())`). The request is released when the sender is
-  dropped, after the final flag.
+  dropped, after the final flag. While an input of the request passed on with `Input::share` is
+  alive, the final flag waits for it, see [Memory buffers](memory_buffers.md).
 - **A model that is not decoupled** fails `into_sender`, and the request is answered with that
   error: its clients wait for exactly one response. A decoupled model can still answer with
   `Response::new(request)`: that is a stream of one response.
@@ -118,12 +119,15 @@ Checked against core `r25.09`:
   response from the request; a `ResponseFactory` is needed only for the final flag without a
   response.
 - `finish` creates a `TRITONBACKEND_ResponseFactory`, calls `ResponseFactorySendFlags(FINAL)`, which
-  calls the response callback of the request with a null response, and deletes the factory.
+  calls the response callback of the request with a null response, and deletes the factory. Like
+  every final response, it goes through the `FinalResponse` of the request, which holds it back
+  while a `SharedInput` of the request is alive.
   `ResponseFactoryNew` and `ResponseFactoryDelete` only copy and drop a `shared_ptr` to the factory
   of the request.
 - `Response` and `StreamResponse` share one builder of the `TRITONBACKEND_Response` (`ResponseBody`):
   outputs, parameters, the check that every output is written, and the deletion of an unsent
-  response. They differ only in who owns them and in the flag they send.
+  response. They differ in who owns them and in how they are sent: a `StreamResponse` at once, a
+  `Response` through the `FinalResponse` of its request.
 
 ## Reading a stream over BLS
 

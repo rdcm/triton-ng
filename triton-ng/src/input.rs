@@ -1,8 +1,7 @@
 use crate::utils::{cstr_to_string, decode_le, decode_string};
-use crate::{CPU, CPU_PINNED, DataType, Error, RawBuffer, Request};
+use crate::{CPU, CPU_PINNED, DataType, Error, RawBuffer, Request, SharedInput};
 use libc::c_void;
 use std::borrow::Cow;
-use std::marker::PhantomData;
 use std::ptr;
 use std::slice;
 use triton_ng_macros::triton_call;
@@ -15,15 +14,15 @@ use triton_ng_macros::triton_call;
 /// borrow of the request it holds.
 pub struct Input<'a> {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Input,
-    request: PhantomData<&'a Request>,
+    request: &'a Request,
 }
 
 impl<'a> Input<'a> {
-    pub(crate) fn from_ptr(ptr: *mut triton_ng_sys::TRITONBACKEND_Input) -> Self {
-        Self {
-            ptr,
-            request: PhantomData,
-        }
+    pub(crate) fn from_ptr(
+        ptr: *mut triton_ng_sys::TRITONBACKEND_Input,
+        request: &'a Request,
+    ) -> Self {
+        Self { ptr, request }
     }
 
     /// The bytes of the tensor, borrowed from the request when Triton keeps
@@ -42,8 +41,49 @@ impl<'a> Input<'a> {
     /// ```
     pub fn bytes(&self) -> Result<Cow<'a, [u8]>, Error> {
         let properties = self.properties()?;
-        let mut buffers = Vec::with_capacity(properties.buffer_count as usize);
+        let buffers = self.buffers(&properties)?;
 
+        // SAFETY: Triton keeps the input buffers of a request unchanged until
+        // the request is released, and `'a` keeps the request alive.
+        Ok(unsafe { contiguous(&properties.name, properties.byte_size, &buffers) }?)
+    }
+
+    /// The tensor as a BLS input that Triton reads where the request keeps
+    /// it, in CPU or GPU memory, without copying it, see [`SharedInput`].
+    ///
+    /// The request is answered and released only after every shared input
+    /// is dropped: the data of a client request lives until its final
+    /// response is sent, so a final response given before (by
+    /// [`crate::Response::send`], `respond_*`, [`crate::ResponseSender::finish`]
+    /// or the drop of the request) is held back and sent by the last shared
+    /// input dropped. A BLS request owns its inputs until Triton releases it,
+    /// which can be after its result has arrived.
+    ///
+    /// Fails when the buffers do not add up to the size of the tensor, a
+    /// non-empty buffer is null, or the request already has a final response.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let features = request.get_input("features")?.share()?;
+    /// let mut inference = InferenceRequest::new(ctx.server(), "decoder", -1)?;
+    /// let (datatype, shape) = (features.datatype(), features.shape().to_vec());
+    /// inference.add_input_with_buffer("features", datatype, &shape, features)?;
+    /// let result = ctx.server().infer_async(inference).await?;
+    /// ```
+    pub fn share(&self) -> Result<SharedInput, Error> {
+        let properties = self.properties()?;
+        let buffers = self.buffers(&properties)?;
+        Ok(SharedInput::new(
+            properties,
+            buffers,
+            self.request.final_response(),
+        )?)
+    }
+
+    /// The buffers of the tensor as Triton reports them.
+    fn buffers(&self, properties: &InputProperties) -> Result<Vec<RawBuffer>, Error> {
+        let mut buffers = Vec::with_capacity(properties.buffer_count as usize);
         for index in 0..properties.buffer_count {
             let mut buffer: *const c_void = ptr::null();
             let mut memory_type: triton_ng_sys::TRITONSERVER_MemoryType = CPU;
@@ -70,10 +110,7 @@ impl<'a> Input<'a> {
                 memory_type_id,
             });
         }
-
-        // SAFETY: Triton keeps the input buffers of a request unchanged until
-        // the request is released, and `'a` keeps the request alive.
-        Ok(unsafe { contiguous(&properties.name, properties.byte_size, &buffers) }?)
+        Ok(buffers)
     }
 
     /// The bytes of the tensor in a `Vec`, see [`Input::bytes`].

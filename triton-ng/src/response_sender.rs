@@ -1,7 +1,7 @@
 use crate::error::{ErrorCode, TritonError};
+use crate::final_response::Pending;
 use crate::request::Request;
-use crate::response::{FINAL, Response};
-use crate::response_factory::ResponseFactory;
+use crate::response::Response;
 use crate::stream_response::StreamResponse;
 
 /// Sends any number of responses to a request of a decoupled model
@@ -69,11 +69,10 @@ impl ResponseSender {
     }
 
     /// Ends the stream without one more response. On error the request gets
-    /// an error response.
+    /// an error response. While a [`crate::SharedInput`] of the request is
+    /// alive, the stream ends when the last one is dropped.
     pub fn finish(mut self) -> Result<(), TritonError> {
-        ResponseFactory::new(&self.request)?.send_flags(FINAL)?;
-        self.request.mark_responded();
-        Ok(())
+        self.request.send_final(Pending::Flags)
     }
 
     /// Ends the stream with `message` as an internal error, see

@@ -10,7 +10,7 @@ use triton_ng::{
     CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer,
     Histogram, HistogramFamily, InferenceFuture, InferenceRequest, InferenceResult,
     InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
-    Request, RequestFlags, Response, ResponseSender, TritonError, UninitGpuBuffer,
+    Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -27,6 +27,7 @@ enum OutputMemory {
     Pinned,
     Gpu,
     GpuInput,
+    GpuForward,
     WrongSize,
 }
 
@@ -39,6 +40,7 @@ impl FromStr for OutputMemory {
             "pinned" => Ok(Self::Pinned),
             "gpu" => Ok(Self::Gpu),
             "gpu_input" => Ok(Self::GpuInput),
+            "gpu_forward" => Ok(Self::GpuForward),
             "wrong_size" => Ok(Self::WrongSize),
             other => Err(format!("unknown memory '{other}'").into()),
         }
@@ -56,6 +58,8 @@ struct State {
     target_model: String,
     identity_model: String,
     stream_model: Option<String>,
+    forward_model: Option<String>,
+    forwards_input: bool,
     held: AtomicI64,
     cancelled: AtomicI64,
     metrics: Metrics,
@@ -187,7 +191,7 @@ impl CustomBackend for MnistBackend {
     }
 
     fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
-        if config.has_input(IMAGE) {
+        if config.has_input(IMAGE) || config.has_input(IDENTITY_INPUT) {
             return Ok(());
         }
         config.set_max_batch_size(8)?;
@@ -217,6 +221,8 @@ impl CustomBackend for MnistBackend {
                 .config_parameter("identity_model")?
                 .ok_or("missing 'identity_model' config parameter")?,
             stream_model: model.config_parameter("stream_model")?,
+            forward_model: model.config_parameter("forward_model")?,
+            forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
             held: AtomicI64::new(0),
             cancelled: AtomicI64::new(0),
         })?;
@@ -234,6 +240,9 @@ impl CustomBackend for MnistBackend {
         }
         if state.decoupled {
             return stream_digits(&ctx, state, requests).await;
+        }
+        if state.forwards_input {
+            return forward_to_identity(&ctx, state, requests).await;
         }
         let mut held = Vec::new();
         let mut buffered = Vec::new();
@@ -371,6 +380,17 @@ impl CustomBackend for MnistBackend {
                 match result {
                     Ok(result) => answer_with_parameters_of(request, &result)?,
                     Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+                }
+                continue;
+            }
+            if let Some(Parameter::Int(hold_ms)) = request.parameter("shared_input")? {
+                let (image, copy) = {
+                    let input = request.get_input(IMAGE)?;
+                    (Arc::new(input.share()?), input.as_bytes()?)
+                };
+                match digit_of_shared_input(&ctx, state, image, copy, hold_ms).await {
+                    Ok(digit) => respond(&ctx, state, request, digit)?,
+                    Err(e) => request.respond_error(&e.to_string())?,
                 }
                 continue;
             }
@@ -784,12 +804,104 @@ async fn digit_with_buffers(
             }
             argmax(&host.output(LOGITS)?.as_fp32_vec()?)
         }
+        OutputMemory::GpuForward => {
+            inference.add_requested_output_into(
+                LOGITS,
+                ctx.memory().gpu(ctx.device_id(), LOGITS_BYTES)?,
+            )?;
+            let mut result = ctx.server().infer_async(inference).await?;
+            let logits = result.take_gpu(LOGITS)?;
+            let model = state
+                .forward_model
+                .as_deref()
+                .ok_or("missing 'forward_model' config parameter")?;
+            let mut forward = InferenceRequest::new(ctx.server(), model, -1)?;
+            forward.add_input_with_buffer(IDENTITY_INPUT, DataType::Fp32, &[1, 10], logits)?;
+            forward.add_requested_output(IDENTITY_OUTPUT)?;
+            let forwarded = ctx.server().infer_async(forward).await?;
+
+            let inference = host_inference(ctx, state, image)?;
+            let host = ctx.server().infer_async(inference).await?;
+            if forwarded.parameter("input_on_gpu")? != Some(Parameter::Bool(true)) {
+                return Err("the forwarding model did not get its input on the GPU".into());
+            }
+            if forwarded.output(IDENTITY_OUTPUT)?.bytes()? != host.output(LOGITS)?.bytes()? {
+                return Err("the forwarded GPU input differs from the logits".into());
+            }
+            argmax(&host.output(LOGITS)?.as_fp32_vec()?)
+        }
         OutputMemory::WrongSize => {
             inference.add_requested_output_into(LOGITS, ctx.memory().pinned(4)?)?;
             ctx.server().infer_async(inference).await?;
             Err("output written into a buffer of the wrong size".into())
         }
     }
+}
+
+/// Infers the digit of a shared `image` of a request, compared with a `copy`
+/// of it. The shared image is kept for `hold_ms` more, which holds the
+/// response of its request back that long.
+async fn digit_of_shared_input(
+    ctx: &Context,
+    state: &State,
+    image: Arc<SharedInput>,
+    copy: Vec<u8>,
+    hold_ms: i64,
+) -> Result<i32, Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), &state.target_model, -1)?;
+    let shape = image.shape().to_vec();
+    inference.add_input_with_buffer(IMAGE, image.datatype(), &shape, Arc::clone(&image))?;
+    inference.add_requested_output(LOGITS)?;
+    let shared = ctx.server().infer_async(inference).await?;
+
+    let copied = host_inference(ctx, state, copy)?;
+    let copied = ctx.server().infer_async(copied).await?;
+    if shared.output(LOGITS)?.bytes()? != copied.output(LOGITS)?.bytes()? {
+        return Err("the shared input differs from its copy".into());
+    }
+
+    let hold = Duration::from_millis(hold_ms.try_into()?);
+    tokio::spawn(hold_shared_input(image, hold));
+    argmax(&shared.output(LOGITS)?.as_fp32_vec()?)
+}
+
+async fn hold_shared_input(image: Arc<SharedInput>, hold: Duration) {
+    tokio::time::sleep(hold).await;
+    drop(image);
+}
+
+/// Answers every request with its input as it comes back from the identity
+/// model, which reads it where the request keeps it, and tells whether it
+/// was in GPU memory.
+async fn forward_to_identity(
+    ctx: &Context,
+    state: &State,
+    requests: Vec<Request>,
+) -> Result<(), Error> {
+    for request in requests {
+        let (input_on_gpu, shape, result) = {
+            let input = request.get_input(IDENTITY_INPUT)?;
+            let input_on_gpu = input.bytes().is_err();
+            let shared = input.share()?;
+            let shape = shared.shape().to_vec();
+            let mut inference = InferenceRequest::new(ctx.server(), &state.identity_model, -1)?;
+            inference.add_input_with_buffer(IDENTITY_INPUT, shared.datatype(), &shape, shared)?;
+            inference.add_requested_output(IDENTITY_OUTPUT)?;
+            (input_on_gpu, shape, ctx.server().infer_async(inference))
+        };
+        match result.await {
+            Ok(result) => {
+                let mut response = Response::new(request)?;
+                response
+                    .create_output(IDENTITY_OUTPUT, DataType::Fp32, &shape)?
+                    .write_bytes(result.output(IDENTITY_OUTPUT)?.bytes()?)?;
+                response.set_parameter("input_on_gpu", input_on_gpu)?;
+                response.send()?;
+            }
+            Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
+        }
+    }
+    Ok(())
 }
 
 fn identity_of(

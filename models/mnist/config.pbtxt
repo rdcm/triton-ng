@@ -40,6 +40,11 @@ parameters: {
 }
 
 parameters: {
+  key: "forward_model"
+  value: { string_value: "identity_forward" }
+}
+
+parameters: {
   key: "stream_model"
   value: { string_value: "mnist_stream" }
 }

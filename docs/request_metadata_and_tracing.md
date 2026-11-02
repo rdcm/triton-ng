@@ -72,7 +72,9 @@ and `Server::infer_stream` takes a child trace like `infer_async`, see [Streamin
 parent, and a child that reports after that writes into freed memory. So a request with a traced
 child is released to Triton only after the child BLS request and its response are done, even when
 the backend answers and drops the request before awaiting the BLS call. Answering is not delayed:
-only the release, which frees the inputs of the request and lets the model unload.
+only the release, which frees the inputs of the request and lets the model unload. An input of the
+request passed on to a BLS call with `Input::share` delays the answer too, see
+[Memory buffers](memory_buffers.md).
 
 **A submission that fails.** `TRITONSERVER_ServerInferAsync` takes the child trace only after the
 request passes its checks, and its error does not tell whether it did. triton-ng then leaves the

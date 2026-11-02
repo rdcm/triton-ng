@@ -443,6 +443,78 @@ async fn custom_backend_passes_a_gpu_output_as_the_input_of_two_requests() -> Re
 }
 
 #[tokio::test]
+async fn custom_backend_passes_a_gpu_input_of_its_request_on_without_a_copy() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let digit = infer_backend(
+        &sut,
+        &config,
+        &[("memory", Parameter::String("gpu_forward".to_string()))],
+    )
+    .await?
+    .outputs
+    .into_iter()
+    .find(|o| o.name == config.backend_output_name)
+    .context("digit not found in response")?
+    .data_i32;
+
+    assert_eq!(digit, vec![expected]);
+    Ok(())
+}
+
+async fn infer_digit_with_shared_input(
+    sut: &Sut,
+    config: &Config,
+    hold_ms: i64,
+) -> Result<(i32, std::time::Duration)> {
+    let started = std::time::Instant::now();
+    let result = infer_backend(sut, config, &[("shared_input", Parameter::Int(hold_ms))]).await?;
+    let elapsed = started.elapsed();
+    let digit = result
+        .outputs
+        .into_iter()
+        .find(|o| o.name == config.backend_output_name)
+        .context("digit not found in response")?
+        .data_i32;
+    Ok((digit[0], elapsed))
+}
+
+#[tokio::test]
+async fn custom_backend_passes_an_input_of_its_request_on_without_a_copy() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let (digit, _) = infer_digit_with_shared_input(&sut, &config, 0).await?;
+
+    assert_eq!(digit, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn response_is_held_back_until_the_shared_input_of_its_request_is_dropped() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let expected = infer_digit(&sut, &config).await?;
+
+    let (digit, elapsed) = infer_digit_with_shared_input(&sut, &config, 500).await?;
+    let (_, after) = infer_digit_with_shared_input(&sut, &config, 0).await?;
+
+    assert_eq!(digit, expected);
+    assert!(
+        elapsed >= std::time::Duration::from_millis(500),
+        "answered after {elapsed:?}"
+    );
+    assert!(
+        after < std::time::Duration::from_millis(500),
+        "answered after {after:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_fails_output_into_buffer_of_wrong_size() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

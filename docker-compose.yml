@@ -22,6 +22,7 @@ services:
       --load-model=mnist
       --load-model=mnist_onnx
       --load-model=identity_gpu
+      --load-model=identity_forward
       --load-model=mnist_stream
       --load-model=mnist_auto
       --load-model=mnist_steps
