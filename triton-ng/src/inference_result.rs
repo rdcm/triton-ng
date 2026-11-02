@@ -74,11 +74,20 @@ impl OutputTensor {
     }
 }
 
+/// The outputs of a successful BLS call. A failed call resolves its
+/// [`crate::InferenceFuture`] to a [`crate::TritonError`] with the code of
+/// the failure instead.
+///
+/// Owns the output data and buffers. `Send + Sync`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let result = ctx.server().infer_async(inference).await?;
+/// let logits = result.output("logits")?.as_fp32_vec()?;
+/// ```
 pub struct InferenceResult {
     pub outputs: Vec<OutputTensor>,
-    /// Always `None`: a failed inference resolves its [`crate::InferenceFuture`]
-    /// to a [`crate::TritonError`] with the code of the failure.
-    pub error: Option<String>,
 }
 
 impl InferenceResult {
@@ -171,7 +180,6 @@ mod tests {
                 output("pinned", written(memory.pinned(8).unwrap().into())),
                 output("host", OutputData::Host(vec![0; 8])),
             ],
-            error: None,
         }
     }
 

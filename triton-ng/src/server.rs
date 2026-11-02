@@ -295,7 +295,6 @@ unsafe extern "C" fn inference_response_complete(
             Some(error) => Err(error),
             None => Ok(InferenceResult {
                 outputs: context.pending_outputs,
-                error: None,
             }),
         };
         context.completion.complete(result);
