@@ -1,16 +1,60 @@
 use crate::TritonError;
 use crate::inference_request::OutputBuffers;
-use crate::{CPU, OutputBuffer};
+use crate::{CPU, OutputBuffer, RawBuffer};
+use std::alloc::{Layout, alloc_zeroed};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
 use std::sync::{Mutex, PoisonError};
 use triton_ng_macros::triton_call;
 
-/// What `alloc_fn` stores in `buffer_userp` for an output written into an
-/// [`OutputBuffer`]: the buffer, taken out when the response is read. CPU
-/// outputs from `malloc` have a null `buffer_userp`.
-pub(crate) type OutputTag = Option<OutputBuffer>;
+/// What `alloc_fn` stores in `buffer_userp` for every output: the memory the
+/// output is written into, taken out when the response is read.
+pub(crate) type OutputTag = Option<OutputMemory>;
+
+/// Memory of one BLS output.
+pub(crate) enum OutputMemory {
+    /// CPU memory for an output requested without a buffer, handed over to
+    /// the result as it is.
+    Host(Vec<u8>),
+    /// The buffer given with `add_requested_output_into`.
+    Buffer(OutputBuffer),
+}
+
+impl OutputMemory {
+    pub(crate) fn raw(&self) -> RawBuffer {
+        match self {
+            Self::Host(data) => RawBuffer {
+                ptr: if data.is_empty() {
+                    ptr::null_mut()
+                } else {
+                    data.as_ptr().cast_mut().cast()
+                },
+                len: data.len(),
+                memory_type: CPU,
+                memory_type_id: 0,
+            },
+            Self::Buffer(buffer) => buffer.raw(),
+        }
+    }
+}
+
+/// `len` zero bytes, `None` when the memory cannot be allocated. The pages of
+/// large allocations come zeroed from the OS, so nothing is written to them.
+fn zeroed_vec(len: usize) -> Option<Vec<u8>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    let layout = Layout::array::<u8>(len).ok()?;
+    // SAFETY: `layout` has a non-zero size.
+    let ptr = unsafe { alloc_zeroed(layout) };
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: `ptr` is `len` initialized bytes from the global allocator
+    // with the layout of `[u8; len]`, owned by nobody else.
+    Some(unsafe { Vec::from_raw_parts(ptr, len, len) })
+}
 
 /// Buffers of the requested outputs of one request, passed to the allocator
 /// callbacks as `response_allocator_userp`. Triton may call them from
@@ -56,7 +100,7 @@ impl OutputPlan {
 }
 
 /// Allocator of BLS outputs: outputs with an [`OutputBuffer`] go to that
-/// buffer, the others to CPU memory from `malloc`.
+/// buffer, the others to CPU memory that the result takes over.
 ///
 /// Owns the `TRITONSERVER_ResponseAllocator` and deletes it on drop, after
 /// the last response of its request. `Send + Sync`.
@@ -174,34 +218,28 @@ unsafe extern "C" fn alloc_fn(
         None => None,
     };
 
-    if let Some(output) = planned {
-        let raw = output.raw();
-        let tag: Box<OutputTag> = Box::new(Some(output));
-        unsafe {
-            *buffer = raw.ptr;
-            *buffer_userp = Box::into_raw(tag) as *mut c_void;
-            *actual_memory_type = raw.memory_type;
-            *actual_memory_type_id = raw.memory_type_id;
-        }
-        return ptr::null_mut();
+    let mut memory = match planned {
+        Some(output) => OutputMemory::Buffer(output),
+        None => match zeroed_vec(byte_size) {
+            Some(data) => OutputMemory::Host(data),
+            None => return internal("failed to allocate output buffer"),
+        },
+    };
+    let mut raw = memory.raw();
+    if let OutputMemory::Host(data) = &mut memory
+        && !data.is_empty()
+    {
+        raw.ptr = data.as_mut_ptr().cast();
     }
 
-    // Zero-size outputs are valid; return a null buffer.
-    let buf = if byte_size == 0 {
-        ptr::null_mut()
-    } else {
-        let buf = unsafe { libc::malloc(byte_size) };
-        if buf.is_null() {
-            return internal("failed to allocate output buffer");
-        }
-        buf
-    };
-
+    // The memory of the tag is on the heap or in Triton's pools, so the
+    // pointer stays valid after the tag is boxed.
+    let tag: Box<OutputTag> = Box::new(Some(memory));
     unsafe {
-        *buffer = buf;
-        *buffer_userp = ptr::null_mut();
-        *actual_memory_type = CPU;
-        *actual_memory_type_id = 0;
+        *buffer = raw.ptr;
+        *buffer_userp = Box::into_raw(tag) as *mut c_void;
+        *actual_memory_type = raw.memory_type;
+        *actual_memory_type_id = raw.memory_type_id;
     }
 
     ptr::null_mut()
@@ -233,16 +271,14 @@ unsafe extern "C" fn query_fn(
 /// Triton calls this when it is done with a buffer allocated by `alloc_fn`.
 unsafe extern "C" fn release_fn(
     _allocator: *mut triton_ng_sys::TRITONSERVER_ResponseAllocator,
-    buffer: *mut c_void,
+    _buffer: *mut c_void,
     buffer_userp: *mut c_void,
     _byte_size: usize,
     _memory_type: triton_ng_sys::TRITONSERVER_MemoryType,
     _memory_type_id: i64,
 ) -> *mut triton_ng_sys::TRITONSERVER_Error {
-    if buffer_userp.is_null() {
-        unsafe { libc::free(buffer) };
-    } else {
-        // The buffer is still in the tag when the response was not read.
+    if !buffer_userp.is_null() {
+        // The memory is still in the tag when the response was not read.
         drop(unsafe { Box::from_raw(buffer_userp as *mut OutputTag) });
     }
     ptr::null_mut()
@@ -250,7 +286,7 @@ unsafe extern "C" fn release_fn(
 
 #[cfg(test)]
 mod tests {
-    use super::OutputPlan;
+    use super::{OutputPlan, zeroed_vec};
     use crate::MemoryManager;
     use std::collections::HashMap;
 
@@ -290,7 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn outputs_without_buffer_are_left_to_malloc() {
+    fn outputs_without_buffer_are_not_planned() {
         assert!(plan().take("dec", 1280).unwrap().is_none());
+    }
+
+    #[test]
+    fn outputs_without_buffer_get_zeroed_memory_of_their_size() {
+        assert_eq!(zeroed_vec(1280).unwrap(), vec![0; 1280]);
+        assert!(zeroed_vec(0).unwrap().is_empty());
+        assert!(zeroed_vec(usize::MAX).is_none());
     }
 }

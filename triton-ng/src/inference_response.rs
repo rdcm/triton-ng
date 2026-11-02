@@ -1,9 +1,9 @@
+use crate::RawBuffer;
 use crate::TritonError;
 use crate::inference_result::{OutputData, OutputTensor};
-use crate::response_allocator::OutputTag;
+use crate::response_allocator::{OutputMemory, OutputTag};
 use crate::types::DataType;
 use crate::utils::cstr_to_string;
-use crate::{RawBuffer, WrittenBuffer};
 use std::ffi::{c_char, c_void};
 use std::ptr;
 use std::slice;
@@ -90,32 +90,22 @@ impl InferenceResponse {
             unsafe { slice::from_raw_parts(shape_ptr, dim_count as usize).to_vec() }
         };
 
-        let data = if userp.is_null() {
-            if memory_type != crate::CPU {
-                return Err(TritonError::from_message(format!(
-                    "output '{name}' is not in CPU memory without a buffer"
-                )));
-            }
-            OutputData::Host(if base.is_null() || byte_size == 0 {
-                Vec::new()
-            } else {
-                unsafe { slice::from_raw_parts(base as *const u8, byte_size).to_vec() }
-            })
-        } else {
-            // SAFETY: a non-null userp is the tag `alloc_fn` made for an
-            // output buffer. Triton frees it only in the release callback,
-            // when this response is deleted, so nothing else touches it now.
-            let tag = unsafe { &mut *(userp as *mut OutputTag) };
-            let placed = RawBuffer {
-                ptr: base.cast_mut(),
-                len: byte_size,
-                memory_type,
-                memory_type_id,
-            };
-            OutputData::Buffer(
-                written_output(tag, &name, &placed).map_err(TritonError::from_message)?,
-            )
+        if userp.is_null() {
+            return Err(TritonError::from_message(format!(
+                "output '{name}' is not in memory from the allocator"
+            )));
+        }
+        // SAFETY: a non-null userp is the tag `alloc_fn` made for the output.
+        // Triton frees it only in the release callback, when this response
+        // is deleted, so nothing else touches it now.
+        let tag = unsafe { &mut *(userp as *mut OutputTag) };
+        let placed = RawBuffer {
+            ptr: base.cast_mut(),
+            len: byte_size,
+            memory_type,
+            memory_type_id,
         };
+        let data = written_output(tag, &name, &placed).map_err(TritonError::from_message)?;
 
         Ok(OutputTensor {
             name,
@@ -126,25 +116,28 @@ impl InferenceResponse {
     }
 }
 
-/// Takes the buffer out of the tag of output `name`, checking that Triton
+/// Takes the memory out of the tag of output `name`, checking that Triton
 /// placed the output (`placed`) exactly in it.
 fn written_output(
     tag: &mut OutputTag,
     name: &str,
     placed: &RawBuffer,
-) -> Result<WrittenBuffer, String> {
-    let buffer = tag
+) -> Result<OutputData, String> {
+    let memory = tag
         .take()
-        .ok_or_else(|| format!("buffer of output '{name}' is already taken"))?;
-    let raw = buffer.raw();
+        .ok_or_else(|| format!("memory of output '{name}' is already taken"))?;
+    let raw = memory.raw();
     if raw.ptr != placed.ptr
         || raw.len != placed.len
         || raw.memory_type != placed.memory_type
         || raw.memory_type_id != placed.memory_type_id
     {
-        return Err(format!("output '{name}' is not where its buffer is"));
+        return Err(format!("output '{name}' is not where its memory is"));
     }
-    Ok(buffer.into_written())
+    Ok(match memory {
+        OutputMemory::Host(data) => OutputData::Host(data),
+        OutputMemory::Buffer(buffer) => OutputData::Buffer(buffer.into_written()),
+    })
 }
 
 impl Drop for InferenceResponse {
@@ -160,12 +153,20 @@ impl Drop for InferenceResponse {
 #[cfg(test)]
 mod tests {
     use super::written_output;
-    use crate::{CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
+    use crate::inference_result::OutputData;
+    use crate::response_allocator::{OutputMemory, OutputTag};
+    use crate::{CPU, CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
 
-    fn tagged_gpu() -> (Option<OutputBuffer>, RawBuffer) {
+    fn tagged_gpu() -> (OutputTag, RawBuffer) {
         let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());
         let raw = buffer.raw();
-        (Some(buffer), raw)
+        (Some(OutputMemory::Buffer(buffer)), raw)
+    }
+
+    fn tagged_host(len: usize) -> (OutputTag, RawBuffer) {
+        let memory = OutputMemory::Host(vec![7; len]);
+        let raw = memory.raw();
+        (Some(memory), raw)
     }
 
     #[test]
@@ -174,8 +175,34 @@ mod tests {
 
         let written = written_output(&mut tag, "ho", &placed).unwrap();
 
-        assert!(matches!(written, WrittenBuffer::Gpu(buffer) if buffer.len() == 40));
+        assert!(
+            matches!(written, OutputData::Buffer(WrittenBuffer::Gpu(buffer)) if buffer.len() == 40)
+        );
         assert!(tag.is_none());
+    }
+
+    #[test]
+    fn host_output_is_handed_over_without_a_copy() {
+        let (mut tag, placed) = tagged_host(40);
+
+        let OutputData::Host(data) = written_output(&mut tag, "dec", &placed).unwrap() else {
+            panic!("host output is not in host memory");
+        };
+
+        assert_eq!(data.as_ptr(), placed.ptr.cast_const().cast());
+        assert_eq!(data, vec![7; 40]);
+        assert_eq!(placed.memory_type, CPU);
+        assert!(tag.is_none());
+    }
+
+    #[test]
+    fn empty_host_output_has_no_memory() {
+        let (mut tag, placed) = tagged_host(0);
+
+        assert!(placed.ptr.is_null());
+        assert!(
+            matches!(written_output(&mut tag, "dec", &placed), Ok(OutputData::Host(data)) if data.is_empty())
+        );
     }
 
     #[test]
@@ -200,11 +227,14 @@ mod tests {
             let (mut tag, placed) = tagged_gpu();
             assert_eq!(placed.memory_type, GPU);
             assert!(written_output(&mut tag, "ho", &move_output(placed)).is_err());
+
+            let (mut tag, placed) = tagged_host(40);
+            assert!(written_output(&mut tag, "dec", &move_output(placed)).is_err());
         }
     }
 
     #[test]
-    fn taken_buffer_is_not_handed_over_again() {
+    fn taken_memory_is_not_handed_over_again() {
         let (mut tag, placed) = tagged_gpu();
         written_output(&mut tag, "ho", &placed).unwrap();
 

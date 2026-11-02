@@ -3,7 +3,8 @@ use crate::{DataType, Error, GpuBuffer, PinnedRamBuffer, RamBuffer, WrittenBuffe
 
 /// Where the data of an output is.
 pub(crate) enum OutputData {
-    /// Copied to CPU memory owned by the result.
+    /// In CPU memory the allocator gave Triton for the output, owned by the
+    /// result.
     Host(Vec<u8>),
     /// In the buffer given with `add_requested_output_into`.
     Buffer(WrittenBuffer),
