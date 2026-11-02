@@ -47,7 +47,7 @@ impl Model {
 
     /// Stores backend-defined state for this model.
     ///
-    /// Call it once, from `Backend::model_initialize`; the state is shared by
+    /// Call it once, from `CustomBackend::model_initialize`; the state is shared by
     /// all instances of the model, reaches every batch through
     /// [`crate::Context::state`] and is dropped when the model is finalized
     /// and no batch holds it. A second call fails: replacing the state would

@@ -22,8 +22,10 @@ services:
       --load-model=mnist
       --load-model=mnist_onnx
       --load-model=identity_gpu
+      --trace-config=triton,file=/traces/trace.json
     volumes:
       - ./models:/models
+      - ./target/traces:/traces
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so
     ports:
       - "8000:8000" # HTTP

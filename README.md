@@ -19,16 +19,15 @@ Provides two things:
 
 ## Writing a custom backend
 
-Implement the `Backend` trait and register it with `#[triton_ng::backend]`:
+Implement the `CustomBackend` trait and register it with `#[triton_ng::backend]`:
 
 ```rust
-use triton_ng::backend::Backend;
-use triton_ng::{Context, DataType, Error, InferenceRequest, Request, Response};
+use triton_ng::{CustomBackend, Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
 
 #[triton_ng::backend]
-impl Backend for MyBackend {
+impl CustomBackend for MyBackend {
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         for request in requests {
             let data = request.get_input("INPUT")?.as_bytes()?;
@@ -68,7 +67,10 @@ triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 
 See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
 and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
-error codes, BLS futures, threads, cancellation, shutdown and batching.
+error codes, BLS futures, threads, cancellation, shutdown and batching,
+[Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
+BLS calls in Triton traces, and [Metrics](docs/metrics.md) for backend metrics on Triton's
+Prometheus endpoint.
 
 ## Using the gRPC client
 
@@ -138,7 +140,8 @@ Triton must be running with both models in READY state.
 make tests           # cargo nextest run --workspace
 ```
 
-Tests require a running Triton instance (`make docker-env-up`).
+Tests require a running Triton instance (`make docker-env-up`). The tracing tests read the traces
+Triton writes into `target/traces`.
 
 ### Rebuild after backend changes
 

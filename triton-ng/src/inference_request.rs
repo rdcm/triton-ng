@@ -1,9 +1,11 @@
-use crate::TritonError;
+use crate::error::ErrorCode;
+use crate::inference_trace::InferenceTrace;
 use crate::server::Server;
-use crate::types::DataType;
+use crate::types::{CorrelationId, DataType, Parameter, RequestFlags};
 use crate::utils::cstring_from_str;
-use crate::{InputBuffer, OutputBuffer};
-use std::collections::HashMap;
+use crate::{InputBuffer, OutputBuffer, Request, TritonError};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use triton_ng_macros::triton_call;
 
 /// Buffers referenced by a submitted request, see `Server::infer_async`.
@@ -34,11 +36,15 @@ pub struct InferenceRequest {
     /// the release callback together with the request (see `Server::infer_async`).
     buffers: InputBuffers,
     outputs: OutputBuffers,
+    trace: Option<InferenceTrace>,
+    /// Names of the parameters set: Triton keeps duplicates, and the called
+    /// model would see only one of them.
+    parameters: HashSet<String>,
 }
 
 // SAFETY: Triton lets a request be built and submitted from any thread, it is
 // only not safe to use one request from several threads at once, and
-// `InferenceRequest` is not `Sync`. The buffers are `Send`.
+// `InferenceRequest` is not `Sync`. The buffers and the trace are `Send`.
 unsafe impl Send for InferenceRequest {}
 
 impl InferenceRequest {
@@ -54,24 +60,235 @@ impl InferenceRequest {
             ptr,
             buffers: Vec::new(),
             outputs: HashMap::new(),
+            trace: None,
+            parameters: HashSet::new(),
         })
     }
 
     /// Splits the request into the raw pointer, the input buffers it
-    /// references and the buffers of its outputs, without running `Drop`.
+    /// references, the buffers of its outputs and its trace, without running
+    /// `Drop`.
     pub(crate) fn into_raw_parts(
         self,
     ) -> (
         *mut triton_ng_sys::TRITONSERVER_InferenceRequest,
         InputBuffers,
         OutputBuffers,
+        Option<InferenceTrace>,
     ) {
         let mut this = std::mem::ManuallyDrop::new(self);
         (
             this.ptr,
             std::mem::take(&mut this.buffers),
             std::mem::take(&mut this.outputs),
+            this.trace.take(),
         )
+    }
+
+    /// Sets the ID of the request, which the called model gets from
+    /// [`Request::id`] and Triton writes into its logs and traces. Pass the
+    /// ID of the client request on to follow it through a chain of models.
+    ///
+    /// Fails when `id` contains a NUL byte.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(id) = request.id()? {
+    ///     inference.set_id(&id)?;
+    /// }
+    /// ```
+    pub fn set_id(&mut self, id: &str) -> Result<(), TritonError> {
+        let id = cstring_from_str(id)?;
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestSetId(
+            self.ptr,
+            id.as_ptr()
+        ))
+    }
+
+    /// Sets the correlation ID of the request, which stateful models use to
+    /// tell sequences apart, see [`CorrelationId`].
+    ///
+    /// Fails for a zero or empty ID, which Triton reads as no ID, and for a
+    /// string longer than 128 bytes or containing a NUL byte.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(id) = request.correlation_id()? {
+    ///     inference.set_correlation_id(id)?;
+    ///     inference.set_flags(request.flags()?)?;
+    /// }
+    /// ```
+    pub fn set_correlation_id(&mut self, id: impl Into<CorrelationId>) -> Result<(), TritonError> {
+        match id.into() {
+            CorrelationId::Int(0) => Err(TritonError::with_code(
+                ErrorCode::InvalidArg,
+                "correlation ID 0 means no correlation ID",
+            )),
+            CorrelationId::Int(id) => {
+                triton_call!(
+                    triton_ng_sys::TRITONSERVER_InferenceRequestSetCorrelationId(self.ptr, id)
+                )
+            }
+            CorrelationId::String(id) => {
+                validate_string_correlation_id(&id)
+                    .map_err(|e| TritonError::with_code(ErrorCode::InvalidArg, e))?;
+                let id = cstring_from_str(&id)?;
+                triton_call!(
+                    triton_ng_sys::TRITONSERVER_InferenceRequestSetCorrelationIdString(
+                        self.ptr,
+                        id.as_ptr()
+                    )
+                )
+            }
+        }
+    }
+
+    /// Sets whether the request starts or ends its sequence, see
+    /// [`RequestFlags`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.set_correlation_id(session)?;
+    /// inference.set_flags(RequestFlags { sequence_start: true, sequence_end: false })?;
+    /// ```
+    pub fn set_flags(&mut self, flags: RequestFlags) -> Result<(), TritonError> {
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestSetFlags(
+            self.ptr,
+            flags.to_sys()
+        ))
+    }
+
+    /// Sets how long the request may wait in the queue of the called model
+    /// before Triton fails it with UNAVAILABLE. Applies only to models whose
+    /// scheduler supports timeouts (dynamic batching).
+    ///
+    /// Fails for a zero timeout, which Triton reads as no timeout, and for
+    /// one that does not fit `u64` microseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Some(timeout) = request.timeout()? {
+    ///     inference.set_timeout(timeout)?;
+    /// }
+    /// ```
+    pub fn set_timeout(&mut self, timeout: Duration) -> Result<(), TritonError> {
+        let micros = timeout_micros(timeout)
+            .map_err(|e| TritonError::with_code(ErrorCode::InvalidArg, e))?;
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestSetTimeoutMicroseconds(self.ptr, micros)
+        )
+    }
+
+    /// Sets the priority of the request in the queue of the called model:
+    /// 1 is the highest, 0 the default of the model. Applies only to models
+    /// with `priority_levels` in their dynamic batching config; Triton moves
+    /// a priority outside the levels to the default one.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.set_priority(1)?;
+    /// ```
+    pub fn set_priority(&mut self, priority: u64) -> Result<(), TritonError> {
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestSetPriorityUInt64(self.ptr, priority)
+        )
+    }
+
+    /// Adds the parameter `name` to the request. The called model reads it
+    /// with [`Request::parameter`].
+    ///
+    /// Fails when `name` or a string value contains a NUL byte, or when the
+    /// request already has the parameter `name`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.set_parameter("language", "ru")?;
+    /// inference.set_parameter("beam_size", 4)?;
+    /// ```
+    pub fn set_parameter(
+        &mut self,
+        name: &str,
+        value: impl Into<Parameter>,
+    ) -> Result<(), TritonError> {
+        if self.parameters.contains(name) {
+            return Err(TritonError::with_code(
+                ErrorCode::AlreadyExists,
+                format!("parameter '{name}' is already set"),
+            ));
+        }
+        let name_cstr = cstring_from_str(name)?;
+        match value.into() {
+            Parameter::Bool(value) => {
+                triton_call!(
+                    triton_ng_sys::TRITONSERVER_InferenceRequestSetBoolParameter(
+                        self.ptr,
+                        name_cstr.as_ptr(),
+                        value
+                    )
+                )
+            }
+            Parameter::Int(value) => {
+                triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestSetIntParameter(
+                    self.ptr,
+                    name_cstr.as_ptr(),
+                    value
+                ))
+            }
+            Parameter::Double(value) => {
+                triton_call!(
+                    triton_ng_sys::TRITONSERVER_InferenceRequestSetDoubleParameter(
+                        self.ptr,
+                        name_cstr.as_ptr(),
+                        value
+                    )
+                )
+            }
+            Parameter::String(value) => {
+                let value_cstr = cstring_from_str(&value)?;
+                triton_call!(
+                    triton_ng_sys::TRITONSERVER_InferenceRequestSetStringParameter(
+                        self.ptr,
+                        name_cstr.as_ptr(),
+                        value_cstr.as_ptr()
+                    )
+                )
+            }
+        }?;
+        self.parameters.insert(name.to_string());
+        Ok(())
+    }
+
+    /// Makes the request a child of the trace of `request`, so that Triton
+    /// traces show it inside the client request it is made for. Does nothing
+    /// when `request` is not traced. A batched BLS request is made for many
+    /// requests and can be the child of one of them.
+    ///
+    /// `request` is then released to Triton only after this BLS request and
+    /// its response are done, even if `request` is answered and dropped
+    /// before: its trace must outlive the child.
+    ///
+    /// Fails when the request already has a parent.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
+    /// inference.set_parent_trace(&requests[0])?;
+    /// ```
+    pub fn set_parent_trace(&mut self, request: &Request) -> Result<(), TritonError> {
+        if self.trace.is_some() {
+            return Err(TritonError::from_message(
+                "the request already has a parent trace",
+            ));
+        }
+        self.trace = InferenceTrace::spawn(request)?;
+        Ok(())
     }
 
     pub fn add_input(
@@ -218,6 +435,31 @@ impl InferenceRequest {
     }
 }
 
+/// Triton refuses string correlation IDs longer than 128 bytes; an empty one
+/// is no ID.
+fn validate_string_correlation_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("an empty correlation ID means no correlation ID".to_string());
+    }
+    if id.len() > 128 {
+        return Err(format!(
+            "correlation ID of {} bytes is longer than 128 bytes",
+            id.len()
+        ));
+    }
+    Ok(())
+}
+
+fn timeout_micros(timeout: Duration) -> Result<u64, String> {
+    match u64::try_from(timeout.as_micros()) {
+        Ok(0) => Err(format!(
+            "timeout {timeout:?} is zero microseconds, which means no timeout"
+        )),
+        Ok(micros) => Ok(micros),
+        Err(_) => Err(format!("timeout {timeout:?} does not fit u64 microseconds")),
+    }
+}
+
 impl Drop for InferenceRequest {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -225,5 +467,27 @@ impl Drop for InferenceRequest {
                 triton_ng_sys::TRITONSERVER_InferenceRequestDelete(self.ptr);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{timeout_micros, validate_string_correlation_id};
+    use std::time::Duration;
+
+    #[test]
+    fn string_correlation_ids_up_to_128_bytes_are_accepted() {
+        assert!(validate_string_correlation_id("call-42").is_ok());
+        assert!(validate_string_correlation_id(&"x".repeat(128)).is_ok());
+        assert!(validate_string_correlation_id(&"x".repeat(129)).is_err());
+        assert!(validate_string_correlation_id("").is_err());
+    }
+
+    #[test]
+    fn timeouts_are_whole_microseconds() {
+        assert_eq!(timeout_micros(Duration::from_millis(5)), Ok(5_000));
+        assert!(timeout_micros(Duration::ZERO).is_err());
+        assert!(timeout_micros(Duration::from_nanos(999)).is_err());
+        assert!(timeout_micros(Duration::MAX).is_err());
     }
 }

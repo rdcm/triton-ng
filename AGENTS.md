@@ -23,6 +23,42 @@ added to the `Makefile` only after it is agreed.
 | `make publish` | publishes the crates to crates.io in dependency order; `DRY_RUN=1` only packages and verifies them |
 | `make setup-protoc` | installs `protoc` |
 
+## Defensive programming
+
+Write all code as defensively as possible. A crash in a backend takes down the whole Triton
+server with every model in it, so triton-ng never trusts its inputs, Triton or the backend
+author:
+
+- Encode ownership and lifetimes in types: consuming methods, RAII guards, lifetimes that tie a
+  borrowed handle to its owner. Backend code must not be able to free, release or answer
+  anything twice, or use it after that.
+- Check everything Triton returns: null pointers, counts, sizes against shapes, datatypes, enum
+  values it may add later. Validate every value the backend passes before handing it to Triton
+  (sizes, names, NaN and infinities, duplicates), and fail with an error instead of relying on
+  Triton to reject it.
+- Verify the ownership of every C API object against the core source of the branch in
+  `.gitmodules`, not the headers, and say in a comment who owns what and why it is safe.
+- No `unwrap`, `expect`, `panic!` or indexing that can fail; every fallible step returns an error.
+  Panics are caught at the FFI boundary, never relied on.
+- When a failure cannot be reported (in `Drop`, in a Triton callback), log it and leave Triton
+  in a consistent state; prefer leaking an object to freeing it when ownership is ambiguous.
+
+## Naming
+
+A Rust type that wraps a Triton object is named after it without the prefix:
+`TRITONSERVER_<Name>` or `TRITONBACKEND_<Name>` is `<Name>` (`TRITONSERVER_Metric` is
+`Metric`, `TRITONBACKEND_Backend` is `Backend`). No `Handle`, `Raw` or similar suffixes, and
+one type per Triton object.
+
+Exceptions, where the name is taken by a more important public type:
+
+- `TRITONSERVER_Error` is `TritonError`: `Error` is the boxed error alias every backend uses.
+- `TRITONSERVER_Parameter` used for metric labels is `MetricParameter`: `Parameter` is the
+  public enum of parameter values.
+- `RequestRelease` holds the `TRITONBACKEND_Request` of a `Request` a second time: it is not a
+  wrapper but the shared right to release the request, kept by traced BLS children after the
+  `Request` is dropped.
+
 ## Tests
 
 Unit tests live next to the code they test, in a `#[cfg(test)] mod tests` at the end of the

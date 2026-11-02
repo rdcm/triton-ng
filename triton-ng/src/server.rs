@@ -1,7 +1,10 @@
 use crate::inference_future::{Completion, Failure};
 use crate::inference_request::InputBuffers;
 use crate::inference_response::InferenceResponse;
+use crate::inference_result::ResponseParameters;
+use crate::inference_trace::InferenceTrace;
 use crate::message::Message;
+use crate::request_release::RequestRelease;
 use crate::response_allocator::{OutputPlan, ResponseAllocator};
 use crate::utils::cstring_from_str;
 use crate::{InferenceFuture, InferenceRequest, InferenceResult, OutputTensor, TritonError};
@@ -17,7 +20,21 @@ pub(crate) struct InferenceContext {
     allocator: Arc<ResponseAllocator>,
     outputs: OutputPlan,
     pending_outputs: Vec<OutputTensor>,
+    pending_parameters: ResponseParameters,
     error: Option<Failure>,
+    /// The client request whose trace is the parent of the trace of this
+    /// request, see `RequestRelease`: responses report into the trace until
+    /// they are deleted, which may happen after the release callback.
+    _parent: Option<Arc<RequestRelease>>,
+}
+
+/// What the release callback of one BLS request frees, handed to Triton as
+/// `release_userp`.
+struct ReleaseContext {
+    /// Triton may read the input buffers until the request is released.
+    _buffers: InputBuffers,
+    /// Released after the request is deleted, see `InferenceContext`.
+    _parent: Option<Arc<RequestRelease>>,
 }
 
 /// The Triton server the backend runs in, used for BLS: inference of other
@@ -158,8 +175,12 @@ impl Server {
     ) -> Result<(), TritonError> {
         let allocator = ResponseAllocator::shared()?;
 
-        let (raw, buffers, outputs) = request.into_raw_parts();
-        let buffers_ptr = Box::into_raw(Box::new(buffers)) as *mut c_void;
+        let (raw, buffers, outputs, trace) = request.into_raw_parts();
+        let parent = trace.as_ref().map(InferenceTrace::parent);
+        let buffers_ptr = Box::into_raw(Box::new(ReleaseContext {
+            _buffers: buffers,
+            _parent: parent.clone(),
+        })) as *mut c_void;
 
         // Register the release callback before handing the request to Triton.
         if let Err(e) = triton_call!(
@@ -179,7 +200,9 @@ impl Server {
             allocator,
             outputs: OutputPlan::new(outputs),
             pending_outputs: Vec::new(),
+            pending_parameters: Vec::new(),
             error: None,
+            _parent: parent,
         });
         let context_ptr = Box::into_raw(context) as *mut c_void;
 
@@ -201,17 +224,29 @@ impl Server {
             return Err(e);
         }
 
+        // The trace is handed over last: until here a failure deletes it
+        // with `trace`, from here on Triton may have taken it, see
+        // `InferenceTrace::into_raw`. `_parent` keeps the parent trace alive
+        // while Triton may still release the child on a failure.
+        let (trace_ptr, _parent) = match trace.map(InferenceTrace::into_raw) {
+            Some((trace_ptr, parent)) => (trace_ptr, Some(parent)),
+            None => (ptr::null_mut(), None),
+        };
+
         // Transfer ownership to Triton. The release callback now owns deletion.
         if let Err(e) = triton_call!(triton_ng_sys::TRITONSERVER_ServerInferAsync(
-            self.ptr,
-            raw,
-            ptr::null_mut(),
+            self.ptr, raw, trace_ptr,
         )) {
             // Triton guarantees it will NOT call neither the release nor the
             // response callback on failure, so we must clean up manually.
             unsafe {
                 drop(Box::from_raw(context_ptr as *mut InferenceContext));
                 inference_request_release(raw, RELEASE_ALL, buffers_ptr);
+            }
+            if !trace_ptr.is_null() {
+                crate::log::warn(&format!(
+                    "BLS request with a child trace failed to submit, the trace may have leaked: {e}"
+                ));
             }
             return Err(e);
         }
@@ -223,8 +258,9 @@ impl Server {
 /// Called by Triton after the backend has fully released the inference request.
 /// At this point it is safe to delete the request object.
 ///
-/// `userp` is the boxed [`InputBuffers`] referenced by the request, they are
-/// freed only after the request itself is deleted.
+/// `userp` is the boxed `ReleaseContext` of the request: the input buffers it
+/// references and the guard of its parent request, freed only after the
+/// request itself is deleted.
 ///
 /// The header says RELEASE_ALL should always be set today, but recommends
 /// checking explicitly in case future versions add new flags.
@@ -242,7 +278,7 @@ unsafe extern "C" fn inference_request_release(
     }
 
     if !userp.is_null() {
-        unsafe { drop(Box::from_raw(userp as *mut InputBuffers)) };
+        unsafe { drop(Box::from_raw(userp as *mut ReleaseContext)) };
     }
 }
 
@@ -276,13 +312,16 @@ unsafe extern "C" fn inference_response_complete(
     let context = unsafe { &mut *(userp as *mut InferenceContext) };
 
     if !response_ptr.is_null() {
-        let outputs =
+        let read =
             InferenceResponse::from_ptr(response_ptr).and_then(|response| match response.error() {
                 Some(error) => Err(error),
-                None => response.outputs(),
+                None => Ok((response.outputs()?, response.parameters()?)),
             });
-        match outputs {
-            Ok(outputs) => context.pending_outputs.extend(outputs),
+        match read {
+            Ok((outputs, parameters)) => {
+                context.pending_outputs.extend(outputs);
+                context.pending_parameters.extend(parameters);
+            }
             Err(error) => {
                 context.error.get_or_insert_with(|| error.into());
             }
@@ -295,6 +334,7 @@ unsafe extern "C" fn inference_response_complete(
             Some(error) => Err(error),
             None => Ok(InferenceResult {
                 outputs: context.pending_outputs,
+                parameters: context.pending_parameters,
             }),
         };
         context.completion.complete(result);

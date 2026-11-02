@@ -2,10 +2,10 @@
 pub(crate) mod allocation;
 #[path = "backend.rs"]
 pub mod backend;
-#[path = "backend_handle.rs"]
-pub mod backend_handle;
 #[path = "buffers.rs"]
 pub mod buffers;
+#[path = "custom_backend.rs"]
+pub mod custom_backend;
 #[path = "error.rs"]
 pub mod error;
 #[path = "executor.rs"]
@@ -18,6 +18,8 @@ pub mod inference_request;
 pub(crate) mod inference_response;
 #[path = "inference_result.rs"]
 pub mod inference_result;
+#[path = "inference_trace.rs"]
+pub(crate) mod inference_trace;
 #[path = "input.rs"]
 pub mod input;
 #[path = "input_buffer.rs"]
@@ -28,6 +30,16 @@ pub mod log;
 pub mod memory_manager;
 #[path = "message.rs"]
 pub(crate) mod message;
+#[path = "metric.rs"]
+pub(crate) mod metric;
+#[path = "metric_args.rs"]
+pub(crate) mod metric_args;
+#[path = "metric_family.rs"]
+pub(crate) mod metric_family;
+#[path = "metric_parameter.rs"]
+pub(crate) mod metric_parameter;
+#[path = "metrics.rs"]
+pub mod metrics;
 #[path = "model.rs"]
 pub mod model;
 #[path = "model_instance.rs"]
@@ -40,6 +52,8 @@ pub mod output_buffer;
 mod raw_buffer;
 #[path = "request.rs"]
 pub mod request;
+#[path = "request_release.rs"]
+pub(crate) mod request_release;
 #[path = "response.rs"]
 pub mod response;
 #[path = "response_allocator.rs"]
@@ -52,8 +66,8 @@ pub mod types;
 pub(crate) mod utils;
 
 pub use backend::*;
-pub use backend_handle::*;
 pub use buffers::*;
+pub use custom_backend::*;
 pub use error::*;
 pub use executor::Context;
 pub use inference_future::*;
@@ -62,6 +76,7 @@ pub use inference_result::*;
 pub use input::*;
 pub use input_buffer::*;
 pub use memory_manager::*;
+pub use metrics::*;
 pub use model::*;
 pub use model_instance::*;
 pub use output::*;
@@ -74,12 +89,12 @@ pub use types::*;
 
 pub use triton_ng_macros::backend;
 
-/// Entry points called by the code that [`backend`] generates. Not part of the
+/// Entry points called by the code that [`macro@backend`] generates. Not part of the
 /// public API.
 #[doc(hidden)]
 pub mod __macro_support {
     use crate::backend::Backend;
-    use crate::backend_handle::BackendHandle;
+    use crate::custom_backend::CustomBackend;
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
     use crate::model::Model;
@@ -95,28 +110,28 @@ pub mod __macro_support {
     const NULL_ERROR: ErrorPtr = std::ptr::null::<c_void>();
 
     /// TRITONBACKEND_Initialize.
-    pub unsafe fn initialize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
-        let backend = unsafe { backend_handle(backend) };
+    pub unsafe fn initialize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
+        let backend = unsafe { self::backend(backend) };
         into_error_ptr(catch(|| B::initialize(&backend)))
     }
 
     /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
     /// after the hook.
-    pub unsafe fn finalize<B: Backend>(backend: *mut c_void) -> ErrorPtr {
-        let backend = unsafe { backend_handle(backend) };
+    pub unsafe fn finalize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
+        let backend = unsafe { self::backend(backend) };
         let result = catch(|| B::finalize(&backend));
         ResponseAllocator::release_shared();
         into_error_ptr(result)
     }
 
     /// TRITONBACKEND_ModelInitialize.
-    pub unsafe fn model_initialize<B: Backend>(model: *mut c_void) -> ErrorPtr {
+    pub unsafe fn model_initialize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
         into_error_ptr(catch(|| B::model_initialize(&model)))
     }
 
     /// TRITONBACKEND_ModelFinalize. Drops the model state after the hook.
-    pub unsafe fn model_finalize<B: Backend>(model: *mut c_void) -> ErrorPtr {
+    pub unsafe fn model_finalize<B: CustomBackend>(model: *mut c_void) -> ErrorPtr {
         let model = unsafe { self::model(model) };
         let result = catch(|| B::model_finalize(&model));
         if let Err(e) = model.clear_state() {
@@ -128,7 +143,7 @@ pub mod __macro_support {
     /// TRITONBACKEND_ModelInstanceInitialize. Starts the runtime of the
     /// instance before the hook, which may store the instance state in it,
     /// and stops it again when the hook fails.
-    pub unsafe fn model_instance_initialize<B: Backend>(instance: *mut c_void) -> ErrorPtr {
+    pub unsafe fn model_instance_initialize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         let result = catch(|| {
             start_executor(&instance)?;
@@ -142,7 +157,7 @@ pub mod __macro_support {
 
     /// TRITONBACKEND_ModelInstanceFinalize. Waits for the batches of the
     /// instance and stops its runtime before the hook.
-    pub unsafe fn model_instance_finalize<B: Backend>(instance: *mut c_void) -> ErrorPtr {
+    pub unsafe fn model_instance_finalize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         stop_executor(&instance);
         into_error_ptr(catch(|| B::model_instance_finalize(&instance)))
@@ -154,7 +169,7 @@ pub mod __macro_support {
     /// Always reports success to Triton once the requests are wrapped: they are
     /// owned by the backend from then on, returning an error would make Triton
     /// respond to (and release) them a second time.
-    pub unsafe fn model_instance_execute<B: Backend>(
+    pub unsafe fn model_instance_execute<B: CustomBackend>(
         instance: *mut c_void,
         requests_ptr: *const *mut c_void,
         request_count: u32,
@@ -234,8 +249,8 @@ pub mod __macro_support {
         unsafe { triton_ng_sys::TRITONSERVER_ErrorNew(code.to_sys(), c_str.as_ptr()) as ErrorPtr }
     }
 
-    unsafe fn backend_handle(ptr: *mut c_void) -> BackendHandle {
-        BackendHandle::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Backend)
+    unsafe fn backend(ptr: *mut c_void) -> Backend {
+        Backend::from_ptr(ptr as *mut triton_ng_sys::TRITONBACKEND_Backend)
     }
 
     unsafe fn model(ptr: *mut c_void) -> Model {
@@ -322,7 +337,13 @@ pub mod __macro_support {
 mod tests {
     use crate::allocation::Allocation;
     use crate::inference_response::InferenceResponse;
+    use crate::inference_trace::InferenceTrace;
     use crate::message::Message;
+    use crate::metric::Metric;
+    use crate::metric_args::MetricArgs;
+    use crate::metric_family::MetricFamily;
+    use crate::metric_parameter::MetricParameter;
+    use crate::request_release::RequestRelease;
     use crate::response_allocator::ResponseAllocator;
     use crate::*;
 
@@ -367,13 +388,30 @@ mod tests {
             InferenceResult,
             Message,
             ResponseAllocator,
-            Allocation
+            Allocation,
+            RequestRelease,
+            CounterFamily,
+            Counter,
+            GaugeFamily,
+            Gauge,
+            HistogramFamily,
+            Histogram,
+            MetricFamily,
+            Metric
         );
-        send_not_sync!(Request, Response, InferenceRequest, InferenceResponse);
+        send_not_sync!(
+            Request,
+            Response,
+            InferenceRequest,
+            InferenceResponse,
+            InferenceTrace
+        );
         neither!(
+            MetricParameter,
+            MetricArgs,
             Model,
             ModelInstance,
-            BackendHandle,
+            Backend,
             Input<'static>,
             Output<'static>,
             RawBuffer

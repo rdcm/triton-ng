@@ -181,11 +181,119 @@ impl From<String> for Parameter {
     }
 }
 
+/// The correlation ID of a request: the sequence it belongs to for stateful
+/// models. Clients set it as `sequence_id` of the gRPC `ModelInferRequest`,
+/// a number or a string. A request without one has none: Triton has no
+/// zero number or empty string ID.
+///
+/// # Examples
+///
+/// ```ignore
+/// match request.correlation_id()? {
+///     Some(CorrelationId::Int(id)) => sessions.get(&id),
+///     Some(CorrelationId::String(id)) => named_sessions.get(&id),
+///     None => None,
+/// };
+/// inference.set_correlation_id(CorrelationId::String("call-42".to_string()))?;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CorrelationId {
+    Int(u64),
+    String(String),
+}
+
+impl From<u64> for CorrelationId {
+    fn from(id: u64) -> Self {
+        Self::Int(id)
+    }
+}
+
+impl From<&str> for CorrelationId {
+    fn from(id: &str) -> Self {
+        Self::String(id.to_string())
+    }
+}
+
+impl From<String> for CorrelationId {
+    fn from(id: String) -> Self {
+        Self::String(id)
+    }
+}
+
+/// Flags of a request in a sequence: whether it starts or ends it.
+/// Clients set them as `sequence_start` and `sequence_end` of the gRPC
+/// `ModelInferRequest`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let flags = request.flags()?;
+/// if flags.sequence_start {
+///     sessions.open(id);
+/// }
+/// inference.set_flags(RequestFlags { sequence_start: true, sequence_end: false })?;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RequestFlags {
+    pub sequence_start: bool,
+    pub sequence_end: bool,
+}
+
+const SEQUENCE_START: u32 =
+    triton_ng_sys::tritonserver_requestflag_enum_TRITONSERVER_REQUEST_FLAG_SEQUENCE_START;
+const SEQUENCE_END: u32 =
+    triton_ng_sys::tritonserver_requestflag_enum_TRITONSERVER_REQUEST_FLAG_SEQUENCE_END;
+
+impl RequestFlags {
+    /// Reads the flags Triton returns. Fails on bits unknown to this
+    /// version, which could change what the request means.
+    pub(crate) fn from_sys(flags: u32) -> Result<Self, String> {
+        let unknown = flags & !(SEQUENCE_START | SEQUENCE_END);
+        if unknown != 0 {
+            return Err(format!("request has unknown flags {unknown:#x}"));
+        }
+        Ok(Self {
+            sequence_start: flags & SEQUENCE_START != 0,
+            sequence_end: flags & SEQUENCE_END != 0,
+        })
+    }
+
+    pub(crate) fn to_sys(self) -> u32 {
+        let start = if self.sequence_start {
+            SEQUENCE_START
+        } else {
+            0
+        };
+        let end = if self.sequence_end { SEQUENCE_END } else { 0 };
+        start | end
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Parameter;
+    use super::{Parameter, RequestFlags};
     use std::ffi::{CString, c_void};
     use triton_ng_sys::*;
+
+    #[test]
+    fn request_flags_round_trip() {
+        for sequence_start in [false, true] {
+            for sequence_end in [false, true] {
+                let flags = RequestFlags {
+                    sequence_start,
+                    sequence_end,
+                };
+                assert_eq!(RequestFlags::from_sys(flags.to_sys()), Ok(flags));
+            }
+        }
+        assert_eq!(RequestFlags::default().to_sys(), 0);
+    }
+
+    #[test]
+    fn unknown_request_flags_are_refused() {
+        assert!(RequestFlags::from_sys(4).is_err());
+        assert!(RequestFlags::from_sys(u32::MAX).is_err());
+    }
 
     fn read<T>(kind: TRITONSERVER_ParameterType, value: &T) -> Result<Parameter, String> {
         unsafe { Parameter::from_sys(kind, value as *const T as *const c_void) }

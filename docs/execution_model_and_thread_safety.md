@@ -15,13 +15,13 @@ scheduler collected, and the backend should process it as a whole, sending it to
 models as batched BLS calls. Never split it into tasks per request: every downstream call would
 run with batch size one.
 
-**State.** `Backend::model_initialize` stores the state of the model (tokenizers, vocabularies,
+**State.** `CustomBackend::model_initialize` stores the state of the model (tokenizers, vocabularies,
 parsed parameters) with `Model::set_state`. It is shared by all instances and reaches every batch
 through `Context::state::<T>()`, together with the `Server` for BLS calls and Triton's
 `MemoryManager`. `Model` is not available in `model_instance_execute`: read everything the batches
 need from it in `model_initialize`.
 
-`Backend::model_instance_initialize` can store state of one instance with
+`CustomBackend::model_instance_initialize` can store state of one instance with
 `ModelInstance::set_state`, for what must not be shared between instances, like caches of GPU
 buffers of the instance's device. Batches of the instance get it through
 `Context::instance_state::<T>()`. The runtime of the instance starts before
@@ -47,7 +47,9 @@ backend hook reaches Triton with its code, any other error as `Internal`.
 
 **BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
 `InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded.
+request: Triton finishes it and the result is discarded. A BLS request can carry the ID,
+correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
+child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
 
 **Handles and threads.** Every type that wraps a Triton object either owns it, and then its
 `Drop` releases it, or borrows it from Triton, and then it has no `Drop` and its lifetime is
@@ -55,17 +57,19 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 
 | Type | Triton object | On drop | `Send` | `Sync` | Notes |
 |---|---|---|---|---|---|
-| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time |
+| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md) |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
-| `InferenceRequest` | owns the BLS request and its input buffers | deletes it if it was never submitted | yes | no | Triton deletes it after a submit |
+| `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
 | `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |
 | `Context` | none | | yes | yes | `Clone` |
-| `Model`, `ModelInstance`, `BackendHandle` | borrow the model, instance, backend | nothing | no | no | used only in the init and finalize hooks |
+| `CounterFamily`, `GaugeFamily`, `HistogramFamily` | share the metric family of their name | delete it with the last family and metric | yes | yes | `Clone`, see [Metrics](metrics.md) |
+| `Counter`, `Gauge`, `Histogram` | own the metric, keep its family alive | delete the metric | yes | yes | `Clone` shares the metric |
+| `Model`, `ModelInstance`, `Backend` | borrow the model, instance, backend | nothing | no | no | used only in the init and finalize hooks |
 
 A unit test in the crate (`thread_safety_of_every_handle_is_as_documented`) checks every row:
 it does not compile when a type is `Send` or `Sync` where this table says it is not, or the other
@@ -79,7 +83,7 @@ the instance.
 **Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
 with `Request::respond_cancelled`. Triton reports a client that drops a gRPC call as a cancellation.
 
-**Shutdown.** Before `Backend::model_instance_finalize`, triton-ng waits for every batch of the
+**Shutdown.** Before `CustomBackend::model_instance_finalize`, triton-ng waits for every batch of the
 instance and stops its runtime.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
