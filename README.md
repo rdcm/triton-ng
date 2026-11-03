@@ -1,5 +1,8 @@
 # triton-ng
 
+[![crates.io](https://img.shields.io/crates/v/triton-ng.svg)](https://crates.io/crates/triton-ng)
+[![docs.rs](https://img.shields.io/docsrs/triton-ng/0.2.0)](https://docs.rs/triton-ng/0.2.0/triton_ng/)
+
 Rust SDK for [NVIDIA Triton Inference Server](https://github.com/triton-inference-server/server).
 
 Provides two things:
@@ -62,8 +65,17 @@ Build as a `cdylib`:
 crate-type = ["cdylib"]
 
 [dependencies]
+triton-ng = "0.2.0"
+```
+
+Or the latest code from the repository:
+
+```toml
+[dependencies]
 triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 ```
+
+The API reference is on [docs.rs](https://docs.rs/triton-ng/0.2.0/triton_ng/).
 
 See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
 and their runtimes, the `worker_threads` and `max_batches_in_flight` parameters, request ownership,
