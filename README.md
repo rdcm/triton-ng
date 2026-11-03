@@ -9,6 +9,8 @@ Provides two things:
 - A safe Rust API for writing **custom Triton backends** (compiled as `.so` and loaded by Triton)
 - A high-level async **gRPC client** for sending inference requests to a running Triton server
 
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## Crates
 
 | Crate | Description |
