@@ -7,7 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
+## [0.3.0] - 2026-11-04
+
+A batch runs on the Triton thread of its instance instead of a tokio runtime, which restores
+Triton's batching under load; models of a triton-ng backend report their inference statistics;
+the README and the guides are on docs.rs with every public item documented. Breaking: the
+runtime model parameters, `InferenceFuture` and the public modules are gone. Targets Triton
+`r25.09` and Rust 1.99. All four crates are published as 0.3.0.
+
+### Changed ([#13])
 
 - **Breaking:** a batch runs to its end on the Triton thread that called execute, with a minimal
   `block_on` instead of a tokio runtime per instance. The instance takes its next batch only after
@@ -207,7 +215,8 @@ Fixed before the first release; the bugs affected backends that depended on the 
 - An empty output crashed Triton's HTTP frontend because it never got a buffer. Every created
   output now gets one, empty ones included.
 
-[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/rdcm/triton-ng/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/rdcm/triton-ng/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/rdcm/triton-ng/releases/tag/0.1.0
 [a470ec8]: https://github.com/rdcm/triton-ng/commit/a470ec8b87eb2405e6191df19fb1469243897828
@@ -217,3 +226,4 @@ Fixed before the first release; the bugs affected backends that depended on the 
 [#9]: https://github.com/rdcm/triton-ng/pull/9
 [#10]: https://github.com/rdcm/triton-ng/pull/10
 [#11]: https://github.com/rdcm/triton-ng/pull/11
+[#13]: https://github.com/rdcm/triton-ng/pull/13
