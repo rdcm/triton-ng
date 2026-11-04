@@ -9,6 +9,9 @@ Provides two things:
 - A safe Rust API for writing **custom Triton backends** (compiled as `.so` and loaded by Triton)
 - A high-level async **gRPC client** for sending inference requests to a running Triton server
 
+On BLS workloads a triton-ng backend serves 1.5–5.6× the requests per second of python_backend at
+lower p99 latency, see [Benchmarks](#benchmarks).
+
 See [CHANGELOG.md](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for release history.
 
 ## Crates
@@ -21,6 +24,7 @@ See [CHANGELOG.md](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for
 | `triton-ng-client` | High-level async gRPC client |
 | `example/custom-backend` | Example custom backend (MNIST, proxies to ONNX model) |
 | `example/app` | Example client application |
+| `benches` | Benchmarks against python_backend: the bench backend, the models of both backends, the `perf_analyzer` driver |
 
 ## Writing a custom backend
 
@@ -67,7 +71,7 @@ Build as a `cdylib`:
 crate-type = ["cdylib"]
 
 [dependencies]
-triton-ng = "0.3.0"
+triton-ng = "0.3"
 ```
 
 Or the latest code from the repository:
@@ -96,9 +100,14 @@ calls without a copy, [Metrics](https://github.com/rdcm/triton-ng/blob/main/docs
 metrics on Triton's Prometheus endpoint, and
 [Model management and configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md) for the backend
 config and attributes, completing model configs, loading models from a backend and
-rescheduling requests. The [documentation index](https://github.com/rdcm/triton-ng/blob/main/docs/README.md) lists every section.
+rescheduling requests, and [Benchmarks](https://github.com/rdcm/triton-ng/blob/main/docs/benchmarks.md) for the measurements against python_backend. The [documentation index](https://github.com/rdcm/triton-ng/blob/main/docs/README.md) lists every section.
 
 ## Using the gRPC client
+
+```toml
+[dependencies]
+triton-ng-client = "0.3"
+```
 
 ```rust ignore
 use triton_ng_client::{InferInput, InferOptions, TritonClient, TritonClientConfig};
@@ -146,6 +155,104 @@ use triton_ng_client::{ClientTlsConfig, TritonClientConfig};
 let config = TritonClientConfig::new("https://triton.example.com:8001")
     .with_tls(ClientTlsConfig::new()); // uses system roots
 ```
+
+## Comparison with python_backend
+
+[python_backend](https://github.com/triton-inference-server/python_backend) is NVIDIA's backend for
+models written in Python, and the usual way to write BLS orchestration around framework models.
+triton-ng covers the same ground from Rust. What matches and what differs, as of triton-ng 0.3.0
+and python_backend r25.09:
+
+| | python_backend | triton-ng |
+|---|---|---|
+| Runs | a Python stub process per instance; every batch, tensor and BLS call crosses to it through shared memory | in the Triton process: a `.so` that calls the C API |
+| `execute` | `def` or `async def`; the batches of an instance run one after another | `async fn`; the batch future runs on the Triton thread of its instance, BLS calls awaited together run at once |
+| BLS | `exec()`; `async_exec()` is the blocking `exec` on asyncio's thread pool | `Server::infer_async`, a future woken by Triton's response callback |
+| BLS to a decoupled model | `exec(decoupled=True)`, an iterator | `Server::infer_stream`, a `Stream` |
+| Cancelling a BLS call | `iterator.cancel()` | `stream.cancel()`, or dropping the future or the stream |
+| Decoupled models | `get_response_sender()`, `send(flags=FINAL)` | `Request::into_sender`; the types enforce exactly one final flag |
+| Request metadata | id, correlation id, flags, timeout, parameters as JSON | the same, typed, one parameter at a time |
+| BLS request metadata | id, correlation id, flags, timeout, parameters, trace | the same, plus priority and `f64` parameters |
+| Errors | `TritonError(message, code)` | `respond_error_with_code`; the code of a failed BLS call is passed on |
+| Rescheduling | `set_release_flags(RESCHEDULE)` | `Request::reschedule`, with the checks r25.09 does not make |
+| Metrics, statistics | `MetricFamily`; statistics reported by the C++ side | `CounterFamily`, `GaugeFamily`, `HistogramFamily`; statistics reported by triton-ng |
+| Model loading, `auto_complete_config` | `pb_utils.load_model`, `ModelConfig` | `Server::load_model`, `AutoCompleteConfig` |
+| Backend config and attributes | not exposed | `Backend::config`, `CustomBackend::attributes` |
+| Memory | numpy arrays; CPU tensors copied into shared memory, GPU tensors through DLPack and CUDA IPC | RAM, pinned and GPU buffers of Triton's memory manager; BLS outputs taken over and request inputs passed on without a copy |
+| Data types | any numpy dtype | fp32, fp64, i32, i64, u64, bool, strings and raw bytes |
+| GPU outputs of a response, GPU inputs read on the CPU | yes, copied | no: triton-ng has no CUDA runtime |
+| `is_ready` | yes | no, needs r26.04 |
+| PyTorch, TensorFlow, JAX inside the model | yes | no: the model goes to its framework backend and is called over BLS |
+| A crash in the model | takes down the stub; Triton notices | panics are caught at the FFI boundary; a segfault takes down Triton |
+
+When python_backend is the better choice: the model runs PyTorch, TensorFlow or JAX inside
+`model.py` and cannot be moved to a framework backend; the pre- or post-processing is numpy code
+with no equivalent in Rust yet (fp16, bf16, u8 tensors); responses or BLS inputs must be GPU
+tensors read or written on the CPU side; or a bug in the model code must not take Triton down.
+
+## Benchmarks
+
+python_backend and triton-ng on the same five BLS workloads, measured with `perf_analyzer`:
+requests per second and latency at concurrency 1, 4, 16 and 64, both backends in one Triton,
+two CPU instances each, the MNIST ONNX model as the BLS target. The target is tiny on purpose,
+0.1 ms per call, so the numbers are the cost of the backend itself: a heavy model on a GPU takes
+most of the time in inference, and the difference between the backends shrinks with its share.
+`make benchmarks` runs them,
+the tables are its output; [Benchmarks](https://github.com/rdcm/triton-ng/blob/main/docs/benchmarks.md) describes the method, the models, the
+environment and what the numbers mean.
+
+- CPU: AMD Ryzen 9 9950X3D 16-Core Processor, 32 threads
+- RAM: 30 GiB
+- GPU: NVIDIA GeForce RTX 5080, 580.178.04 (not used by the benchmark models)
+- OS: Linux-7.2.15-100.fc43.x86_64-x86_64-with-glibc2.42
+- Triton: 2.61.0 (nvcr.io/nvidia/tritonserver:25.09-py3)
+- perf_analyzer: perf-analyzer 2.60.0 from PyPI (the binary reports Perf Analyzer Version 0.0.0 (commit 3a49a23))
+- Concurrency: 1, 4, 16, 64; measurement window 5000 ms, stability 10 %
+
+### `argmax`
+
+| Concurrency | triton-ng, infer/s | python_backend, infer/s | Speedup | triton-ng p50 / p99, ms | python_backend p50 / p99, ms |
+|---|---|---|---|---|---|
+| 1 | 20770 | 12224 | 1.70× | 0.04 / 0.07 | 0.07 / 0.15 |
+| 4 | 49846 | 34489 | 1.45× | 0.07 / 0.12 | 0.10 / 0.20 |
+| 16 | 89336 | 47514 | 1.88× | 0.16 / 0.27 | 0.32 / 0.52 |
+| 64 | 119907 | 52716 | 2.27× | 0.52 / 0.81 | 1.19 / 1.52 |
+
+### `infer`
+
+| Concurrency | triton-ng, infer/s | python_backend, infer/s | Speedup | triton-ng p50 / p99, ms | python_backend p50 / p99, ms |
+|---|---|---|---|---|---|
+| 1 | 11543 | 4967 | 2.32× | 0.08 / 0.13 | 0.19 / 0.29 |
+| 4 | 26816 | 16175 | 1.66× | 0.14 / 0.22 | 0.23 / 0.44 |
+| 16 | 42150 | 18331 | 2.30× | 0.36 / 0.57 | 0.87 / 1.36 |
+| 64 | 43422 | 17819 | 2.44× | 1.45 / 1.74 | 3.56 / 4.35 |
+
+### `infer_concurrent`
+
+| Concurrency | triton-ng, infer/s | python_backend, infer/s | Speedup | triton-ng p50 / p99, ms | python_backend p50 / p99, ms |
+|---|---|---|---|---|---|
+| 1 | 12662 | 3168 | 4.00× | 0.07 / 0.12 | 0.30 / 0.48 |
+| 4 | 25640 | 8129 | 3.15× | 0.14 / 0.23 | 0.47 / 0.80 |
+| 16 | 59565 | 12114 | 4.92× | 0.25 / 0.40 | 1.33 / 1.92 |
+| 64 | 74316 | 13317 | 5.58× | 0.84 / 1.09 | 4.80 / 5.66 |
+
+### `decoupled`
+
+| Concurrency | triton-ng, infer/s | python_backend, infer/s | Speedup | triton-ng p50 / p99, ms | python_backend p50 / p99, ms |
+|---|---|---|---|---|---|
+| 1 | 5907 | 1588 | 3.72× | 0.15 / 0.23 | 0.58 / 0.80 |
+| 4 | 13740 | 3756 | 3.66× | 0.26 / 0.38 | 1.01 / 1.33 |
+| 16 | 12867 | 3670 | 3.51× | 1.20 / 1.57 | 4.30 / 5.28 |
+| 64 | 12802 | 3670 | 3.49× | 4.86 / 6.56 | 17.32 / 21.60 |
+
+### `stream`
+
+| Concurrency | triton-ng, infer/s | python_backend, infer/s | Speedup | triton-ng p50 / p99, ms | python_backend p50 / p99, ms |
+|---|---|---|---|---|---|
+| 1 | 5970 | 1249 | 4.78× | 0.15 / 0.25 | 0.78 / 1.05 |
+| 4 | 14890 | 3243 | 4.59× | 0.25 / 0.37 | 1.21 / 1.60 |
+| 16 | 14647 | 3213 | 4.56× | 1.05 / 1.42 | 4.92 / 6.68 |
+| 64 | 15056 | 3253 | 4.63× | 4.13 / 5.57 | 19.62 / 23.70 |
 
 ## Getting started
 

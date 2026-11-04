@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Benchmarks against python_backend (`benches/`, `make benchmarks`): the same five BLS workloads
+  on both backends, measured with `perf_analyzer`; results and method in `docs/benchmarks.md`,
+  a comparison of the supported API in the README.
+
 ## [0.3.0] - 2026-11-04
 
 A batch runs on the Triton thread of its instance instead of a tokio runtime, which restores

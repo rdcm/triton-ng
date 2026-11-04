@@ -1,0 +1,18 @@
+services:
+  triton:
+    image: nvcr.io/nvidia/tritonserver:25.09-py3
+    container_name: triton-bench
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command: >
+      tritonserver
+      --model-repository=/models
+    volumes:
+      - ./models:/models
+      - ../target/release/libtriton_bench_backend.so:/opt/tritonserver/backends/bench_backend/libtriton_bench_backend.so
+    ports:
+      - "9000:8000"
+      - "9001:8001"
+      - "9002:8002"

@@ -41,6 +41,18 @@ publish:
 build:
 	cargo build --release
 
+benchmarks: benchmarks-env-up
+	cd benches && uv run benchmarks.py --results ../target/benchmarks
+	$(MAKE) benchmarks-env-down
+
+benchmarks-env-up: build
+	mkdir -p $(addsuffix /1,$(wildcard benches/models/*)) target/benchmarks
+	cp models/mnist_onnx/1/model.onnx benches/models/bench_onnx/1/model.onnx
+	docker compose -f benches/docker-compose.yml up -d
+
+benchmarks-env-down:
+	docker compose -f benches/docker-compose.yml down
+
 download-model:
 	mkdir -p models/mnist/1
 	mkdir -p models/mnist_onnx/1

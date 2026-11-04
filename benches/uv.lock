@@ -1,0 +1,23 @@
+version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "benchmarks"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "perf-analyzer" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "perf-analyzer", specifier = "==2.60.0" }]
+
+[[package]]
+name = "perf-analyzer"
+version = "2.60.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/82/19f0c99aab7fe3285eea92d8b9a9114b907ea1e59f9ad67420221389d64f/perf_analyzer-2.60.0-py3-none-manylinux_2_38_aarch64.whl", hash = "sha256:c2ece0adb7760ea1abc258222d80bf8e367fa9639401406b96da2c9b55131d29", size = 6770082, upload-time = "2026-04-28T15:25:04.506Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/9c/01f1f189aa22f060d603a8de131836b834b0e5159a36bb7b44c980d60aeb/perf_analyzer-2.60.0-py3-none-manylinux_2_38_x86_64.whl", hash = "sha256:23ef56b107ae9233e5cf09fbdf508dd9b936a52f1bae2f63f53c8117087b3f25", size = 7182673, upload-time = "2026-04-28T15:25:27.3Z" },
+]

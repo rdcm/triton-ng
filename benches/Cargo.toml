@@ -1,0 +1,17 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "triton_bench_backend"
+crate-type = ["cdylib"]
+path = "backend.rs"
+
+[dependencies]
+futures = { workspace = true }
+triton-ng = { workspace = true }
+
+[lints]
+workspace = true

@@ -2,3 +2,5 @@
 target/
 backends/
 *.onnx
+.venv/
+__pycache__/
