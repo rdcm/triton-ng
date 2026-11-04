@@ -7,7 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+## [0.3.1] - 2026-11-05
+
+Benchmarks against python_backend and a comparison of the supported API; no code changes in the
+crates. All four crates are published as 0.3.1.
+
+### Added ([#15])
 
 - Benchmarks against python_backend (`benches/`, `make benchmarks`): the same five BLS workloads
   on both backends, measured with `perf_analyzer`; results and method in `docs/benchmarks.md`,
@@ -221,7 +226,8 @@ Fixed before the first release; the bugs affected backends that depended on the 
 - An empty output crashed Triton's HTTP frontend because it never got a buffer. Every created
   output now gets one, empty ones included.
 
-[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.3.1...HEAD
+[0.3.1]: https://github.com/rdcm/triton-ng/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/rdcm/triton-ng/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/rdcm/triton-ng/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/rdcm/triton-ng/releases/tag/0.1.0
@@ -233,3 +239,4 @@ Fixed before the first release; the bugs affected backends that depended on the 
 [#10]: https://github.com/rdcm/triton-ng/pull/10
 [#11]: https://github.com/rdcm/triton-ng/pull/11
 [#13]: https://github.com/rdcm/triton-ng/pull/13
+[#15]: https://github.com/rdcm/triton-ng/pull/15

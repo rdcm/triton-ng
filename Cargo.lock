@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "triton-ng"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "byteorder",
  "futures-core",
@@ -1789,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "triton-ng-client"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "triton-ng-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "triton-ng-sys"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "bindgen",

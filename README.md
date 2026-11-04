@@ -160,7 +160,7 @@ let config = TritonClientConfig::new("https://triton.example.com:8001")
 
 [python_backend](https://github.com/triton-inference-server/python_backend) is NVIDIA's backend for
 models written in Python, and the usual way to write BLS orchestration around framework models.
-triton-ng covers the same ground from Rust. What matches and what differs, as of triton-ng 0.3.0
+triton-ng covers the same ground from Rust. What matches and what differs, as of triton-ng 0.3.1
 and python_backend r25.09:
 
 | | python_backend | triton-ng |
