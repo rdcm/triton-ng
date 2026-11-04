@@ -12,9 +12,13 @@ pub(crate) enum OutputData {
     Taken,
 }
 
+/// One output of a BLS call: its name, shape, datatype and data, see [`InferenceResult`].
 pub struct OutputTensor {
+    /// Name of the output.
     pub name: String,
+    /// Shape of the output, batch dimension included.
     pub shape: Vec<i64>,
+    /// Element type of the output.
     pub datatype: crate::types::DataType,
     pub(crate) data: OutputData,
 }
@@ -36,16 +40,25 @@ impl OutputTensor {
         }
     }
 
+    /// The elements of an FP32 output.
+    ///
+    /// Fails when the output has another datatype, was taken, or is in GPU memory.
     pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
         self.expect_datatype(DataType::Fp32)?;
         decode_le(self.bytes()?, f32::from_le_bytes)
     }
 
+    /// The elements of an INT32 output.
+    ///
+    /// Fails when the output has another datatype, was taken, or is in GPU memory.
     pub fn as_i32_vec(&self) -> Result<Vec<i32>, Error> {
         self.expect_datatype(DataType::Int32)?;
         decode_le(self.bytes()?, i32::from_le_bytes)
     }
 
+    /// The elements of an INT64 output.
+    ///
+    /// Fails when the output has another datatype, was taken, or is in GPU memory.
     pub fn as_i64_vec(&self) -> Result<Vec<i64>, Error> {
         self.expect_datatype(DataType::Int64)?;
         decode_le(self.bytes()?, i64::from_le_bytes)
@@ -91,7 +104,20 @@ impl OutputTensor {
 /// that only reading it fails.
 pub(crate) type ResponseParameters = Vec<(String, Result<Parameter, String>)>;
 
+/// The outputs of a successful BLS call. A failed call resolves the future
+/// of [`crate::Server::infer_async`] to a [`crate::TritonError`] with the
+/// code of the failure instead.
+///
+/// Owns the output data and buffers. `Send + Sync`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let result = ctx.server().infer_async(inference).await?;
+/// let logits = result.output("logits")?.as_fp32_vec()?;
+/// ```
 pub struct InferenceResult {
+    /// The outputs the request asked for, in the order Triton returned them.
     pub outputs: Vec<OutputTensor>,
     pub(crate) parameters: ResponseParameters,
 }
@@ -129,7 +155,7 @@ impl InferenceResult {
     }
 
     /// Hands over the GPU buffer the output `name` was written into, see
-    /// [`InferenceRequest::add_requested_output_into`].
+    /// [`crate::InferenceRequest::add_requested_output_into`].
     ///
     /// Fails when the output is missing, is not in a GPU buffer, or was taken.
     ///

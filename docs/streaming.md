@@ -10,7 +10,7 @@ streams with `TritonClient::infer_stream`.
 
 A model is decoupled when its config says so:
 
-```
+```text
 model_transaction_policy {
   decoupled: true
 }
@@ -36,7 +36,7 @@ What Triton allows for a decoupled model:
 `Request::into_sender` turns a request into a `ResponseSender`, which sends any number of responses
 and then exactly one final flag:
 
-```rust
+```rust ignore
 async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
     for request in requests {
         let text = request.get_input("TEXT")?.as_string()?;
@@ -66,7 +66,7 @@ async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<
 | `sender.finish()` | nothing but the final flag | yes |
 | `sender.respond_error(message)`, `respond_error_with_code(code, message)` | an error | yes |
 | `sender.respond_cancelled()` | a CANCELLED error | yes |
-| `sender.reschedule()` | nothing, the request comes back in a later batch | no, see [Rescheduling requests](model_management_and_configuration.md#rescheduling-requests) |
+| `sender.reschedule()` | nothing, the request comes back in a later batch | no, see [Rescheduling requests](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md#rescheduling-requests) |
 | dropping the sender | a generic error ("did not produce a final response") | yes |
 
 - **Exactly one final flag.** Every final method consumes the sender, so nothing can be sent after
@@ -84,7 +84,7 @@ async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<
   (`sender.request()`), and BLS calls can be children of the trace of the request
   (`inference.set_parent_trace(sender.request())`). The request is released when the sender is
   dropped, after the final flag. While an input of the request passed on with `Input::share` is
-  alive, the final flag waits for it, see [Memory buffers](memory_buffers.md).
+  alive, the final flag waits for it, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md).
 - **A model that is not decoupled** fails `into_sender`, and the request is answered with that
   error: its clients wait for exactly one response. A decoupled model can still answer with
   `Response::new(request)`: that is a stream of one response.
@@ -133,7 +133,7 @@ Checked against core `r25.09`:
 `Server::infer_stream` submits a request and returns an `InferenceStream` of its results, one per
 response, in the order the model sent them:
 
-```rust
+```rust ignore
 let mut inference = InferenceRequest::new(ctx.server(), "tokenizer_stream", -1)?;
 inference.add_input_with_data("TEXT", DataType::Bytes, &[1], text)?;
 inference.add_requested_output("TOKEN")?;
@@ -156,7 +156,7 @@ while let Some(result) = stream.next().await {
   down: a stream that is not read keeps every response in memory.
 - **Outputs need memory of their own.** Every response gets new CPU memory for its outputs, which
   its result takes over. Outputs requested into a buffer
-  (`InferenceRequest::add_requested_output_into`, see [Memory buffers](memory_buffers.md)) are
+  (`InferenceRequest::add_requested_output_into`, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md)) are
   refused: the stream fails with `INVALID_ARG` and the request is not submitted.
 - **`infer_async` expects one response.** It fails when the model sends more than one response
   ("more than one response") or none ("sent no response"). Earlier versions merged the outputs of
@@ -185,13 +185,13 @@ while let Some(result) = stream.next().await {
   nothing.
 - The input buffers of the request are freed by the release callback, as for `infer_async`, and the
   parent of a traced request is kept until the request is released, see
-  [Request metadata and tracing](request_metadata_and_tracing.md).
+  [Request metadata and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md).
 
 ## Reading a stream from a client
 
 `TritonClient::infer_stream` sends one request over gRPC `ModelStreamInfer`:
 
-```rust
+```rust ignore
 let mut stream = client
     .infer_stream("mnist_stream", None, [images], ["DIGIT"], InferOptions::default())
     .await?;
@@ -220,7 +220,7 @@ while let Some(response) = stream.next().await {
 
 ## Example
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) serves `mnist_stream`, a decoupled
+[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) serves `mnist_stream`, a decoupled
 model of the same backend: a request carries several images (`[-1, 1, 28, 28]`), and the model
 streams the digit of every image, each from a BLS call to `mnist_onnx`. With the
 `hold_until_cancelled` parameter it waits for the client to cancel the stream after the digits, and

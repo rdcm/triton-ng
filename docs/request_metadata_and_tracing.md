@@ -23,7 +23,7 @@ than ignore what may change the meaning of the request.
 `InferenceRequest` sets the same metadata on a BLS call, and a model called with it reads it with
 the getters above:
 
-```rust
+```rust ignore
 let mut inference = InferenceRequest::new(ctx.server(), "decoder", -1)?;
 if let Some(id) = request.id()? {
     inference.set_id(&id)?;
@@ -56,7 +56,7 @@ When Triton traces a client request (`--trace-config`, or the trace settings of 
 calls made for it are invisible in the trace unless they are its children. One call makes a BLS
 request a child of the trace of a request:
 
-```rust
+```rust ignore
 let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
 inference.set_parent_trace(&requests[0])?;
 let result = ctx.server().infer_async(inference).await?;
@@ -66,7 +66,7 @@ The child gets its own trace ID with `parent_id` set to the trace ID of the requ
 writes it together with the parent. A request that is not traced, or a Triton built without
 tracing, makes it a no-op. A batched BLS request has one parent: pick one request of the batch. A
 request answered with a stream gives its parent with `inference.set_parent_trace(sender.request())`,
-and `Server::infer_stream` takes a child trace like `infer_async`, see [Streaming](streaming.md).
+and `Server::infer_stream` takes a child trace like `infer_async`, see [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md).
 
 **Lifetimes.** Triton's frontend frees the trace data shared by a trace and its children with the
 parent, and a child that reports after that writes into freed memory. So a request with a traced
@@ -74,7 +74,7 @@ child is released to Triton only after the child BLS request and its response ar
 the backend answers and drops the request before awaiting the BLS call. Answering is not delayed:
 only the release, which frees the inputs of the request and lets the model unload. An input of the
 request passed on to a BLS call with `Input::share` delays the answer too, see
-[Memory buffers](memory_buffers.md).
+[Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md).
 
 **A submission that fails.** `TRITONSERVER_ServerInferAsync` takes the child trace only after the
 request passes its checks, and its error does not tell whether it did. triton-ng then leaves the
@@ -101,7 +101,7 @@ unknown model fails `InferenceRequest::new` before there is a trace; a model tha
 unloading, a full queue, a missing correlation ID of a sequence model, a timeout in the queue, a
 failed execution and a cancellation all fail after Triton took the trace, and Triton releases it.
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) makes every BLS call to
+[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) makes every BLS call to
 `mnist_onnx` a child of its request. With the `echo_metadata` parameter it answers with the
 metadata of the request in response parameters, and with `forward_metadata` it calls itself over
 BLS with metadata derived from the request and passes the echo on. The integration tests trace

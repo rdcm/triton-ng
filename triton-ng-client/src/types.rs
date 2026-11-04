@@ -8,15 +8,20 @@ use crate::error::{Error, Result};
 /// Server name, version, and supported extensions.
 #[derive(Debug, Clone)]
 pub struct ServerInfo {
+    /// Server name (`triton`).
     pub name: String,
+    /// Server version.
     pub version: String,
+    /// Extensions of the inference protocol the server supports.
     pub extensions: Vec<String>,
 }
 
 /// Metadata for a single tensor (input or output).
 #[derive(Debug, Clone)]
 pub struct TensorMetadata {
+    /// Name of the tensor.
     pub name: String,
+    /// Element type of the tensor.
     pub datatype: Datatype,
     /// Tensor shape. A value of `-1` indicates a dynamic (variable-size) axis.
     /// Replace dynamic axes with actual sizes when constructing [`crate::InferInput`].
@@ -26,19 +31,28 @@ pub struct TensorMetadata {
 /// Model metadata returned by the server.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
+    /// Name of the model.
     pub name: String,
+    /// Versions of the model the server knows.
     pub versions: Vec<String>,
+    /// Platform or backend of the model (`onnxruntime_onnx`, `tensorrt_plan`, a custom backend name).
     pub platform: String,
+    /// Inputs of the model.
     pub inputs: Vec<TensorMetadata>,
+    /// Outputs of the model.
     pub outputs: Vec<TensorMetadata>,
 }
 
 /// Index entry for a model in the model repository.
 #[derive(Debug, Clone)]
 pub struct ModelIndex {
+    /// Name of the model.
     pub name: String,
+    /// Version of the model, empty when it is not loaded.
     pub version: String,
+    /// State of the model (`READY`, `UNAVAILABLE`, ...), empty when it is not loaded.
     pub state: String,
+    /// Why the model is in its state, empty when there is nothing to say.
     pub reason: String,
 }
 
@@ -127,22 +141,30 @@ impl fmt::Debug for ModelStatistics {
 /// A registered system shared-memory region.
 #[derive(Debug, Clone)]
 pub struct SharedMemoryRegion {
+    /// Key of the region, as registered.
     pub key: String,
+    /// Offset of the region in the shared memory, in bytes.
     pub offset: u64,
+    /// Size of the region, in bytes.
+    /// Size of the region, in bytes.
     pub byte_size: u64,
 }
 
 /// A registered CUDA shared-memory region.
 #[derive(Debug, Clone)]
 pub struct CudaMemoryRegion {
+    /// CUDA device of the region.
     pub device_id: u64,
+    /// Size of the region, in bytes.
     pub byte_size: u64,
 }
 
 /// A single log setting value.
 #[derive(Debug, Clone)]
 pub enum LogSettingValue {
+    /// A boolean setting.
     Bool(bool),
+    /// An unsigned integer setting.
     Uint32(u32),
     /// Freeform text setting.
     Text(String),

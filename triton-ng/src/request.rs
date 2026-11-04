@@ -246,6 +246,7 @@ impl Request {
         self.final_response.send(pending)
     }
 
+    /// The names of the inputs of the request, in the order the client sent them.
     pub fn input_names(&self) -> Result<Vec<String>, TritonError> {
         let mut count = 0u32;
         triton_call!(triton_ng_sys::TRITONBACKEND_RequestInputCount(
@@ -262,6 +263,7 @@ impl Request {
             .collect()
     }
 
+    /// The names of the outputs the client asked for; empty when it asked for all of them.
     pub fn output_names(&self) -> Result<Vec<String>, TritonError> {
         let mut count = 0u32;
         triton_call!(triton_ng_sys::TRITONBACKEND_RequestOutputCount(
@@ -278,6 +280,15 @@ impl Request {
             .collect()
     }
 
+    /// The input `name` of the request, borrowed from it.
+    ///
+    /// Fails when the request has no such input.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let audio = request.get_input("AUDIO")?.as_fp32_vec()?;
+    /// ```
     pub fn get_input(&self, name: &str) -> Result<Input<'_>, TritonError> {
         let name = cstring_from_str(name)?;
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_RequestInput(

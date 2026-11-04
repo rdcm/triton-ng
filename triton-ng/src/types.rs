@@ -1,20 +1,35 @@
 /// Tensor data type — mirrors `TRITONSERVER_DataType` without exposing the C enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
+    /// Not a datatype; Triton uses it for an unset type.
     Invalid,
+    /// Booleans.
     Bool,
+    /// 8-bit unsigned integers.
     Uint8,
+    /// 16-bit unsigned integers.
     Uint16,
+    /// 32-bit unsigned integers.
     Uint32,
+    /// 64-bit unsigned integers.
     Uint64,
+    /// 8-bit signed integers.
     Int8,
+    /// 16-bit signed integers.
     Int16,
+    /// 32-bit signed integers.
     Int32,
+    /// 64-bit signed integers.
     Int64,
+    /// 16-bit floats, as raw bytes.
     Fp16,
+    /// 32-bit floats.
     Fp32,
+    /// 64-bit floats.
     Fp64,
+    /// Byte strings of variable length, each with a 4-byte length prefix.
     Bytes,
+    /// 16-bit brain floats, as raw bytes.
     Bf16,
 }
 
@@ -102,7 +117,9 @@ impl DataType {
 pub enum InstanceGroupKind {
     /// Triton picks GPU when there is one, CPU otherwise.
     Auto,
+    /// An instance on the CPU.
     Cpu,
+    /// An instance on a GPU.
     Gpu,
     /// The model decides where it runs.
     Model,
@@ -152,9 +169,13 @@ impl InstanceGroupKind {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Parameter {
+    /// A boolean.
     Bool(bool),
+    /// An integer.
     Int(i64),
+    /// A double-precision float.
     Double(f64),
+    /// A string.
     String(String),
 }
 
@@ -241,7 +262,9 @@ impl From<String> for Parameter {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CorrelationId {
+    /// A numeric ID, never 0.
     Int(u64),
+    /// A string ID, never empty and at most 128 bytes.
     String(String),
 }
 
@@ -278,7 +301,9 @@ impl From<String> for CorrelationId {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RequestFlags {
+    /// The request is the first of its sequence.
     pub sequence_start: bool,
+    /// The request is the last of its sequence.
     pub sequence_end: bool,
 }
 

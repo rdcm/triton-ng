@@ -132,6 +132,9 @@ impl<'a> Input<'a> {
         Ok(decode_string(&self.bytes()?)?)
     }
 
+    /// The one element of a UINT64 input.
+    ///
+    /// Fails when the input does not hold exactly 8 bytes.
     pub fn as_u64(&self) -> Result<u64, Error> {
         let buffer = self.bytes()?;
 
@@ -143,18 +146,34 @@ impl<'a> Input<'a> {
         Ok(u64::from_le_bytes(bytes))
     }
 
+    /// The elements of an FP32 input.
+    ///
+    /// Fails when the bytes do not divide into elements or the input is in GPU memory.
     pub fn as_fp32_vec(&self) -> Result<Vec<f32>, Error> {
         decode_le(&self.bytes()?, f32::from_le_bytes)
     }
 
+    /// The elements of an INT32 input.
+    ///
+    /// Fails when the bytes do not divide into elements or the input is in GPU memory.
     pub fn as_i32_vec(&self) -> Result<Vec<i32>, Error> {
         decode_le(&self.bytes()?, i32::from_le_bytes)
     }
 
+    /// The elements of an INT64 input.
+    ///
+    /// Fails when the bytes do not divide into elements or the input is in GPU memory.
     pub fn as_i64_vec(&self) -> Result<Vec<i64>, Error> {
         decode_le(&self.bytes()?, i64::from_le_bytes)
     }
 
+    /// Name, datatype, shape and size of the input, see [`InputProperties`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let shape = request.get_input("AUDIO")?.properties()?.shape;
+    /// ```
     pub fn properties(&self) -> Result<InputProperties, Error> {
         let mut name = std::ptr::null();
         let mut datatype = 0u32;
@@ -193,12 +212,19 @@ impl<'a> Input<'a> {
 }
 
 #[derive(Debug)]
+/// What Triton knows about an input, from [`Input::properties`].
 pub struct InputProperties {
+    /// Name of the input.
     pub name: String,
+    /// Element type of the input.
     pub datatype: DataType,
+    /// Shape of the input, batch dimension included.
     pub shape: Vec<i64>,
+    /// Number of dimensions, the length of `shape`.
     pub dims_count: u32,
+    /// Total size of the data, in bytes.
     pub byte_size: u64,
+    /// Number of buffers the data is split into.
     pub buffer_count: u32,
 }
 

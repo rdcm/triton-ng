@@ -9,7 +9,7 @@ unloads models, and reschedules requests.
 its models. `Backend::config` returns them as a `BackendConfig` in `initialize`, `finalize` and
 `attributes`:
 
-```rust
+```rust ignore
 // tritonserver --backend-config=asr,pool-size=8 --backend-config=asr,cache-dir=/cache
 fn initialize(backend: &Backend) -> Result<(), Error> {
     let config = backend.config()?;
@@ -35,7 +35,7 @@ the example backend.
 
 `CustomBackend::attributes` tells Triton how to deploy the models of the backend:
 
-```rust
+```rust ignore
 fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
     Ok(BackendAttributes::new()
         .preferred_instance_group(InstanceGroupKind::Gpu, 1, &[])?
@@ -67,12 +67,12 @@ no `instance_group` and get them, `mnist` names its group in its config and keep
 `CustomBackend::auto_complete_config` fills in what the `config.pbtxt` of a model leaves out, like
 `auto_complete_config` of python_backend. A model then needs little more than its backend:
 
-```
+```text
 name: "mnist_auto"
 backend: "custom_backend"
 ```
 
-```rust
+```rust ignore
 fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
     if config.has_input("Input3") {
         return Ok(());
@@ -108,7 +108,7 @@ example models have complete configs and the hook leaves them alone.
 A backend loads and unloads models of the server like python_backend's `pb_utils.load_model` and
 `pb_utils.unload_model`:
 
-```rust
+```rust ignore
 // From the model repository, or reloaded when its files changed.
 server.load_model("punctuation", None, &[])?;
 
@@ -159,7 +159,7 @@ after a step it hands the request back to Triton instead of answering it, and Tr
 next step together with the steps of other sequences. `Request::reschedule` does that for a model
 that answers once, `ResponseSender::reschedule` for a decoupled model that streams every step:
 
-```rust
+```rust ignore
 let Some(id) = request.correlation_id()? else {
     continue; // a null request of the sequence batcher
 };

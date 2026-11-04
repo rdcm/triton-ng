@@ -10,7 +10,7 @@ batched together.
 
 There is no async runtime around the future: it may await several BLS calls at once (`join!`),
 but timers, I/O and spawning of tokio or other runtimes do not work in it. Why the batch runs
-there and what to tune is in [Batching and concurrency](batching_and_concurrency.md).
+there and what to tune is in [Batching and concurrency](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
 
 **Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
 scheduler collected, and the backend should process it as a whole, sending it to the downstream
@@ -34,18 +34,18 @@ be answered from any thread.
 **Exactly one final response.** `Response::new`, `Request::respond_error` and
 `Request::respond_cancelled` consume the request, so it cannot be answered twice.
 `Request::reschedule` consumes it too and hands it back to Triton for another step of an iterative
-sequence, see [Model management and configuration](model_management_and_configuration.md). A request dropped
+sequence, see [Model management and configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md). A request dropped
 without a response, including when the future returns an error or panics, gets a generic error
 response. Every request is released to Triton when it is dropped, or later: after its traced BLS
-children are done (see [Request metadata and tracing](request_metadata_and_tracing.md)) and after
+children are done (see [Request metadata and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md)) and after
 its inputs passed on to BLS calls with `Input::share` are dropped, which also holds its final
-response back until then (see [Memory buffers](memory_buffers.md)). The error returned by
+response back until then (see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md)). The error returned by
 `model_instance_execute` is only logged: answer a request with `respond_error` to give the client
 the reason.
 
 **Streams of a decoupled model.** A request of a decoupled model can get any number of responses
 before its final flag: `Request::into_sender` turns it into a `ResponseSender`, whose final methods
-consume it, so the final flag is still sent exactly once. See [Streaming](streaming.md).
+consume it, so the final flag is still sent exactly once. See [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md).
 
 **Error codes.** Every `TritonError` has an `ErrorCode`: `respond_error` answers with `Internal`,
 `respond_error_with_code` with any code, which the client gets as the gRPC status of its call.
@@ -59,9 +59,9 @@ future of its result, so requests made one after another run in Triton at the sa
 order they are awaited in. Triton wakes the future from its own threads. Dropping the future
 cancels the request, unless the model has already answered. The future expects exactly one
 response; the responses of a decoupled model are read with
-`Server::infer_stream`, see [Streaming](streaming.md). A BLS request can carry the ID,
+`Server::infer_stream`, see [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md). A BLS request can carry the ID,
 correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
-child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
+child of its trace, see [Request metadata and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md).
 
 **Handles and threads.** Every type that wraps a Triton object either owns it, and then its
 `Drop` releases it, or borrows it from Triton, and then it has no `Drop` and its lifetime is
@@ -69,21 +69,21 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 
 | Type | Triton object | On drop | `Send` | `Sync` | Notes |
 |---|---|---|---|---|---|
-| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](request_metadata_and_tracing.md); answered and released after its `SharedInput`s |
+| `Request` | owns the request | sends an error response if none was sent, releases the request | yes | no | one request is used by one thread at a time; released after its traced BLS children, see [Request metadata and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md); answered and released after its `SharedInput`s |
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
 | `ResponseSender` | owns the request of a decoupled model | sends a final error response if no final flag was sent, releases the request | yes | no | |
 | `StreamResponse<'_>` | owns a not final response, borrows its `ResponseSender` mutably | deletes it unless sent; the stream goes on | yes | no | the stream cannot be finished while it lives |
 | `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
-| `SharedInput` | shares the right to answer and release its request | sends the final response held back for it, lets the request be released | yes | yes | a BLS input, see [Memory buffers](memory_buffers.md) |
+| `SharedInput` | shares the right to answer and release its request | sends the final response held back for it, lets the request be released | yes | yes | a BLS input, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md) |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
 | `InferenceResult` | none | | yes | yes | owns its output buffers; the future of `infer_async` is `Send` and cancels its request when dropped |
 | `InferenceStream` | shares the right to cancel the request with its release callback | cancels the request | yes | yes | |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
-| `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
+| `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md) |
 | `Server`, `MemoryManager` | borrow the server and its memory manager | nothing | yes | yes | `Clone`; valid while any model is loaded |
 | `Context` | none | | yes | yes | `Clone` |
-| `CounterFamily`, `GaugeFamily`, `HistogramFamily` | share the metric family of their name | delete it with the last family and metric | yes | yes | `Clone`, see [Metrics](metrics.md) |
+| `CounterFamily`, `GaugeFamily`, `HistogramFamily` | share the metric family of their name | delete it with the last family and metric | yes | yes | `Clone`, see [Metrics](https://github.com/rdcm/triton-ng/blob/main/docs/metrics.md) |
 | `Counter`, `Gauge`, `Histogram` | own the metric, keep its family alive | delete the metric | yes | yes | `Clone` shares the metric |
 | `Model`, `ModelInstance`, `Backend` | borrow the model, instance, backend | nothing | no | no | used only in the hooks other than `model_instance_execute` |
 
@@ -104,14 +104,14 @@ by dropping the future of `infer_async` or the stream, or with `InferenceStream:
 **Shutdown.** Triton finalizes an instance only between executes, so no batch of it is running when
 `CustomBackend::model_instance_finalize` is called.
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
+[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
 `hold_until_cancelled` parameter repeats a BLS call and checks `Request::is_cancelled` between the
 calls until the client cancels it: Triton only marks a cancelled request, a backend finds out at
 such a check. That keeps one of the two instances of `mnist` busy, and unloading the model waits
 until the held requests are answered. A request with the `memory` parameter is answered through memory manager
 buffers cached in the instance state, and one with `shared_input` passes its image on to
-`mnist_onnx` without a copy, see [Memory buffers](memory_buffers.md). The decoupled
-`mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md);
+`mnist_onnx` without a copy, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md). The decoupled
+`mnist_stream` model of the same backend streams a digit per image, see [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md);
 `mnist_auto` gets its config from the backend and `mnist_steps` reschedules its requests, see
-[Model management and configuration](model_management_and_configuration.md).
+[Model management and configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md).

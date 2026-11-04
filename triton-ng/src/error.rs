@@ -41,13 +41,21 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    /// A failure of an unknown kind.
     Unknown,
+    /// An internal failure of Triton or of the backend.
     Internal,
+    /// What was asked for does not exist: a model, an output, a parameter.
     NotFound,
+    /// An argument is invalid: a name, a shape, a size, a value.
     InvalidArg,
+    /// Not available now: a model that is loading or unloading, a full queue, a timeout.
     Unavailable,
+    /// Not supported by this build of Triton or by the model.
     Unsupported,
+    /// What is being created already exists.
     AlreadyExists,
+    /// The request was cancelled.
     Cancelled,
 }
 

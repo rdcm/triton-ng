@@ -10,18 +10,29 @@ use crate::error::{Error, Result};
 /// Typed tensor data for an inference input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputData {
+    /// Booleans.
     Bool(Vec<bool>),
+    /// 8-bit unsigned integers.
     Uint8(Vec<u8>),
+    /// 16-bit unsigned integers.
     Uint16(Vec<u16>),
+    /// 32-bit unsigned integers.
     Uint32(Vec<u32>),
+    /// 64-bit unsigned integers.
     Uint64(Vec<u64>),
+    /// 8-bit signed integers.
     Int8(Vec<i8>),
+    /// 16-bit signed integers.
     Int16(Vec<i16>),
+    /// 32-bit signed integers.
     Int32(Vec<i32>),
+    /// 64-bit signed integers.
     Int64(Vec<i64>),
     /// FP16 elements as raw little-endian bytes (2 bytes per element).
     Fp16(Vec<u8>),
+    /// 32-bit floats.
     Fp32(Vec<f32>),
+    /// 64-bit floats.
     Fp64(Vec<f64>),
     /// BF16 elements as raw little-endian bytes (2 bytes per element).
     Bf16(Vec<u8>),
@@ -84,10 +95,12 @@ pub struct InferInput {
     /// Actual tensor shape. All dimensions must be positive — replace any `-1` values
     /// from [`crate::TensorMetadata::shape`] with the real sizes before creating this.
     pub shape: Vec<i64>,
+    /// The elements, in row-major order.
     pub data: InputData,
 }
 
 impl InferInput {
+    /// An input of booleans named `name` with `shape`.
     pub fn bool(name: impl Into<String>, shape: Vec<i64>, data: Vec<bool>) -> Self {
         Self {
             name: name.into(),
@@ -96,6 +109,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 8-bit unsigned integers named `name` with `shape`.
     pub fn uint8(name: impl Into<String>, shape: Vec<i64>, data: Vec<u8>) -> Self {
         Self {
             name: name.into(),
@@ -104,6 +118,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 16-bit unsigned integers named `name` with `shape`.
     pub fn uint16(name: impl Into<String>, shape: Vec<i64>, data: Vec<u16>) -> Self {
         Self {
             name: name.into(),
@@ -112,6 +127,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 32-bit unsigned integers named `name` with `shape`.
     pub fn uint32(name: impl Into<String>, shape: Vec<i64>, data: Vec<u32>) -> Self {
         Self {
             name: name.into(),
@@ -120,6 +136,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 64-bit unsigned integers named `name` with `shape`.
     pub fn uint64(name: impl Into<String>, shape: Vec<i64>, data: Vec<u64>) -> Self {
         Self {
             name: name.into(),
@@ -128,6 +145,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 8-bit signed integers named `name` with `shape`.
     pub fn int8(name: impl Into<String>, shape: Vec<i64>, data: Vec<i8>) -> Self {
         Self {
             name: name.into(),
@@ -136,6 +154,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 16-bit signed integers named `name` with `shape`.
     pub fn int16(name: impl Into<String>, shape: Vec<i64>, data: Vec<i16>) -> Self {
         Self {
             name: name.into(),
@@ -144,6 +163,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 32-bit signed integers named `name` with `shape`.
     pub fn int32(name: impl Into<String>, shape: Vec<i64>, data: Vec<i32>) -> Self {
         Self {
             name: name.into(),
@@ -152,6 +172,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 64-bit signed integers named `name` with `shape`.
     pub fn int64(name: impl Into<String>, shape: Vec<i64>, data: Vec<i64>) -> Self {
         Self {
             name: name.into(),
@@ -169,6 +190,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 32-bit floats named `name` with `shape`.
     pub fn fp32(name: impl Into<String>, shape: Vec<i64>, data: Vec<f32>) -> Self {
         Self {
             name: name.into(),
@@ -177,6 +199,7 @@ impl InferInput {
         }
     }
 
+    /// An input of 64-bit floats named `name` with `shape`.
     pub fn fp64(name: impl Into<String>, shape: Vec<i64>, data: Vec<f64>) -> Self {
         Self {
             name: name.into(),
@@ -194,6 +217,7 @@ impl InferInput {
         }
     }
 
+    /// A BYTES input named `name` with `shape`: one byte string per element.
     pub fn bytes(name: impl Into<String>, shape: Vec<i64>, data: Vec<Vec<u8>>) -> Self {
         Self {
             name: name.into(),
@@ -206,18 +230,29 @@ impl InferInput {
 /// Decoded tensor data from an inference response.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputData {
+    /// Booleans.
     Bool(Vec<bool>),
+    /// 8-bit unsigned integers.
     Uint8(Vec<u8>),
+    /// 16-bit unsigned integers.
     Uint16(Vec<u16>),
+    /// 32-bit unsigned integers.
     Uint32(Vec<u32>),
+    /// 64-bit unsigned integers.
     Uint64(Vec<u64>),
+    /// 8-bit signed integers.
     Int8(Vec<i8>),
+    /// 16-bit signed integers.
     Int16(Vec<i16>),
+    /// 32-bit signed integers.
     Int32(Vec<i32>),
+    /// 64-bit signed integers.
     Int64(Vec<i64>),
     /// FP16 elements as raw little-endian bytes (2 bytes per element).
     Fp16(Vec<u8>),
+    /// 32-bit floats.
     Fp32(Vec<f32>),
+    /// 64-bit floats.
     Fp64(Vec<f64>),
     /// BF16 elements as raw little-endian bytes (2 bytes per element).
     Bf16(Vec<u8>),
@@ -228,10 +263,13 @@ pub enum OutputData {
 /// A decoded output tensor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InferOutput {
+    /// Name of the output tensor.
     pub name: String,
+    /// Element type of the output.
     pub datatype: Datatype,
     /// Shape of the tensor as reported by Triton.
     pub shape: Vec<i64>,
+    /// The elements, decoded into the type of `datatype`.
     pub data: OutputData,
 }
 
@@ -240,6 +278,7 @@ pub struct InferOutput {
 pub struct InferResponse {
     /// Request ID echoed back from Triton. Empty if no ID was set on the request.
     pub id: String,
+    /// The requested outputs, in the order Triton returned them.
     pub outputs: Vec<InferOutput>,
     /// Parameters the model set on the response.
     pub parameters: HashMap<String, Parameter>,
@@ -318,9 +357,13 @@ pub struct InferOptions {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Parameter {
+    /// A boolean.
     Bool(bool),
+    /// An integer.
     Int(i64),
+    /// A double-precision float.
     Double(f64),
+    /// A string.
     String(String),
 }
 

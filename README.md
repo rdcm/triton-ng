@@ -1,7 +1,7 @@
 # triton-ng
 
 [![crates.io](https://img.shields.io/crates/v/triton-ng.svg)](https://crates.io/crates/triton-ng)
-[![docs.rs](https://img.shields.io/docsrs/triton-ng/0.2.0)](https://docs.rs/triton-ng/0.2.0/triton_ng/)
+[![docs.rs](https://img.shields.io/docsrs/triton-ng)](https://docs.rs/triton-ng)
 
 Rust SDK for [NVIDIA Triton Inference Server](https://github.com/triton-inference-server/server).
 
@@ -9,7 +9,7 @@ Provides two things:
 - A safe Rust API for writing **custom Triton backends** (compiled as `.so` and loaded by Triton)
 - A high-level async **gRPC client** for sending inference requests to a running Triton server
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+See [CHANGELOG.md](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for release history.
 
 ## Crates
 
@@ -26,7 +26,7 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 Implement the `CustomBackend` trait and register it with `#[triton_ng::backend]`:
 
-```rust
+```rust ignore
 use triton_ng::{CustomBackend, Context, DataType, Error, InferenceRequest, Request, Response};
 
 struct MyBackend;
@@ -67,7 +67,7 @@ Build as a `cdylib`:
 crate-type = ["cdylib"]
 
 [dependencies]
-triton-ng = "0.2.0"
+triton-ng = "0.3.0"
 ```
 
 Or the latest code from the repository:
@@ -77,24 +77,30 @@ Or the latest code from the repository:
 triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
 ```
 
-The API reference is on [docs.rs](https://docs.rs/triton-ng/0.2.0/triton_ng/).
+A batch (`requests`) is what Triton's dynamic batcher collected; the future runs to its end on
+the Triton thread of the instance, so Triton forms the next batch meanwhile and batches of a
+model run in parallel on its instances (`instance_group` count). Inside the batch, several BLS
+calls awaited together run at the same time.
 
-See [Execution model and thread safety](docs/execution_model_and_thread_safety.md) for instances
+The API reference is on [docs.rs](https://docs.rs/triton-ng), with these guides under its `docs` module.
+
+See [Batching and concurrency](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md) for how Triton forms
+batches, what to tune and the measurements behind this execution model, [Execution model and thread safety](https://github.com/rdcm/triton-ng/blob/main/docs/execution_model_and_thread_safety.md) for instances
 and how their batches run, request ownership,
 error codes, BLS futures, threads, cancellation, shutdown and batching,
-[Request metadata and tracing](docs/request_metadata_and_tracing.md) for request IDs, sequences and
-BLS calls in Triton traces, [Streaming](docs/streaming.md) for decoupled models that answer with a
-stream of responses and for reading such streams over BLS, [Memory buffers](docs/memory_buffers.md)
+[Request metadata and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md) for request IDs, sequences and
+BLS calls in Triton traces, [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md) for decoupled models that answer with a
+stream of responses and for reading such streams over BLS, [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md)
 for BLS inputs and outputs in pinned and GPU memory and for passing inputs of a request on to BLS
-calls without a copy, [Metrics](docs/metrics.md) for backend
+calls without a copy, [Metrics](https://github.com/rdcm/triton-ng/blob/main/docs/metrics.md) for backend
 metrics on Triton's Prometheus endpoint, and
-[Model management and configuration](docs/model_management_and_configuration.md) for the backend
+[Model management and configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md) for the backend
 config and attributes, completing model configs, loading models from a backend and
-rescheduling requests. The [documentation index](docs/README.md) lists every section.
+rescheduling requests. The [documentation index](https://github.com/rdcm/triton-ng/blob/main/docs/README.md) lists every section.
 
 ## Using the gRPC client
 
-```rust
+```rust ignore
 use triton_ng_client::{InferInput, InferOptions, TritonClient, TritonClientConfig};
 
 #[tokio::main]
@@ -121,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
 
 Streaming responses of a decoupled model over gRPC `ModelStreamInfer`:
 
-```rust
+```rust ignore
 let mut stream = client
     .infer_stream("my_stream_model", None, inputs, ["TOKEN"], InferOptions::default())
     .await?;
@@ -134,7 +140,7 @@ Dropping the stream cancels the request.
 
 TLS:
 
-```rust
+```rust ignore
 use triton_ng_client::{ClientTlsConfig, TritonClientConfig};
 
 let config = TritonClientConfig::new("https://triton.example.com:8001")
@@ -178,6 +184,15 @@ make tests           # cargo nextest run --workspace
 
 Tests require a running Triton instance (`make docker-env-up`). The tracing tests read the traces
 Triton writes into `target/traces`.
+
+### Check the documentation
+
+```bash
+make doc             # rustdoc for the workspace, as docs.rs builds it; warnings are errors
+```
+
+Every public item is documented (`#![deny(missing_docs)]`), the README and the guides in
+`docs/` are part of the crate documentation.
 
 ### Rebuild after backend changes
 

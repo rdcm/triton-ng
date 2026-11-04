@@ -5,18 +5,29 @@ use crate::error::{Error, Result};
 /// Tensor element type as defined by the Triton inference protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Datatype {
+    /// Booleans.
     Bool,
+    /// 8-bit unsigned integers.
     Uint8,
+    /// 16-bit unsigned integers.
     Uint16,
+    /// 32-bit unsigned integers.
     Uint32,
+    /// 64-bit unsigned integers.
     Uint64,
+    /// 8-bit signed integers.
     Int8,
+    /// 16-bit signed integers.
     Int16,
+    /// 32-bit signed integers.
     Int32,
+    /// 64-bit signed integers.
     Int64,
     /// Half-precision float (16-bit), transmitted as raw little-endian bytes.
     Fp16,
+    /// 32-bit floats.
     Fp32,
+    /// 64-bit floats.
     Fp64,
     /// Brain float (16-bit), transmitted as raw little-endian bytes.
     Bf16,
@@ -25,6 +36,7 @@ pub enum Datatype {
 }
 
 impl Datatype {
+    /// The name of the datatype in the inference protocol (`"FP32"`, `"BYTES"`, ...).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Bool => "BOOL",

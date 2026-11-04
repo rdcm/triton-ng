@@ -206,6 +206,7 @@ impl Model {
         Ok(std::fs::read(self.path(file_name)?)?)
     }
 
+    /// The server the model is loaded in, for BLS calls from the hooks that have a `Model`; batches get it from [`crate::Context::server`].
     pub fn get_server(&self) -> Result<Server, TritonError> {
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ModelServer(self.ptr, &mut _))?;
         Server::from_ptr(ptr)

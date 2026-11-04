@@ -56,7 +56,7 @@ overlap the CPU work and the BLS waits of several batches, which raises throughp
 load keeps every instance's batches full; past that point batches get smaller and the downstream
 models run with smaller inputs. Measure with the average batch size
 (`nv_inference_count / nv_inference_exec_count`) and the queue time of the model, which triton-ng
-reports to Triton (see [Metrics](metrics.md)), and pick the smallest count that keeps the GPU busy.
+reports to Triton (see [Metrics](https://github.com/rdcm/triton-ng/blob/main/docs/metrics.md)), and pick the smallest count that keeps the GPU busy.
 
 For a model whose work per batch is dominated by GPU time of one downstream model there is
 nothing to gain from more instances; for a model that alternates GPU-heavy and CPU- or
