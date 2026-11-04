@@ -10,6 +10,8 @@ pub(crate) mod backend_attribute;
 pub mod backend_attributes;
 #[path = "backend_config.rs"]
 pub mod backend_config;
+#[path = "batch_statistics.rs"]
+pub(crate) mod batch_statistics;
 #[path = "buffers.rs"]
 pub mod buffers;
 #[path = "custom_backend.rs"]
@@ -18,10 +20,10 @@ pub mod custom_backend;
 pub mod error;
 #[path = "executor.rs"]
 pub mod executor;
+#[path = "failure.rs"]
+pub(crate) mod failure;
 #[path = "final_response.rs"]
 pub(crate) mod final_response;
-#[path = "inference_future.rs"]
-pub mod inference_future;
 #[path = "inference_request.rs"]
 pub mod inference_request;
 #[path = "inference_response.rs"]
@@ -97,7 +99,6 @@ pub use buffers::*;
 pub use custom_backend::*;
 pub use error::*;
 pub use executor::Context;
-pub use inference_future::*;
 pub use inference_request::*;
 pub use inference_result::*;
 pub use inference_stream::*;
@@ -214,9 +215,9 @@ pub mod __macro_support {
         into_error_ptr(result)
     }
 
-    /// TRITONBACKEND_ModelInstanceInitialize. Starts the runtime of the
+    /// TRITONBACKEND_ModelInstanceInitialize. Creates the executor of the
     /// instance before the hook, which may store the instance state in it,
-    /// and stops it again when the hook fails.
+    /// and drops it again when the hook fails.
     pub unsafe fn model_instance_initialize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         let result = catch(|| {
@@ -229,8 +230,9 @@ pub mod __macro_support {
         into_error_ptr(result)
     }
 
-    /// TRITONBACKEND_ModelInstanceFinalize. Waits for the batches of the
-    /// instance and stops its runtime before the hook.
+    /// TRITONBACKEND_ModelInstanceFinalize. Drops the executor of the
+    /// instance, with the instance state, before the hook. No batch is
+    /// running: Triton finalizes an instance only between executes.
     pub unsafe fn model_instance_finalize<B: CustomBackend>(instance: *mut c_void) -> ErrorPtr {
         let instance = unsafe { model_instance(instance) };
         stop_executor(&instance);
@@ -239,8 +241,9 @@ pub mod __macro_support {
         }))
     }
 
-    /// TRITONBACKEND_ModelInstanceExecute. Hands the batch over to the runtime
-    /// of its instance.
+    /// TRITONBACKEND_ModelInstanceExecute. Runs the batch to its end on the
+    /// calling Triton thread, so the instance takes its next batch only
+    /// after it.
     ///
     /// Always reports success to Triton once the requests are wrapped: they are
     /// owned by the backend from then on, returning an error would make Triton
@@ -255,6 +258,9 @@ pub mod __macro_support {
                 Ok(parts) => parts,
                 Err(err) => return err,
             };
+        let statistics = std::sync::Arc::new(crate::batch_statistics::BatchStatistics::new(
+            instance as *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
+        ));
         let instance = unsafe { model_instance(instance) };
 
         let prepared = catch(|| {
@@ -271,22 +277,21 @@ pub mod __macro_support {
             .unwrap_or_default();
         let requests: Vec<Request> = raw_requests
             .into_iter()
-            .map(|r| Request::from_ptr(r, policy))
+            .map(|r| Request::from_ptr(r, policy, std::sync::Arc::clone(&statistics)))
             .collect();
+        // A request whose batch size cannot be read counts as one element,
+        // which is what Triton assumes for a request without inputs.
+        let batch_size: u64 = requests
+            .iter()
+            .map(|request| request.batch_size().unwrap_or(1))
+            .sum();
 
         match prepared {
-            Ok((executor, ctx)) => {
-                let batch = B::model_instance_execute(ctx, requests);
-                let result = catch(|| {
-                    executor.spawn(async move {
-                        if let Err(e) = batch.await {
-                            crate::log::error(&format!("model instance execute failed: {e}"));
-                        }
-                    })?;
-                    Ok(())
-                });
+            Ok((_, ctx)) => {
+                let result =
+                    catch(|| crate::executor::block_on(B::model_instance_execute(ctx, requests)));
                 if let Err(e) = result {
-                    crate::log::error(&format!("failed to start the batch: {e}"));
+                    crate::log::error(&format!("model instance execute failed: {e}"));
                 }
             }
             Err(e) => {
@@ -299,6 +304,9 @@ pub mod __macro_support {
                     }
                 }
             }
+        }
+        if let Err(e) = statistics.report_batch(batch_size) {
+            crate::log::error(&format!("failed to report batch statistics: {e}"));
         }
 
         NULL_ERROR
@@ -349,9 +357,7 @@ pub mod __macro_support {
     }
 
     fn start_executor(instance: &ModelInstance) -> Result<(), Error> {
-        let model = instance.model()?;
-        let thread_name = format!("{}-{}", model.name()?, instance.name()?);
-        let executor = InstanceExecutor::new(&model, thread_name)?;
+        let executor = InstanceExecutor::new(&instance.model()?)?;
         instance.set_executor(executor)?;
         Ok(())
     }
@@ -360,14 +366,14 @@ pub mod __macro_support {
         match catch(|| Ok(instance.take_executor()?)) {
             Ok(Some(executor)) => {
                 if let Err(e) = catch(|| {
-                    executor.shutdown();
+                    drop(executor);
                     Ok(())
                 }) {
-                    crate::log::error(&format!("failed to stop model instance runtime: {e}"));
+                    crate::log::error(&format!("failed to drop model instance state: {e}"));
                 }
             }
             Ok(None) => {}
-            Err(e) => crate::log::error(&format!("failed to take model instance runtime: {e}")),
+            Err(e) => crate::log::error(&format!("failed to take model instance executor: {e}")),
         }
     }
 
@@ -475,7 +481,6 @@ mod tests {
             GpuBuffer,
             UninitGpuBuffer,
             OutputBuffer,
-            InferenceFuture,
             InferenceResult,
             InferenceStream,
             RequestCancel,

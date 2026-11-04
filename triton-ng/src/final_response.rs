@@ -24,7 +24,7 @@ use triton_ng_macros::triton_call;
 pub(crate) struct FinalResponse {
     request: *mut triton_ng_sys::TRITONBACKEND_Request,
     gate: Mutex<Gate<Pending>>,
-    _release: Arc<RequestRelease>,
+    release: Arc<RequestRelease>,
 }
 
 // SAFETY: Triton lets a request be answered from any thread, one thread at a
@@ -56,7 +56,7 @@ impl FinalResponse {
         Self {
             request,
             gate: Mutex::new(Gate::default()),
-            _release: release,
+            release,
         }
     }
 
@@ -111,6 +111,9 @@ impl FinalResponse {
             }
             Pending::Error(code, message) => return self.send_error(code, &message),
         };
+        if sent.is_ok() {
+            self.release.succeeded();
+        }
         if let Err(e) = &sent {
             let message = format!("failed to send the final response: {e}");
             if let Err(e) = self.send_error(ErrorCode::Internal, &message) {

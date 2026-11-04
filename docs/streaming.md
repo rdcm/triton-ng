@@ -92,10 +92,9 @@ async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<
 ### Streams and batches
 
 The stream of a request lives in the future of its batch, so **a batch is in flight until every
-stream of it is finished**. With `max_batches_in_flight` (see [Model parameters](model_parameters.md))
-a long stream holds a slot of its instance for as long as it lasts. Before
-`CustomBackend::model_instance_finalize` triton-ng waits for the futures of the batches, not for
-tasks spawned from them, so keep the streams in the batch future. To stream several requests of a
+stream of it is finished**, and a long stream keeps its instance busy for as long as it lasts: run
+as many instances as streams should go on at once. Keep the streams in the batch future, there is
+no runtime to spawn tasks on. To stream several requests of a
 batch at once, poll them together in that future (e.g. `futures::future::join_all`) rather than
 spawning a task per request.
 
@@ -165,20 +164,20 @@ while let Some(result) = stream.next().await {
 
 ### Cancelling BLS requests
 
-- `InferenceStream::cancel` and `InferenceFuture::cancel` ask Triton to cancel the request. The
-  responses sent before still arrive, and how the request ends is up to the model, usually with
-  a CANCELLED error. Cancelling a request that is already done does nothing.
+- `InferenceStream::cancel` asks Triton to cancel the request. The responses sent before still
+  arrive, and how the request ends is up to the model, usually with a CANCELLED error. Cancelling
+  a request that is already done does nothing.
 - **Dropping an `InferenceStream` cancels its request**, so a stream that is no longer read does
   not keep the model busy.
-- **Dropping an `InferenceFuture` does not cancel its request**: Triton finishes it and the result
-  is discarded. Call `cancel` when the result is no longer needed, e.g. when the client cancelled
-  the request it was made for.
+- **Dropping the future of `infer_async` cancels its request** too, unless the model has already
+  answered, e.g. when the client cancelled the request it was made for.
 
 ### How it is implemented
 
 - The response callback of the request gets every response and sends its result into the stream
   (a tokio unbounded channel). With the final flag it drops the sending side, which ends the stream.
-  `infer_async` uses the same callback, keeping one response and failing on a second one.
+  `infer_async` uses the same callback, keeping one response and failing on a second one, and
+  sends the result through a tokio oneshot channel, which needs no runtime.
 - `TRITONSERVER_InferenceRequestCancel` needs a live request, and the release callback of the
   request deletes it. `RequestCancel` keeps the pointer behind a mutex shared by the future or
   stream and the release callback. The callback clears the pointer under the mutex before it deletes
@@ -216,7 +215,7 @@ while let Some(response) = stream.next().await {
   sends one request per gRPC call.
 - No response cache for decoupled models (a limitation of Triton).
 - A cancellation may be seen one check later (a data race in core).
-- A streaming batch holds its slot of `max_batches_in_flight` until all its streams end.
+- A streaming batch keeps its instance busy until all its streams end.
 - Sequence batching of decoupled models is tested only with iterative sequences (`mnist_steps`).
 
 ## Example
@@ -229,5 +228,5 @@ with `unfinished` it drops its sender without the final flag.
 
 The `mnist` model reads `mnist_stream` over BLS (its `stream_model` config parameter):
 `stream_images` streams that many copies of its image and answers with the number of digits,
-`via_infer_async` reads the same stream with `infer_async`, `cancel_stream` (`cancel` or `drop`)
-cancels the stream after its first result, and `cancel_bls` cancels a BLS call of `mnist` to itself.
+`via_infer_async` reads the same stream with `infer_async`, and `cancel_stream` (`cancel` or `drop`)
+cancels the stream after its first result.

@@ -2,9 +2,9 @@ use crate::error::TritonError;
 use std::sync::{Arc, Mutex, PoisonError};
 use triton_ng_macros::triton_call;
 
-/// The right to cancel a submitted BLS request, shared by its
-/// [`crate::InferenceFuture`] or [`crate::InferenceStream`] and its release
-/// callback.
+/// The right to cancel a submitted BLS request, shared by the future of
+/// [`crate::Server::infer_async`] or [`crate::InferenceStream`] and its
+/// release callback.
 ///
 /// `TRITONSERVER_InferenceRequestCancel` needs a live request, and the
 /// release callback deletes it, so the callback calls
@@ -56,6 +56,25 @@ impl RequestCancel {
     /// Called by the release callback before it deletes the request.
     pub(crate) fn released(&self) {
         *self.request.lock().unwrap_or_else(PoisonError::into_inner) = std::ptr::null_mut();
+    }
+}
+
+/// Cancels its request when dropped: the future of
+/// [`crate::Server::infer_async`] holds it, so dropping the future cancels
+/// the request. Does nothing once the request is released.
+pub(crate) struct CancelOnDrop(Arc<RequestCancel>);
+
+impl CancelOnDrop {
+    pub(crate) fn new(cancel: Arc<RequestCancel>) -> Self {
+        Self(cancel)
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Err(e) = self.0.cancel() {
+            crate::log::error(&format!("failed to cancel the BLS request: {e}"));
+        }
     }
 }
 

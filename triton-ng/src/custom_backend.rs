@@ -141,12 +141,6 @@ pub trait CustomBackend {
     /// [`ModelInstance::set_state`] to keep state of this instance only;
     /// batches get it through [`Context::instance_state`].
     ///
-    /// Every instance gets its own runtime for its batches, configured by
-    /// the model parameters `worker_threads` (threads of the runtime, 1 by
-    /// default) and `max_batches_in_flight` (see
-    /// [`CustomBackend::model_instance_execute`]). The runtime is started before
-    /// this function and stopped again when it fails.
-    ///
     /// Instances of a model are initialized one after another, unless
     /// [`CustomBackend::attributes`] enables parallel instance loading.
     ///
@@ -158,21 +152,24 @@ pub trait CustomBackend {
     /// Finalize for a model instance. This function is optional, a
     /// backend is not required to implement it. This function is called
     /// once for an instance, just before the corresponding model is
-    /// unloaded from Triton, after every batch of the instance has finished
-    /// and its runtime has stopped.
+    /// unloaded from Triton, after every batch of the instance has finished.
     ///
     /// Corresponds to TRITONBACKEND_ModelInstanceFinalize.
     fn model_instance_finalize(_instance: &ModelInstance) -> Result<(), Error> {
         Ok(())
     }
 
-    /// Processes a batch of requests collected by Triton. The future runs on
-    /// the runtime of the instance, `.await` on a BLS call frees its thread
-    /// for the other batches of the instance. Triton gives the instance its
-    /// next batch as soon as this batch is handed to the runtime, so an
-    /// instance works on several batches at once; with the model parameter
-    /// `max_batches_in_flight` the instance takes the next batch only when one
-    /// of them has finished, and Triton keeps the requests in its queue.
+    /// Processes a batch of requests collected by Triton. The future runs to
+    /// its end on the Triton thread that called execute, which is blocked while
+    /// the future waits for BLS calls: Triton gives the instance its next
+    /// batch only after that, and keeps the requests in its queue meanwhile,
+    /// where they are batched together. Batches of a model run in parallel
+    /// on its instances (`instance_group` count).
+    ///
+    /// The future may await several BLS calls at once (`join!`), they all
+    /// run in Triton meanwhile. There is no async runtime around it: timers,
+    /// I/O and spawning of tokio or other runtimes do not work in it, and a
+    /// blocking call blocks only this instance.
     ///
     /// Process the batch as a whole and send it downstream as batched BLS
     /// calls: splitting it into tasks per request loses Triton's batching.

@@ -1,4 +1,4 @@
-use crate::inference_future::Failure;
+use crate::failure::Failure;
 use crate::request_cancel::RequestCancel;
 use crate::{InferenceResult, TritonError};
 use futures_core::Stream;

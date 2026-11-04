@@ -59,7 +59,7 @@ Exceptions, where the name is taken by a more important public type:
   wrapper but the shared right to release the request, kept by traced BLS children after the
   `Request` is dropped.
 - `RequestCancel` holds the `TRITONSERVER_InferenceRequest` of a submitted BLS request a second
-  time: it is the shared right to cancel the request, kept by its `InferenceFuture` or
+  time: it is the shared right to cancel the request, kept by the future of `infer_async` or
   `InferenceStream` and cleared by the release callback before the request is deleted.
 - `FinalResponse` holds the `TRITONBACKEND_Request` of a `Request` a third time: it is the shared
   right to send the final response, kept by every `SharedInput` of the request, which holds the

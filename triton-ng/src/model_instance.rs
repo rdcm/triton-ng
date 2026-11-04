@@ -12,8 +12,8 @@ use triton_ng_macros::triton_call;
 
 /// A model instance: Triton runs one per `instance_group` entry and device.
 ///
-/// Every instance has its own runtime that runs the batches given to it, see
-/// [`crate::CustomBackend::model_instance_execute`].
+/// Every instance has its own Triton thread that runs the batches given to
+/// it one after another, see [`crate::CustomBackend::model_instance_execute`].
 ///
 /// Borrows the `TRITONBACKEND_ModelInstance`: Triton owns it and keeps it
 /// alive for the hook, so there is nothing to drop. Neither `Send` nor

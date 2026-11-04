@@ -111,6 +111,7 @@ impl Sut {
                 name: s.name().to_string(),
                 version: s.version().to_string(),
                 inference_count: s.inference_count(),
+                execution_count: s.execution_count(),
             })
             .collect())
     }

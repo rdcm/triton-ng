@@ -3,14 +3,14 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use triton_ng::{
     AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, Context, CorrelationId, Counter,
     CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer,
-    Histogram, HistogramFamily, InferenceFuture, InferenceRequest, InferenceResult,
-    InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
-    Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
+    Histogram, HistogramFamily, InferenceRequest, InferenceResult, InstanceGroupKind,
+    MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request,
+    RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -62,6 +62,7 @@ struct State {
     forwards_input: bool,
     held: AtomicI64,
     cancelled: AtomicI64,
+    kept_inputs: Mutex<Vec<Arc<SharedInput>>>,
     metrics: Metrics,
 }
 
@@ -225,6 +226,7 @@ impl CustomBackend for MnistBackend {
             forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
             held: AtomicI64::new(0),
             cancelled: AtomicI64::new(0),
+            kept_inputs: Mutex::new(Vec::new()),
         })?;
         Ok(())
     }
@@ -300,19 +302,6 @@ impl CustomBackend for MnistBackend {
                 cancel_stream(&ctx, request, inference, &how).await?;
                 continue;
             }
-            if request.parameter("cancel_bls")? == Some(Parameter::Bool(true)) {
-                let image = request.get_input(IMAGE)?.as_bytes()?;
-                let mut inference = InferenceRequest::new(ctx.server(), &state.model, -1)?;
-                inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image)?;
-                inference.set_parameter("hold_until_cancelled", true)?;
-                let inference = ctx.server().infer_async(inference);
-                inference.cancel()?;
-                match inference.await {
-                    Ok(_) => request.respond_error("the inference succeeded")?,
-                    Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
-                }
-                continue;
-            }
             if request.parameter("into_sender")? == Some(Parameter::Bool(true)) {
                 if request.into_sender().is_ok() {
                     return Err("a request of a model that is not decoupled got a sender".into());
@@ -330,20 +319,20 @@ impl CustomBackend for MnistBackend {
                     .join("1/model.onnx");
                 let from_repository = request.parameter("load_from")?
                     == Some(Parameter::String("repository".to_string()));
-                let server = ctx.server().clone();
-                let loaded = tokio::task::spawn_blocking(move || {
-                    if from_repository {
-                        return server.load_model(&model, None, &[]);
-                    }
-                    let onnx = std::fs::read(onnx)
-                        .map_err(|e| TritonError::from_message(e.to_string()))?;
-                    server.load_model(
-                        &model,
-                        Some(r#"{"backend": "onnxruntime"}"#),
-                        &[(&file, &onnx)],
-                    )
-                })
-                .await?;
+                let server = ctx.server();
+                let loaded = if from_repository {
+                    server.load_model(&model, None, &[])
+                } else {
+                    std::fs::read(onnx)
+                        .map_err(|e| TritonError::from_message(e.to_string()))
+                        .and_then(|onnx| {
+                            server.load_model(
+                                &model,
+                                Some(r#"{"backend": "onnxruntime"}"#),
+                                &[(&file, &onnx)],
+                            )
+                        })
+                };
                 match loaded {
                     Ok(()) => answer_done(request)?,
                     Err(e) => request.respond_error_with_code(e.code(), &e.to_string())?,
@@ -383,12 +372,15 @@ impl CustomBackend for MnistBackend {
                 }
                 continue;
             }
-            if let Some(Parameter::Int(hold_ms)) = request.parameter("shared_input")? {
+            if request.parameter("release_shared_inputs")? == Some(Parameter::Bool(true)) {
+                kept_inputs(state)?.clear();
+            }
+            if let Some(Parameter::Bool(keep)) = request.parameter("shared_input")? {
                 let (image, copy) = {
                     let input = request.get_input(IMAGE)?;
                     (Arc::new(input.share()?), input.as_bytes()?)
                 };
-                match digit_of_shared_input(&ctx, state, image, copy, hold_ms).await {
+                match digit_of_shared_input(&ctx, state, image, copy, keep).await {
                     Ok(digit) => respond(&ctx, state, request, digit)?,
                     Err(e) => request.respond_error(&e.to_string())?,
                 }
@@ -427,7 +419,7 @@ impl CustomBackend for MnistBackend {
         }
 
         for request in held {
-            hold_until_cancelled(state, respond_when_cancelled(request)).await?;
+            hold_until_cancelled(state, respond_when_cancelled(&ctx, state, request)).await?;
         }
 
         Ok(())
@@ -511,7 +503,7 @@ async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> 
         }
 
         if hold {
-            hold_until_cancelled(state, finish_when_cancelled(sender)).await?;
+            hold_until_cancelled(state, finish_when_cancelled(ctx, state, sender, &images)).await?;
         } else if unfinished {
             drop(sender);
         } else {
@@ -839,14 +831,15 @@ async fn digit_with_buffers(
 }
 
 /// Infers the digit of a shared `image` of a request, compared with a `copy`
-/// of it. The shared image is kept for `hold_ms` more, which holds the
-/// response of its request back that long.
+/// of it. With `keep` the shared image stays in the state of the model until
+/// a request with `release_shared_inputs`, which holds the response of its
+/// request back that long.
 async fn digit_of_shared_input(
     ctx: &Context,
     state: &State,
     image: Arc<SharedInput>,
     copy: Vec<u8>,
-    hold_ms: i64,
+    keep: bool,
 ) -> Result<i32, Error> {
     let mut inference = InferenceRequest::new(ctx.server(), &state.target_model, -1)?;
     let shape = image.shape().to_vec();
@@ -860,14 +853,17 @@ async fn digit_of_shared_input(
         return Err("the shared input differs from its copy".into());
     }
 
-    let hold = Duration::from_millis(hold_ms.try_into()?);
-    tokio::spawn(hold_shared_input(image, hold));
+    if keep {
+        kept_inputs(state)?.push(image);
+    }
     argmax(&shared.output(LOGITS)?.as_fp32_vec()?)
 }
 
-async fn hold_shared_input(image: Arc<SharedInput>, hold: Duration) {
-    tokio::time::sleep(hold).await;
-    drop(image);
+fn kept_inputs(state: &State) -> Result<MutexGuard<'_, Vec<Arc<SharedInput>>>, Error> {
+    state
+        .kept_inputs
+        .lock()
+        .map_err(|_| "the kept inputs are poisoned".into())
 }
 
 /// Answers every request with its input as it comes back from the identity
@@ -908,7 +904,7 @@ fn identity_of(
     ctx: &Context,
     state: &State,
     logits: &Arc<GpuBuffer>,
-) -> Result<InferenceFuture, Error> {
+) -> Result<impl Future<Output = Result<InferenceResult, TritonError>> + use<>, Error> {
     let mut inference = InferenceRequest::new(ctx.server(), &state.identity_model, -1)?;
     inference.add_input_with_buffer(
         IDENTITY_INPUT,
@@ -937,6 +933,7 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         .write_i32_vec(&[digit])?;
     response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
     response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+    response.set_parameter("kept_inputs", i64::try_from(kept_inputs(state)?.len())?)?;
     response.set_parameter(
         "ram_buffers_allocated",
         buffers.ram_allocated.load(Ordering::SeqCst),
@@ -969,17 +966,38 @@ async fn hold_until_cancelled(
     result
 }
 
-async fn respond_when_cancelled(request: Request) -> Result<(), Error> {
+/// One step of a long request. Triton only marks a request as cancelled, so a
+/// backend checks that between the steps of its work.
+async fn work_step(ctx: &Context, state: &State, images: &[u8]) -> Result<(), Error> {
+    let image = images
+        .get(..IMAGE_BYTES)
+        .ok_or("the request has no image")?;
+    let inference = host_inference(ctx, state, image.to_vec())?;
+    ctx.server().infer_async(inference).await?;
+    Ok(())
+}
+
+async fn respond_when_cancelled(
+    ctx: &Context,
+    state: &State,
+    request: Request,
+) -> Result<(), Error> {
+    let images = request.get_input(IMAGE)?.as_bytes()?;
     while !request.is_cancelled()? {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        work_step(ctx, state, &images).await?;
     }
     request.respond_cancelled()?;
     Ok(())
 }
 
-async fn finish_when_cancelled(sender: ResponseSender) -> Result<(), Error> {
+async fn finish_when_cancelled(
+    ctx: &Context,
+    state: &State,
+    sender: ResponseSender,
+    images: &[u8],
+) -> Result<(), Error> {
     while !sender.is_cancelled()? {
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        work_step(ctx, state, images).await?;
     }
     sender.respond_cancelled()?;
     Ok(())
