@@ -1,3 +1,5 @@
+use crate::batch_statistics::BatchStatistics;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use triton_ng_macros::triton_call;
 
@@ -13,10 +15,15 @@ use triton_ng_macros::triton_call;
 /// batcher, which enqueues it again. The flag is kept here because the
 /// release may happen after the `Request` is gone.
 ///
+/// Before the release, the request is reported to Triton's statistics as
+/// done, successfully when its final response went out without an error.
+///
 /// Owns the request: releases it on drop. `Send + Sync`.
 pub(crate) struct RequestRelease {
     ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
     reschedule: AtomicBool,
+    succeeded: AtomicBool,
+    statistics: Arc<BatchStatistics>,
 }
 
 // SAFETY: the pointer is only used once, in `Drop`, by the last owner, and
@@ -26,11 +33,22 @@ unsafe impl Send for RequestRelease {}
 unsafe impl Sync for RequestRelease {}
 
 impl RequestRelease {
-    pub(crate) fn new(ptr: *mut triton_ng_sys::TRITONBACKEND_Request) -> Self {
+    pub(crate) fn new(
+        ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
+        statistics: Arc<BatchStatistics>,
+    ) -> Self {
         Self {
             ptr,
             reschedule: AtomicBool::new(false),
+            succeeded: AtomicBool::new(false),
+            statistics,
         }
+    }
+
+    /// Records that the final response of the request went out without an
+    /// error, for the statistics.
+    pub(crate) fn succeeded(&self) {
+        self.succeeded.store(true, Ordering::Release);
     }
 
     /// Releases the request with `TRITONSERVER_REQUEST_RELEASE_RESCHEDULE`
@@ -47,7 +65,16 @@ impl Drop for RequestRelease {
         if self.ptr.is_null() {
             return;
         }
-        let flags = if self.reschedule.load(Ordering::Acquire) {
+        let reschedule = self.reschedule.load(Ordering::Acquire);
+        // A rescheduled request is not done, it comes back for another step.
+        if !reschedule
+            && let Err(e) = self
+                .statistics
+                .report_request(self.ptr, self.succeeded.load(Ordering::Acquire))
+        {
+            crate::log::error(&format!("failed to report request statistics: {e}"));
+        }
+        let flags = if reschedule {
             triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_RESCHEDULE
         } else {
             triton_ng_sys::tritonserver_requestreleaseflag_enum_TRITONSERVER_REQUEST_RELEASE_ALL

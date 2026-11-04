@@ -278,6 +278,42 @@ impl Model {
         }
     }
 
+    /// `max_batch_size` of the model config, 0 for a model whose inputs have
+    /// no batch dimension.
+    ///
+    /// Fails when the configuration cannot be read or `max_batch_size` is not
+    /// a number that fits an `u32`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     if model.max_batch_size()? == 0 {
+    ///         return Err("the model batches its requests, set max_batch_size".into());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn max_batch_size(&self) -> Result<u32, TritonError> {
+        let json = self.config_json()?;
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| TritonError::from_message(e.to_string()))?;
+        match &value["max_batch_size"] {
+            serde_json::Value::Null => Ok(0),
+            serde_json::Value::Number(number) => number
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| {
+                    TritonError::from_message(format!(
+                        "max_batch_size does not fit an u32: {number}"
+                    ))
+                }),
+            other => Err(TritonError::from_message(format!(
+                "max_batch_size is not a number: {other}"
+            ))),
+        }
+    }
+
     /// Whether the model reschedules its requests
     /// (`sequence_batching { iterative_sequence: true }`), see
     /// [`crate::Request::reschedule`].

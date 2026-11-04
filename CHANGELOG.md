@@ -7,6 +7,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a batch runs to its end on the Triton thread that called execute, with a minimal
+  `block_on` instead of a tokio runtime per instance. The instance takes its next batch only after
+  that, so Triton keeps the requests in its queue and batches them as for a synchronous backend;
+  batches of a model run in parallel on its instances (`instance_group` count). triton-ng starts no
+  threads of its own. Timers, I/O and spawning of tokio or other runtimes no longer work inside
+  `model_instance_execute`; a blocking call (e.g. `Server::load_model`) blocks only its instance.
+- **Breaking:** the model parameters `worker_threads` and `max_batches_in_flight` are removed.
+  triton-ng no longer reads them, batches of a model run in parallel on its instances.
+- **Breaking:** `InferenceFuture` is removed. `Server::infer_async` returns
+  `impl Future<Output = Result<InferenceResult, TritonError>> + Send + 'static`, still submitting
+  the request at the call. Dropping the future now cancels the request (`InferenceFuture::cancel`
+  is gone), as dropping an `InferenceStream` does.
+- The result of `infer_async` goes through a tokio oneshot channel instead of a hand-written slot;
+  triton-ng depends on tokio only for its `sync` channels and no longer on `tokio-util`.
+
+### Added
+
+- Inference statistics: every request is reported to Triton when it is released (as successful
+  when its final response went out without an error, with the time since its batch started as
+  compute time) and every batch when it is done, so `nv_inference_*` and
+  `/v2/models/<model>/stats` show the requests, batches, queue and compute times of the models of
+  a triton-ng backend. See [Metrics](docs/metrics.md).
+- `Model::max_batch_size`.
+- [Batching and concurrency](docs/batching_and_concurrency.md): how Triton forms batches, why a
+  batch runs on the Triton thread, tuning with `instance_group`, measurements.
+
 ## [0.2.0] - 2026-11-02
 
 Custom backends come close to feature parity with Triton's python_backend: streaming, request

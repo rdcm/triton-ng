@@ -73,3 +73,22 @@ disappear and start from zero when it is loaded again.
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) counts answered requests, the
 requests it holds and the duration of its BLS calls, labelled with the model; the integration
 tests read them from `:8002/metrics`.
+
+## Inference statistics of the model
+
+Triton's own `nv_inference_*` metrics and `/v2/models/<model>/stats` only show what a backend
+reports, and triton-ng reports every batch and every request:
+
+- when a request is released, as one successful request when its final response went out
+  without an error (`nv_inference_request_success`, `nv_inference_count` with its batch size),
+  otherwise as a failed one (`nv_inference_request_failure`); the queue time is from its arrival
+  in the queue of the model until `model_instance_execute` was called, the compute time from
+  that call until the request was answered (`nv_inference_queue_duration_us`,
+  `nv_inference_compute_infer_duration_us`; the input and output durations stay zero);
+- when the batch is done, as one execution of as many elements as its requests had in their batch
+  dimension (`nv_inference_exec_count`, `batch_stats` of `/v2/models/<model>/stats`).
+
+`nv_inference_count / nv_inference_exec_count` is the average batch size of the model, and
+the queue time tells how long requests wait for an instance: the two numbers to watch when
+choosing `instance_group` count, see [Batching and concurrency](batching_and_concurrency.md).
+A rescheduled request (`Request::reschedule`) is reported when its last step is released.

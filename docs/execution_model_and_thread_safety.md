@@ -1,14 +1,16 @@
 # Execution model and thread safety
 
-**Instances and batches.** Triton runs `instance_group.count` instances of a model, and every
-instance has its own multi-threaded runtime owned by triton-ng. `model_instance_execute` is an
-`async fn`: triton-ng runs the future of every batch on the runtime of its instance and returns
-to Triton at once, so an instance works on several batches at the same time. `.await` on a BLS
-call frees the thread for the other batches of the instance; no thread waits for a model.
+**Instances and batches.** Triton runs `instance_group.count` instances of a model, each with its
+own Triton thread that calls execute. `model_instance_execute` is an `async fn`: triton-ng runs
+the future of the batch to its end on that thread and only then returns to Triton, so an instance
+works on one batch at a time and the batches of a model run in parallel on its instances. While
+the future waits for BLS calls the thread is blocked and does nothing else; the response callback,
+called on a thread of the target model, unblocks it. Meanwhile Triton keeps new requests in its queue, where they are
+batched together.
 
-The model parameters `worker_threads` and `max_batches_in_flight` set the threads of every
-runtime and how many batches an instance works on at once, see
-[Model parameters](model_parameters.md).
+There is no async runtime around the future: it may await several BLS calls at once (`join!`),
+but timers, I/O and spawning of tokio or other runtimes do not work in it. Why the batch runs
+there and what to tune is in [Batching and concurrency](batching_and_concurrency.md).
 
 **Keep the batch.** Dynamic batching is what makes Triton fast: `requests` is the batch the
 scheduler collected, and the backend should process it as a whole, sending it to the downstream
@@ -24,12 +26,10 @@ need from it in `model_initialize`.
 `CustomBackend::model_instance_initialize` can store state of one instance with
 `ModelInstance::set_state`, for what must not be shared between instances, like caches of GPU
 buffers of the instance's device. Batches of the instance get it through
-`Context::instance_state::<T>()`. The runtime of the instance starts before
-`model_instance_initialize` and is stopped again when it fails; the instance state is dropped after
-`model_instance_finalize`, once every batch of the instance has finished.
+`Context::instance_state::<T>()`. The instance state is dropped after `model_instance_finalize`.
 
 **Requests are owned by the backend.** `model_instance_execute` gets `Vec<Request>`. A request can
-be answered from any thread of the runtime.
+be answered from any thread.
 
 **Exactly one final response.** `Response::new`, `Request::respond_error` and
 `Request::respond_cancelled` consume the request, so it cannot be answered twice.
@@ -54,10 +54,11 @@ for an unknown model), so a backend can pass it on:
 `request.respond_error_with_code(e.code(), &e.to_string())`. A `TritonError` returned from a
 backend hook reaches Triton with its code, any other error as `Internal`.
 
-**BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns an
-`InferenceFuture`. Triton wakes it from its own threads. Dropping the future does not cancel the
-request: Triton finishes it and the result is discarded; `InferenceFuture::cancel` cancels it. The
-future expects exactly one response; the responses of a decoupled model are read with
+**BLS is a future.** `Server::infer_async` submits the request to Triton right away and returns a
+future of its result, so requests made one after another run in Triton at the same time whatever
+order they are awaited in. Triton wakes the future from its own threads. Dropping the future
+cancels the request, unless the model has already answered. The future expects exactly one
+response; the responses of a decoupled model are read with
 `Server::infer_stream`, see [Streaming](streaming.md). A BLS request can carry the ID,
 correlation ID, flags, timeout, priority and parameters of the request it is made for and be a
 child of its trace, see [Request metadata and tracing](request_metadata_and_tracing.md).
@@ -76,7 +77,7 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 | `SharedInput` | shares the right to answer and release its request | sends the final response held back for it, lets the request be released | yes | yes | a BLS input, see [Memory buffers](memory_buffers.md) |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
-| `InferenceFuture`, `InferenceResult` | none | | yes | yes | the result owns its output buffers |
+| `InferenceResult` | none | | yes | yes | owns its output buffers; the future of `infer_async` is `Send` and cancels its request when dropped |
 | `InferenceStream` | shares the right to cancel the request with its release callback | cancels the request | yes | yes | |
 | `TritonError` | owns the error object, if any | deletes it | yes | yes | |
 | `RamBuffer`, `PinnedRamBuffer`, `GpuBuffer`, `UninitGpuBuffer` | own memory from the memory manager | free it | yes | yes | must not outlive the server, see [Memory buffers](memory_buffers.md) |
@@ -98,16 +99,17 @@ the instance.
 **Cancellation.** `Request::is_cancelled` tells whether the client gave up on the request; answer it
 with `Request::respond_cancelled`. Triton reports a client that drops a gRPC call as a cancellation.
 `ResponseSender::is_cancelled` does the same for a stream. A backend cancels its own BLS requests
-with `InferenceFuture::cancel` and `InferenceStream::cancel`, or by dropping the stream.
+by dropping the future of `infer_async` or the stream, or with `InferenceStream::cancel`.
 
-**Shutdown.** Before `CustomBackend::model_instance_finalize`, triton-ng waits for every batch of the
-instance and stops its runtime.
+**Shutdown.** Triton finalizes an instance only between executes, so no batch of it is running when
+`CustomBackend::model_instance_finalize` is called.
 
 [`example/custom-backend`](../example/custom-backend/src/lib.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
-`hold_until_cancelled` parameter is held until the client cancels it. The `mnist` model works on at
-most four batches at once (`max_batches_in_flight`), and unloading it waits until the held
-requests are answered. A request with the `memory` parameter is answered through memory manager
+`hold_until_cancelled` parameter repeats a BLS call and checks `Request::is_cancelled` between the
+calls until the client cancels it: Triton only marks a cancelled request, a backend finds out at
+such a check. That keeps one of the two instances of `mnist` busy, and unloading the model waits
+until the held requests are answered. A request with the `memory` parameter is answered through memory manager
 buffers cached in the instance state, and one with `shared_input` passes its image on to
 `mnist_onnx` without a copy, see [Memory buffers](memory_buffers.md). The decoupled
 `mnist_stream` model of the same backend streams a digit per image, see [Streaming](streaming.md);

@@ -30,6 +30,7 @@ pub struct ModelStats {
     pub name: String,
     pub version: String,
     pub inference_count: u64,
+    pub execution_count: u64,
 }
 
 pub struct ModelEntry {

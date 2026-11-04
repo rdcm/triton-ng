@@ -100,6 +100,35 @@ async fn model_statistics_are_returned_for_all_models() -> Result<()> {
     Ok(())
 }
 
+/// Successful requests and executions of the custom backend model.
+async fn backend_statistics(sut: &Sut, config: &Config) -> Result<(u64, u64)> {
+    let stats = sut
+        .model_statistics(Some(&config.backend_model), None)
+        .await?;
+    let stats = stats
+        .iter()
+        .find(|s| s.name == config.backend_model)
+        .context("backend model not found in statistics")?;
+    Ok((stats.inference_count, stats.execution_count))
+}
+
+#[tokio::test]
+async fn custom_backend_reports_its_requests_and_batches_to_the_statistics() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let (requests_before, batches_before) = backend_statistics(&sut, &config).await?;
+
+    infer_digit(&sut, &config).await?;
+
+    let (requests, batches) = backend_statistics(&sut, &config).await?;
+    assert!(
+        requests > requests_before,
+        "{requests} <= {requests_before}"
+    );
+    assert!(batches > batches_before, "{batches} <= {batches_before}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn repository_index_lists_all_available_models() -> Result<()> {
     let config = Config::load()?;
@@ -464,21 +493,29 @@ async fn custom_backend_passes_a_gpu_input_of_its_request_on_without_a_copy() ->
     Ok(())
 }
 
-async fn infer_digit_with_shared_input(
-    sut: &Sut,
-    config: &Config,
-    hold_ms: i64,
-) -> Result<(i32, std::time::Duration)> {
-    let started = std::time::Instant::now();
-    let result = infer_backend(sut, config, &[("shared_input", Parameter::Int(hold_ms))]).await?;
-    let elapsed = started.elapsed();
+async fn infer_digit_with_shared_input(sut: &Sut, config: &Config, keep: bool) -> Result<i32> {
+    let result = infer_backend(sut, config, &[("shared_input", Parameter::Bool(keep))]).await?;
     let digit = result
         .outputs
         .into_iter()
         .find(|o| o.name == config.backend_output_name)
         .context("digit not found in response")?
         .data_i32;
-    Ok((digit[0], elapsed))
+    Ok(digit[0])
+}
+
+async fn infer_digit_keeping_shared_input() -> Result<i32> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    infer_digit_with_shared_input(&sut, &config, true).await
+}
+
+async fn kept_inputs(sut: &Sut, config: &Config) -> Result<i64> {
+    let result = infer_backend(sut, config, &[]).await?;
+    match response_parameter(&result, "kept_inputs")? {
+        Parameter::Int(kept) => Ok(kept),
+        other => anyhow::bail!("kept_inputs is {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -487,7 +524,7 @@ async fn custom_backend_passes_an_input_of_its_request_on_without_a_copy() -> Re
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
-    let (digit, _) = infer_digit_with_shared_input(&sut, &config, 0).await?;
+    let digit = infer_digit_with_shared_input(&sut, &config, false).await?;
 
     assert_eq!(digit, expected);
     Ok(())
@@ -499,18 +536,25 @@ async fn response_is_held_back_until_the_shared_input_of_its_request_is_dropped(
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
-    let (digit, elapsed) = infer_digit_with_shared_input(&sut, &config, 500).await?;
-    let (_, after) = infer_digit_with_shared_input(&sut, &config, 0).await?;
+    let held = tokio::spawn(infer_digit_keeping_shared_input());
+    let mut kept = 0;
+    for _ in 0..10_000 {
+        kept = kept_inputs(&sut, &config).await?;
+        if kept == 1 {
+            break;
+        }
+    }
+    assert_eq!(kept, 1);
+    assert!(!held.is_finished());
 
-    assert_eq!(digit, expected);
-    assert!(
-        elapsed >= std::time::Duration::from_millis(500),
-        "answered after {elapsed:?}"
-    );
-    assert!(
-        after < std::time::Duration::from_millis(500),
-        "answered after {after:?}"
-    );
+    infer_backend(
+        &sut,
+        &config,
+        &[("release_shared_inputs", Parameter::Bool(true))],
+    )
+    .await?;
+
+    assert_eq!(held.await??, expected);
     Ok(())
 }
 
@@ -1537,25 +1581,6 @@ async fn dropped_bls_stream_cancels_its_request() -> Result<()> {
         string("dropped")
     );
     wait_for_stream_cancellation(&sut, &config, before).await
-}
-
-#[tokio::test]
-async fn cancelled_bls_request_resolves_to_cancelled() -> Result<()> {
-    let config = Config::load()?;
-    let sut = Sut::new(&config.triton_url).await?;
-
-    let error = infer_backend(&sut, &config, &[("cancel_bls", Parameter::Bool(true))])
-        .await
-        .err()
-        .context("the inference succeeded")?;
-
-    match error.downcast_ref::<triton_ng_client::Error>() {
-        Some(triton_ng_client::Error::Grpc(status)) => {
-            assert_eq!(status.code(), Code::Cancelled, "{status}")
-        }
-        _ => anyhow::bail!("not a gRPC error: {error:#}"),
-    }
-    wait_for_backend_counters(&sut, &config, |held, _| held == 0).await
 }
 
 #[tokio::test]

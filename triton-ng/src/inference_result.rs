@@ -74,9 +74,9 @@ impl OutputTensor {
     }
 }
 
-/// The outputs of a successful BLS call. A failed call resolves its
-/// [`crate::InferenceFuture`] to a [`crate::TritonError`] with the code of
-/// the failure instead.
+/// The outputs of a successful BLS call. A failed call resolves the future
+/// of [`crate::Server::infer_async`] to a [`crate::TritonError`] with the
+/// code of the failure instead.
 ///
 /// Owns the output data and buffers. `Send + Sync`.
 ///

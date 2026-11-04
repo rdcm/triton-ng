@@ -52,8 +52,8 @@ fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
   the `int32` of the model config: triton-ng checks this when the attributes are built.
 - **Parallel instance loading** lets Triton initialize the instances of a model at the same time.
   `model_instance_initialize` and `model_instance_finalize` then run on several threads at once:
-  what they share (the model state, statics) must be safe for that. triton-ng's own part, starting
-  and stopping the runtime of an instance, touches only that instance.
+  what they share (the model state, statics) must be safe for that. triton-ng's own part, creating
+  and dropping the executor of an instance, touches only that instance.
 
 Triton calls the hook right after `initialize` and may call it again later. It ignores an error
 from the hook and keeps the attributes it had, so triton-ng writes the error to the log. Without
@@ -132,9 +132,8 @@ server.unload_model("asr_ensemble", true)?; // with its composing models
   hooks, Triton answers `Unavailable`. Load models from `model_instance_execute`, or from the hooks
   of models loaded later.
 - **Loading blocks.** `load_model` returns when the model is ready or has failed, which takes
-  seconds for a big model. In `model_instance_execute` it blocks a thread of the runtime of the
-  instance, and the other batches on it wait. Call it through `tokio::task::spawn_blocking` to keep
-  them going.
+  seconds for a big model. In `model_instance_execute` it blocks the thread of the instance, which
+  takes no other batch meanwhile; the other instances go on.
 - **Unloading does not wait.** `unload_model` returns at once; Triton unloads the model when its
   requests in flight are answered. A model can unload itself from `model_instance_execute`.
 - **Files.** Every file is named `file:<path>`, with `<path>` relative to the model directory

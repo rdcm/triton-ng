@@ -1,5 +1,6 @@
 use crate::Input;
 use crate::ResponseSender;
+use crate::batch_statistics::BatchStatistics;
 use crate::error::{Error, ErrorCode, TritonError};
 use crate::executor::RequestPolicy;
 use crate::final_response::{FinalResponse, Pending};
@@ -14,8 +15,7 @@ use triton_ng_macros::triton_call;
 
 /// Inference request passed to [`crate::CustomBackend::model_instance_execute`].
 ///
-/// The backend owns the request and can answer it from any thread of the
-/// instance runtime. The
+/// The backend owns the request and can answer it from any thread. The
 /// request gets exactly one final response, sent by [`crate::Response::send`],
 /// [`Request::respond_error`] or [`Request::respond_cancelled`], all of which
 /// consume it. A request of a decoupled model can instead get a stream of
@@ -75,8 +75,9 @@ impl Request {
     pub(crate) fn from_ptr(
         ptr: *mut triton_ng_sys::TRITONBACKEND_Request,
         policy: RequestPolicy,
+        statistics: Arc<BatchStatistics>,
     ) -> Self {
-        let release = Arc::new(RequestRelease::new(ptr));
+        let release = Arc::new(RequestRelease::new(ptr, statistics));
         Self {
             ptr,
             policy,
@@ -208,6 +209,28 @@ impl Request {
 
     pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONBACKEND_Request {
         self.ptr
+    }
+
+    /// The batch size of the request, reported to Triton with the
+    /// statistics of its batch: the first dimension of its first input for a
+    /// model with `max_batch_size`, 1 for a model without batching.
+    ///
+    /// Fails when the request has no input or its shape cannot be read.
+    pub(crate) fn batch_size(&self) -> Result<u64, Error> {
+        if !self.policy.batching {
+            return Ok(1);
+        }
+        let name = self
+            .input_names()?
+            .into_iter()
+            .next()
+            .ok_or("the request has no inputs")?;
+        let shape = self.get_input(&name)?.properties()?.shape;
+        let first = shape
+            .first()
+            .copied()
+            .ok_or("the first input of the request has no dimensions")?;
+        Ok(u64::try_from(first).map_err(|_| format!("the batch dimension is {first}"))?)
     }
 
     /// Gives the final response of the request, sent now or once no shared
@@ -493,6 +516,7 @@ mod tests {
         let iterative = RequestPolicy {
             decoupled: true,
             iterative_sequence: true,
+            batching: false,
         };
         assert_eq!(reschedule_refusal(iterative, flags(true)), None);
         assert!(reschedule_refusal(iterative, flags(false)).is_some());

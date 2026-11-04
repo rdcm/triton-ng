@@ -1,21 +1,21 @@
-use crate::inference_future::{Completion, Failure};
+use crate::failure::Failure;
 use crate::inference_request::InputBuffers;
 use crate::inference_response::InferenceResponse;
 use crate::inference_stream::StreamResults;
 use crate::inference_trace::InferenceTrace;
 use crate::message::Message;
 use crate::model_control::{check_load_arguments, check_model_control_allowed};
-use crate::request_cancel::RequestCancel;
+use crate::request_cancel::{CancelOnDrop, RequestCancel};
 use crate::request_release::RequestRelease;
 use crate::response_allocator::{OutputPlan, ResponseAllocator};
 use crate::triton_parameter::TritonParameter;
 use crate::utils::cstring_from_str;
-use crate::{
-    ErrorCode, InferenceFuture, InferenceRequest, InferenceResult, InferenceStream, TritonError,
-};
+use crate::{ErrorCode, InferenceRequest, InferenceResult, InferenceStream, TritonError};
 use std::ffi::c_void;
+use std::future::Future;
 use std::ptr;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use triton_ng_macros::triton_call;
 
 /// What the response callback of one BLS request needs, handed to Triton as
@@ -46,7 +46,7 @@ enum Receiver {
     /// [`Server::infer_async`]: exactly one response, delivered with the
     /// final flag.
     Single {
-        completion: Arc<Completion>,
+        sender: oneshot::Sender<Result<InferenceResult, Failure>>,
         result: Option<Result<InferenceResult, Failure>>,
     },
     /// [`Server::infer_stream`]: every response as it arrives. Dropping the
@@ -55,9 +55,9 @@ enum Receiver {
 }
 
 impl Receiver {
-    fn single(completion: Arc<Completion>) -> Self {
+    fn single(sender: oneshot::Sender<Result<InferenceResult, Failure>>) -> Self {
         Self::Single {
-            completion,
+            sender,
             result: None,
         }
     }
@@ -83,8 +83,9 @@ impl Receiver {
     }
 
     fn finish(self) {
-        if let Self::Single { completion, result } = self {
-            completion.complete(result.unwrap_or_else(|| {
+        if let Self::Single { sender, result } = self {
+            // A dropped future discards the result.
+            let _ = sender.send(result.unwrap_or_else(|| {
                 Err(Failure {
                     code: ErrorCode::Internal,
                     message: "the model sent no response".to_string(),
@@ -204,9 +205,8 @@ impl Server {
     /// them is kept.
     ///
     /// Blocks the calling thread until the model is loaded, which takes
-    /// seconds for a big model. In `model_instance_execute` that thread runs
-    /// the other batches of the instance; to keep them going, call it through
-    /// `tokio::task::spawn_blocking`.
+    /// seconds for a big model. In `model_instance_execute` that is the
+    /// thread of the instance, which takes no other batch meanwhile.
     ///
     /// Works only with `--model-control-mode=explicit`, and only after the
     /// server has started: models listed with `--load-model` cannot load
@@ -306,9 +306,21 @@ impl Server {
         }
     }
 
-    /// Submits inference and returns a future of its result, see
-    /// [`InferenceFuture`]. Submission errors are reported by the future,
-    /// with the code Triton gave them (`NotFound` for an unknown model).
+    /// Submits inference and returns a future of its result. Submission errors
+    /// are reported by the future, with the code Triton gave them (`NotFound`
+    /// for an unknown model).
+    ///
+    /// The request is submitted by this call, not when the future is first
+    /// polled: requests made one after another run in Triton at the same
+    /// time, whatever order their futures are awaited in.
+    ///
+    /// Dropping the future cancels the request, unless the model has already
+    /// answered; a failure to cancel is only logged.
+    ///
+    /// The future fails when the model sends other than exactly one
+    /// response: the results of a decoupled model are read with
+    /// [`Server::infer_stream`]. It holds no Triton pointers, it is
+    /// `Send + 'static` and is woken from Triton's threads.
     ///
     /// # Examples
     ///
@@ -331,11 +343,23 @@ impl Server {
     /// The input buffers owned by the request are freed by the same callback:
     /// Triton may read them until the request is released, which can happen
     /// after the final response has already been delivered.
-    pub fn infer_async(&self, request: InferenceRequest) -> InferenceFuture {
-        let completion = Completion::new();
-        match self.submit(request, Receiver::single(Arc::clone(&completion))) {
-            Ok(cancel) => InferenceFuture::new(completion, Some(cancel)),
-            Err(e) => InferenceFuture::new(Completion::failed(e.into()), None),
+    pub fn infer_async(
+        &self,
+        request: InferenceRequest,
+    ) -> impl Future<Output = Result<InferenceResult, TritonError>> + Send + 'static + use<> {
+        let (sender, receiver) = oneshot::channel();
+        let submitted = self
+            .submit(request, Receiver::single(sender))
+            .map(CancelOnDrop::new);
+        async move {
+            let _cancel = submitted?;
+            match receiver.await {
+                Ok(result) => result.map_err(TritonError::from),
+                Err(_) => Err(TritonError::with_code(
+                    ErrorCode::Internal,
+                    "the response callback ended without a result",
+                )),
+            }
         }
     }
 
@@ -546,10 +570,10 @@ unsafe extern "C" fn inference_response_complete(
 #[cfg(test)]
 mod tests {
     use super::Receiver;
-    use crate::inference_future::{Completion, Failure};
-    use crate::{ErrorCode, InferenceFuture, InferenceResult, InferenceStream};
-    use std::sync::Arc;
-    use std::task::{Context, Poll, Waker};
+    use crate::failure::Failure;
+    use crate::{ErrorCode, InferenceResult, InferenceStream};
+    use std::task::Poll;
+    use tokio::sync::oneshot;
 
     fn result() -> Result<InferenceResult, Failure> {
         Ok(InferenceResult {
@@ -559,14 +583,12 @@ mod tests {
     }
 
     fn single_result(responses: usize) -> Poll<Result<usize, String>> {
-        let completion = Completion::new();
-        let future = InferenceFuture::new(Arc::clone(&completion), None);
-        let mut receiver = Receiver::single(completion);
+        let (sender, mut received) = oneshot::channel();
+        let mut receiver = Receiver::single(sender);
         (0..responses).for_each(|_| receiver.response(result()));
         receiver.finish();
-        future
-            .poll_result(&mut Context::from_waker(Waker::noop()))
-            .map(|r| r.map(|r| r.outputs.len()).map_err(|f| f.message))
+        let result = received.try_recv().expect("finish sends the result");
+        Poll::Ready(result.map(|r| r.outputs.len()).map_err(|f| f.message))
     }
 
     #[test]

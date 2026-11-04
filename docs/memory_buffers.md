@@ -230,6 +230,7 @@ request to `identity_gpu` and answers with what comes back; the caller checks th
 in GPU memory and equals the logits. `wrong_size` writes the logits into a buffer of the wrong
 size and gets an error.
 
-A request with the parameter `shared_input` set to a number of milliseconds passes its image on
-to `mnist_onnx` as a `SharedInput`, checks the logits against those of a copy, and keeps the
-shared image that long after answering: the client gets the response only then.
+A request with the parameter `shared_input` passes its image on to `mnist_onnx` as a `SharedInput`
+and checks the logits against those of a copy. Set to `true`, it keeps the shared image in the
+state of the model after answering, and the client gets the response only when a request with
+`release_shared_inputs` drops it.
