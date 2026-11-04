@@ -28,6 +28,7 @@ impl Backend {
         Self { ptr }
     }
 
+    /// The name of the backend, as in `backend: "<name>"` of the model configs.
     pub fn name(&self) -> Result<String, TritonError> {
         let mut name: *const c_char = std::ptr::null();
         triton_call!(triton_ng_sys::TRITONBACKEND_BackendName(

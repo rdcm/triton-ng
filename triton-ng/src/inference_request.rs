@@ -48,6 +48,16 @@ pub struct InferenceRequest {
 unsafe impl Send for InferenceRequest {}
 
 impl InferenceRequest {
+    /// A BLS request to `model_version` of `model_name` (`-1` for the latest) on `server`, without inputs yet.
+    ///
+    /// Fails when the model is unknown or the name has a NUL byte.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
+    /// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples.len() as i64], bytes)?;
+    /// ```
     pub fn new(server: &Server, model_name: &str, model_version: i64) -> Result<Self, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
         let ptr = triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestNew(
@@ -297,6 +307,9 @@ impl InferenceRequest {
         Ok(())
     }
 
+    /// Declares the input `name` of `datatype` and `shape` without data: append it with [`InferenceRequest::append_input_data`] or [`InferenceRequest::append_input_buffer`]. [`InferenceRequest::add_input_with_data`] does both at once.
+    ///
+    /// Fails when the name has a NUL byte or the input is already declared.
     pub fn add_input(
         &mut self,
         name: &str,

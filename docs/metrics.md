@@ -3,7 +3,7 @@
 A backend exports its own metrics through Triton: they appear next to Triton's metrics on its
 Prometheus endpoint (`:8002/metrics`), with no exporter of the backend's own.
 
-```rust
+```rust ignore
 struct State {
     answered: Counter,
     encoder_seconds: Histogram,
@@ -70,7 +70,7 @@ The family is deleted with its last metric and family value. Every type is `Send
 removed from the endpoint when its last metric is dropped, so the metrics of an unloaded model
 disappear and start from zero when it is loaded again.
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) counts answered requests, the
+[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) counts answered requests, the
 requests it holds and the duration of its BLS calls, labelled with the model; the integration
 tests read them from `:8002/metrics`.
 
@@ -90,5 +90,5 @@ reports, and triton-ng reports every batch and every request:
 
 `nv_inference_count / nv_inference_exec_count` is the average batch size of the model, and
 the queue time tells how long requests wait for an instance: the two numbers to watch when
-choosing `instance_group` count, see [Batching and concurrency](batching_and_concurrency.md).
+choosing `instance_group` count, see [Batching and concurrency](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
 A rescheduled request (`Request::reschedule`) is reported when its last step is released.

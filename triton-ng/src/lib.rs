@@ -1,47 +1,50 @@
+#![doc = include_str!("../README.md")]
+#![deny(missing_docs)]
+
 #[path = "allocation.rs"]
 pub(crate) mod allocation;
 #[path = "auto_complete_config.rs"]
-pub mod auto_complete_config;
+mod auto_complete_config;
 #[path = "backend.rs"]
-pub mod backend;
+mod backend;
 #[path = "backend_attribute.rs"]
 pub(crate) mod backend_attribute;
 #[path = "backend_attributes.rs"]
-pub mod backend_attributes;
+mod backend_attributes;
 #[path = "backend_config.rs"]
-pub mod backend_config;
+mod backend_config;
 #[path = "batch_statistics.rs"]
 pub(crate) mod batch_statistics;
 #[path = "buffers.rs"]
-pub mod buffers;
+mod buffers;
 #[path = "custom_backend.rs"]
-pub mod custom_backend;
+mod custom_backend;
 #[path = "error.rs"]
-pub mod error;
+mod error;
 #[path = "executor.rs"]
-pub mod executor;
+mod executor;
 #[path = "failure.rs"]
 pub(crate) mod failure;
 #[path = "final_response.rs"]
 pub(crate) mod final_response;
 #[path = "inference_request.rs"]
-pub mod inference_request;
+mod inference_request;
 #[path = "inference_response.rs"]
 pub(crate) mod inference_response;
 #[path = "inference_result.rs"]
-pub mod inference_result;
+mod inference_result;
 #[path = "inference_stream.rs"]
-pub mod inference_stream;
+mod inference_stream;
 #[path = "inference_trace.rs"]
 pub(crate) mod inference_trace;
 #[path = "input.rs"]
-pub mod input;
+mod input;
 #[path = "input_buffer.rs"]
-pub mod input_buffer;
+mod input_buffer;
 #[path = "log.rs"]
 pub mod log;
 #[path = "memory_manager.rs"]
-pub mod memory_manager;
+mod memory_manager;
 #[path = "message.rs"]
 pub(crate) mod message;
 #[path = "metric.rs"]
@@ -51,43 +54,43 @@ pub(crate) mod metric_args;
 #[path = "metric_family.rs"]
 pub(crate) mod metric_family;
 #[path = "metrics.rs"]
-pub mod metrics;
+mod metrics;
 #[path = "model.rs"]
-pub mod model;
+mod model;
 #[path = "model_control.rs"]
 pub(crate) mod model_control;
 #[path = "model_instance.rs"]
-pub mod model_instance;
+mod model_instance;
 #[path = "output.rs"]
-pub mod output;
+mod output;
 #[path = "output_buffer.rs"]
-pub mod output_buffer;
+mod output_buffer;
 #[path = "raw_buffer.rs"]
 mod raw_buffer;
 #[path = "request.rs"]
-pub mod request;
+mod request;
 #[path = "request_cancel.rs"]
 mod request_cancel;
 #[path = "request_release.rs"]
 pub(crate) mod request_release;
 #[path = "response.rs"]
-pub mod response;
+mod response;
 #[path = "response_allocator.rs"]
 pub(crate) mod response_allocator;
 #[path = "response_factory.rs"]
 mod response_factory;
 #[path = "response_sender.rs"]
-pub mod response_sender;
+mod response_sender;
 #[path = "server.rs"]
-pub mod server;
+mod server;
 #[path = "shared_input.rs"]
-pub mod shared_input;
+mod shared_input;
 #[path = "stream_response.rs"]
-pub mod stream_response;
+mod stream_response;
 #[path = "triton_parameter.rs"]
 pub(crate) mod triton_parameter;
 #[path = "types.rs"]
-pub mod types;
+mod types;
 #[path = "utils.rs"]
 pub(crate) mod utils;
 
@@ -120,6 +123,51 @@ pub use stream_response::*;
 pub use types::*;
 
 pub use triton_ng_macros::backend;
+
+/// The guides of the repository's `docs/` directory, one module per guide, as on GitHub.
+///
+#[doc = include_str!("../docs/README.md")]
+pub mod docs {
+    #[doc = "Batching and concurrency: how Triton forms batches, why a batch runs on the Triton thread of its instance, tuning with `instance_group`, measurements."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/batching_and_concurrency.md")]
+    pub mod batching_and_concurrency {}
+
+    #[doc = "Execution model and thread safety: instances and their threads, state, request ownership, error codes, BLS futures, cancellation, shutdown."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/execution_model_and_thread_safety.md")]
+    pub mod execution_model_and_thread_safety {}
+
+    #[doc = "Streaming: decoupled models, streams of responses from a backend, BLS streams, cancellation of BLS calls."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/streaming.md")]
+    pub mod streaming {}
+
+    #[doc = "Model parameters: the `parameters` map of a model config and how a backend reads it."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/model_parameters.md")]
+    pub mod model_parameters {}
+
+    #[doc = "Request metadata and tracing: ID, correlation ID, sequence flags and timeout of a request, BLS calls as children of its trace."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/request_metadata_and_tracing.md")]
+    pub mod request_metadata_and_tracing {}
+
+    #[doc = "Metrics: counters, gauges and histograms of the backend on Triton's Prometheus endpoint, and the inference statistics triton-ng reports."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/metrics.md")]
+    pub mod metrics {}
+
+    #[doc = "Model management and configuration: backend config and attributes, completing model configs, loading and unloading models, rescheduling requests."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/model_management_and_configuration.md")]
+    pub mod model_management_and_configuration {}
+
+    #[doc = "Memory buffers: RAM, pinned and GPU buffers from Triton's memory manager for BLS inputs and outputs, passing inputs of a request on without a copy."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/memory_buffers.md")]
+    pub mod memory_buffers {}
+}
 
 /// Entry points called by the code that [`macro@backend`] generates. Not part of the
 /// public API.

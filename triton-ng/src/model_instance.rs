@@ -37,6 +37,7 @@ impl ModelInstance {
         Self { ptr }
     }
 
+    /// The name of the instance, `<model>_<index>` by default.
     pub fn name(&self) -> Result<String, TritonError> {
         let mut name: *const c_char = std::ptr::null();
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceName(
@@ -45,6 +46,7 @@ impl ModelInstance {
         Ok(unsafe { cstr_to_string(name) })
     }
 
+    /// The device of the instance: the GPU id for `KIND_GPU`, 0 otherwise.
     pub fn device_id(&self) -> Result<i32, TritonError> {
         let mut device_id: i32 = 0;
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceDeviceId(

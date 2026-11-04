@@ -1,3 +1,8 @@
+//! Procedural macros of [triton-ng](https://docs.rs/triton-ng): [`macro@backend`] registers a
+//! `CustomBackend` implementation as the Triton backend of a crate, [`triton_call!`] wraps a
+//! call into the Triton C API.
+#![deny(missing_docs)]
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Expr, ItemImpl, parse_macro_input, visit_mut::VisitMut};

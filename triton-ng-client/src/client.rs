@@ -35,6 +35,7 @@ pub struct TritonClientConfig {
 }
 
 impl TritonClientConfig {
+    /// A config for the server at `url` (`http://host:8001`, `https://` for TLS): no TLS settings, an eager connection and the default message size limit.
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -65,6 +66,7 @@ impl TritonClientConfig {
         self
     }
 
+    /// The URL of the server.
     pub fn url(&self) -> &str {
         &self.url
     }

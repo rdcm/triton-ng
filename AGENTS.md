@@ -13,6 +13,7 @@ added to the `Makefile` only after it is agreed.
 |---|---|
 | `make format` | `cargo sort` and `cargo fmt` for the whole workspace |
 | `make lint` | `cargo clippy` |
+| `make doc` | `cargo doc` for the workspace, warnings (broken links, undocumented items) are errors; the result is what docs.rs builds |
 | `make tests` | `cargo nextest` for the whole workspace |
 | `make build` | release build |
 | `make download-model` | downloads the mnist models used by the tests |

@@ -1,10 +1,10 @@
 use crate::allocation::Allocation;
 use std::ops::{Deref, DerefMut};
 
-/// CPU memory from [`MemoryManager::ram`], readable and writable as `[u8]`.
+/// CPU memory from [`crate::MemoryManager::ram`], readable and writable as `[u8]`.
 pub struct RamBuffer(pub(crate) Allocation);
 
-/// Pinned CPU memory from [`MemoryManager::pinned`], readable and writable
+/// Pinned CPU memory from [`crate::MemoryManager::pinned`], readable and writable
 /// as `[u8]`.
 pub struct PinnedRamBuffer(pub(crate) Allocation);
 
@@ -13,7 +13,7 @@ pub struct PinnedRamBuffer(pub(crate) Allocation);
 /// [`UninitGpuBuffer`] to receive another output.
 pub struct GpuBuffer(pub(crate) Allocation);
 
-/// GPU memory from [`MemoryManager::gpu`] whose content is not defined yet.
+/// GPU memory from [`crate::MemoryManager::gpu`] whose content is not defined yet.
 /// It can only receive the output of a BLS call.
 pub struct UninitGpuBuffer(pub(crate) Allocation);
 

@@ -161,7 +161,7 @@ impl MemoryManager {
 
     /// Allocates `len` bytes on GPU `device_id`. The memory is not
     /// initialized and cannot be written from the CPU: the buffer becomes a
-    /// [`GpuBuffer`] once a model writes its output into it.
+    /// [`crate::GpuBuffer`] once a model writes its output into it.
     ///
     /// Fails when the GPU pool has no free block of `len` bytes (Triton
     /// reports it as an INTERNAL error), when `device_id` is negative, and on

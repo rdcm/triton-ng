@@ -38,6 +38,9 @@ impl<'a> Output<'a> {
         }
     }
 
+    /// Writes one string into a BYTES output of one element.
+    ///
+    /// Fails when the string is longer than `u32::MAX` bytes or the output is already written.
     pub fn write_string(&mut self, value: &str) -> Result<(), Error> {
         let encoded = encode_string(value)?;
         self.write_bytes(&encoded)?;
@@ -104,26 +107,44 @@ impl<'a> Output<'a> {
         Ok(())
     }
 
+    /// Writes the elements of an FP32 output.
+    ///
+    /// Fails when the output has another datatype, `data` does not have as many elements as the shape, or the output is already written.
     pub fn write_fp32_vec(&mut self, data: &[f32]) -> Result<(), TritonError> {
         self.write_le(DataType::Fp32, data, |v| v.to_le_bytes())
     }
 
+    /// Writes the elements of an FP64 output.
+    ///
+    /// Fails when the output has another datatype, `data` does not have as many elements as the shape, or the output is already written.
     pub fn write_fp64_vec(&mut self, data: &[f64]) -> Result<(), TritonError> {
         self.write_le(DataType::Fp64, data, |v| v.to_le_bytes())
     }
 
+    /// Writes the elements of an INT32 output.
+    ///
+    /// Fails when the output has another datatype, `data` does not have as many elements as the shape, or the output is already written.
     pub fn write_i32_vec(&mut self, data: &[i32]) -> Result<(), TritonError> {
         self.write_le(DataType::Int32, data, |v| v.to_le_bytes())
     }
 
+    /// Writes the elements of an INT64 output.
+    ///
+    /// Fails when the output has another datatype, `data` does not have as many elements as the shape, or the output is already written.
     pub fn write_i64_vec(&mut self, data: &[i64]) -> Result<(), TritonError> {
         self.write_le(DataType::Int64, data, |v| v.to_le_bytes())
     }
 
+    /// Writes the elements of an BOOL output.
+    ///
+    /// Fails when the output has another datatype, `data` does not have as many elements as the shape, or the output is already written.
     pub fn write_bool_vec(&mut self, data: &[bool]) -> Result<(), TritonError> {
         self.write_le(DataType::Bool, data, |v| [u8::from(v)])
     }
 
+    /// Writes the one element of a UINT64 output.
+    ///
+    /// Fails when the output has another datatype or shape, or is already written.
     pub fn write_u64(&mut self, value: u64) -> Result<(), TritonError> {
         self.write_le(DataType::Uint64, &[value], |v| v.to_le_bytes())
     }

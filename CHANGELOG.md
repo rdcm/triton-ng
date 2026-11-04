@@ -24,8 +24,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The result of `infer_async` goes through a tokio oneshot channel instead of a hand-written slot;
   triton-ng depends on tokio only for its `sync` channels and no longer on `tokio-util`.
 
+- **Breaking:** the modules of `triton-ng` are private: every type is at the crate root
+  (`triton_ng::Request`, as the examples always showed), only `triton_ng::log` stays a module.
+  The crate page on docs.rs now lists the types instead of re-exports.
+
 ### Added
 
+- The crate documentation on docs.rs includes the README and the guides of `docs/` (module
+  `docs`); every public item is documented and `#![deny(missing_docs)]` keeps it so. `make doc`
+  builds the documentation as docs.rs does, with warnings as errors.
 - Inference statistics: every request is reported to Triton when it is released (as successful
   when its final response went out without an error, with the time since its batch started as
   compute time) and every batch when it is done, so `nv_inference_*` and

@@ -21,7 +21,7 @@ Every batch gets Triton's memory manager from `Context::memory`:
 | `pinned(len)` | `PinnedRamBuffer` | page-locked CPU memory from Triton's pinned pool | `&[u8]` / `&mut [u8]`, zeroed |
 | `gpu(device_id, len)` | `UninitGpuBuffer` | GPU memory from Triton's CUDA pool on `device_id` | none |
 
-```rust
+```rust ignore
 let mut tokens = ctx.memory().pinned(batch * 8)?;
 tokens.copy_from_slice(&token_bytes);
 let state = ctx.memory().gpu(ctx.device_id(), batch * 320 * 4)?;
@@ -51,7 +51,7 @@ Its content comes only from a model, so it has two types:
   BLS call, or turned back into an `UninitGpuBuffer` with `into_uninit` to receive another
   output.
 
-```
+```text
 memory.gpu(device, len) ──▶ UninitGpuBuffer ──add_requested_output_into──▶ BLS call
                                   ▲                                            │
                                   │ into_uninit                       take_gpu │
@@ -78,7 +78,7 @@ memory with undefined content cannot become a model input.
 | `SharedInput` | the memory the request keeps the input in, CPU or GPU |
 | `Arc<T>` of any of them | the memory of `T` |
 
-```rust
+```rust ignore
 inference.add_input_with_buffer("x", DataType::Int64, &[batch, 1], tokens)?;
 inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
 ```
@@ -97,7 +97,7 @@ that points into the memory the request keeps the tensor in. A backend in the mi
 chain (a step of an ensemble, or a model called by another backend) passes a GPU tensor on this
 way, and a CPU one without the copy into a `Vec` that `Input::as_bytes` makes.
 
-```rust
+```rust ignore
 let features = request.get_input("features")?.share()?;
 let shape = features.shape().to_vec();
 inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
@@ -133,7 +133,7 @@ methods.
 
 `add_requested_output_into` writes the output into a buffer of the backend instead:
 
-```rust
+```rust ignore
 inference.add_requested_output_into("ho", state)?;          // UninitGpuBuffer
 inference.add_requested_output_into("logits", logits)?;     // PinnedRamBuffer
 let mut result = ctx.server().infer_async(inference).await?;
@@ -149,7 +149,7 @@ let logits: PinnedRamBuffer = result.take_pinned("logits")?;
   call fails. Outputs whose size depends on the data have to use `add_requested_output`.
 - **One output per buffer.** A buffer receives one output, so `Server::infer_stream` refuses
   a request with outputs in buffers: every response of a stream needs memory of its own, see
-  [Streaming](streaming.md).
+  [Streaming](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md).
 - **Taking the buffer back.** `take_gpu`, `take_pinned` and `take_ram` hand the buffer over.
   Taking it as the wrong type fails and leaves it in the result; after a take, `bytes` and
   `as_*` of that output fail. A buffer left in the result is freed with the result.
@@ -166,7 +166,7 @@ triton-ng has no cache of its own: what to keep, how much, and for how long depe
 backend. Keep the cache in the state of the instance (`ModelInstance::set_state`,
 `Context::instance_state`), so every instance caches buffers of its own device:
 
-```rust
+```rust ignore
 #[derive(Default)]
 struct Buffers {
     gpu: Mutex<Vec<GpuBuffer>>,
@@ -192,7 +192,7 @@ fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
 }
 ```
 
-```rust
+```rust ignore
 let buffers = ctx.instance_state::<Buffers>()?;
 inference.add_requested_output_into("ho", buffers.gpu(ctx.memory(), ctx.device_id(), len)?)?;
 let mut result = ctx.server().infer_async(inference).await?;
@@ -218,7 +218,7 @@ thread: Triton's pools are thread-safe.
 
 ## Example
 
-[`example/custom-backend`](../example/custom-backend/src/lib.rs) answers a request with the
+[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) answers a request with the
 parameter `memory` set to `ram`, `pinned` or `gpu` from a buffer of that kind: the image goes in
 a RAM or pinned buffer, the logits are written into a buffer cached in the instance state, and
 the response reports how many buffers the instance has allocated. `gpu_input` writes the logits

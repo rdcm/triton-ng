@@ -21,6 +21,9 @@ format:
 lint:
 	cargo clippy
 
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
 tests:
 	cargo nextest run --workspace --no-fail-fast
 

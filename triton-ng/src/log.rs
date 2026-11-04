@@ -17,6 +17,7 @@ fn log(level: triton_ng_sys::TRITONSERVER_LogLevel, message: &str) {
     }
 }
 
+/// Logs `message` at the INFO level of the Triton server log.
 pub fn info(message: &str) {
     log(
         triton_ng_sys::TRITONSERVER_loglevel_enum_TRITONSERVER_LOG_INFO,
@@ -24,6 +25,7 @@ pub fn info(message: &str) {
     );
 }
 
+/// Logs `message` at the WARN level of the Triton server log.
 pub fn warn(message: &str) {
     log(
         triton_ng_sys::TRITONSERVER_loglevel_enum_TRITONSERVER_LOG_WARN,
@@ -31,6 +33,7 @@ pub fn warn(message: &str) {
     );
 }
 
+/// Logs `message` at the ERROR level of the Triton server log.
 pub fn error(message: &str) {
     log(
         triton_ng_sys::TRITONSERVER_loglevel_enum_TRITONSERVER_LOG_ERROR,
@@ -38,6 +41,7 @@ pub fn error(message: &str) {
     );
 }
 
+/// Logs `message` at the VERBOSE level of the Triton server log, shown with `--log-verbose=1` or higher.
 pub fn verbose(message: &str) {
     log(
         triton_ng_sys::TRITONSERVER_loglevel_enum_TRITONSERVER_LOG_VERBOSE,

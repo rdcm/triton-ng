@@ -4,8 +4,11 @@ use crate::{GpuBuffer, PinnedRamBuffer, RamBuffer, RawBuffer, UninitGpuBuffer};
 /// [`crate::InferenceRequest::add_requested_output_into`]. Its length must be
 /// the exact size of the output.
 pub enum OutputBuffer {
+    /// Plain CPU memory.
     Ram(RamBuffer),
+    /// Pinned CPU memory.
     Pinned(PinnedRamBuffer),
+    /// GPU memory; the output makes it a [`GpuBuffer`].
     Gpu(UninitGpuBuffer),
 }
 

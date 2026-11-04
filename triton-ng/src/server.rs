@@ -144,6 +144,7 @@ impl Server {
         self.ptr
     }
 
+    /// Major and minor version of the Triton server C API this process has.
     pub fn api_version(&self) -> Result<(u32, u32), TritonError> {
         let mut major: u32 = 0;
         let mut minor: u32 = 0;
@@ -155,6 +156,7 @@ impl Server {
         Ok((major, minor))
     }
 
+    /// Whether the server is ready to serve inference: every model that must be loaded is.
     pub fn is_ready(&self) -> Result<bool, TritonError> {
         let mut ready = false;
 
@@ -165,6 +167,9 @@ impl Server {
         Ok(ready)
     }
 
+    /// Whether `version` of `model_name` is loaded and ready; `-1` is the latest version.
+    ///
+    /// Fails for an unknown model.
     pub fn is_model_ready(&self, model_name: &str, version: i64) -> Result<bool, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
         let mut ready = false;
@@ -179,6 +184,9 @@ impl Server {
         Ok(ready)
     }
 
+    /// The metadata of `version` of `model_name` (`-1` for the latest) as the JSON of the inference protocol: name, versions, platform, inputs and outputs.
+    ///
+    /// Fails for an unknown model.
     pub fn model_metadata(&self, model_name: &str, version: i64) -> Result<String, TritonError> {
         let model_name_cstr = cstring_from_str(model_name)?;
         let metadata = Message::from_ptr(triton_call!(
