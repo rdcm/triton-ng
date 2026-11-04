@@ -17,6 +17,8 @@ added to the `Makefile` only after it is agreed.
 | `make tests` | `cargo nextest` for the whole workspace |
 | `make build` | release build |
 | `make download-model` | downloads the mnist models used by the tests |
+| `make benchmarks` | the benchmarks against python_backend: builds, starts the benchmark Triton (`benches/docker-compose.yml`, ports 9000–9002), runs `benches/benchmarks.py` with `uv`, stops it |
+| `make benchmarks-env-up` / `benchmarks-env-down` | the benchmark Triton alone, for partial runs of `benches/benchmarks.py` |
 | `make docker-env-up` / `docker-env-down` / `docker-env-clean` | local Triton with the example backend |
 | `make docker-logs` | logs of the local Triton |
 | `make update-submodules` | updates `deps/` to the branches in `.gitmodules` and copies the Triton headers into `triton-ng-sys/include` |

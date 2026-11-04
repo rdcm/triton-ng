@@ -167,6 +167,11 @@ pub mod docs {
     #[doc = ""]
     #[doc = include_str!("../docs/memory_buffers.md")]
     pub mod memory_buffers {}
+
+    #[doc = "Benchmarks: python_backend and triton-ng on the same BLS workloads with `perf_analyzer`, the method, the models, the environment and the results."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/benchmarks.md")]
+    pub mod benchmarks {}
 }
 
 /// Entry points called by the code that [`macro@backend`] generates. Not part of the

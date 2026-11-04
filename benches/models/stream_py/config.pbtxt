@@ -1,0 +1,31 @@
+name: "stream_py"
+backend: "python"
+max_batch_size: 0
+
+instance_group [
+  {
+    count: 2
+    kind: KIND_CPU
+  }
+]
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ -1, 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+  }
+]
+
+parameters: {
+  key: "target"
+  value: { string_value: "decoupled_py" }
+}
