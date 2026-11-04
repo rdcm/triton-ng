@@ -44,7 +44,9 @@ call the same model over BLS, take the argmax of its logits, answer.
 | `decoupled` | `max_batch_size: 0`, decoupled, input `[N, 1, 28, 28]` | A decoupled model: one BLS call and one streamed response per image, N = 4, then the final flag: `ResponseSender` against `get_response_sender()` |
 | `stream` | `max_batch_size: 0`, input `[N, 1, 28, 28]` | Reading a stream over BLS: the model calls the `decoupled` model of its own backend and answers with the N digits: `Server::infer_stream` against `exec(decoupled=True)` |
 
-The BLS target is `bench_onnx`, the MNIST ONNX model of the examples
+The BLS target is tiny on purpose, so that the numbers are the cost of the backends themselves; a
+heavy model on a GPU takes most of the time in inference and the difference shrinks with its
+share. It is `bench_onnx`, the MNIST ONNX model of the examples
 (`models/mnist_onnx/1/model.onnx`, copied by `make benchmarks`), on four CPU instances with one
 thread each (`intra_op_thread_count: 1`): 0.1 ms per call, so that it is not the bottleneck and
 does not spin on every core, which made the measurements unstable with the default thread count.
@@ -78,7 +80,7 @@ cd benches && uv run benchmarks.py --only infer,stream --concurrency 16,64
 - GPU: NVIDIA GeForce RTX 5080, 580.178.04 (not used by the benchmark models)
 - OS: Linux-7.2.15-100.fc43.x86_64-x86_64-with-glibc2.42
 - Triton: 2.61.0 (nvcr.io/nvidia/tritonserver:25.09-py3)
-- perf_analyzer: Perf Analyzer Version 0.0.0 (commit 3a49a23)
+- perf_analyzer: perf-analyzer 2.60.0 from PyPI (the binary reports Perf Analyzer Version 0.0.0 (commit 3a49a23))
 - Concurrency: 1, 4, 16, 64; measurement window 5000 ms, stability 10 %
 
 ## Results

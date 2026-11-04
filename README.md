@@ -9,6 +9,9 @@ Provides two things:
 - A safe Rust API for writing **custom Triton backends** (compiled as `.so` and loaded by Triton)
 - A high-level async **gRPC client** for sending inference requests to a running Triton server
 
+On BLS workloads a triton-ng backend serves 1.5–5.6× the requests per second of python_backend at
+lower p99 latency, see [Benchmarks](#benchmarks).
+
 See [CHANGELOG.md](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for release history.
 
 ## Crates
@@ -68,7 +71,7 @@ Build as a `cdylib`:
 crate-type = ["cdylib"]
 
 [dependencies]
-triton-ng = "0.3.0"
+triton-ng = "0.3"
 ```
 
 Or the latest code from the repository:
@@ -100,6 +103,11 @@ config and attributes, completing model configs, loading models from a backend a
 rescheduling requests, and [Benchmarks](https://github.com/rdcm/triton-ng/blob/main/docs/benchmarks.md) for the measurements against python_backend. The [documentation index](https://github.com/rdcm/triton-ng/blob/main/docs/README.md) lists every section.
 
 ## Using the gRPC client
+
+```toml
+[dependencies]
+triton-ng-client = "0.3"
+```
 
 ```rust ignore
 use triton_ng_client::{InferInput, InferOptions, TritonClient, TritonClientConfig};
@@ -177,11 +185,19 @@ and python_backend r25.09:
 | PyTorch, TensorFlow, JAX inside the model | yes | no: the model goes to its framework backend and is called over BLS |
 | A crash in the model | takes down the stub; Triton notices | panics are caught at the FFI boundary; a segfault takes down Triton |
 
+When python_backend is the better choice: the model runs PyTorch, TensorFlow or JAX inside
+`model.py` and cannot be moved to a framework backend; the pre- or post-processing is numpy code
+with no equivalent in Rust yet (fp16, bf16, u8 tensors); responses or BLS inputs must be GPU
+tensors read or written on the CPU side; or a bug in the model code must not take Triton down.
+
 ## Benchmarks
 
 python_backend and triton-ng on the same five BLS workloads, measured with `perf_analyzer`:
 requests per second and latency at concurrency 1, 4, 16 and 64, both backends in one Triton,
-two CPU instances each, the MNIST ONNX model as the BLS target. `make benchmarks` runs them,
+two CPU instances each, the MNIST ONNX model as the BLS target. The target is tiny on purpose,
+0.1 ms per call, so the numbers are the cost of the backend itself: a heavy model on a GPU takes
+most of the time in inference, and the difference between the backends shrinks with its share.
+`make benchmarks` runs them,
 the tables are its output; [Benchmarks](https://github.com/rdcm/triton-ng/blob/main/docs/benchmarks.md) describes the method, the models, the
 environment and what the numbers mean.
 
@@ -190,7 +206,7 @@ environment and what the numbers mean.
 - GPU: NVIDIA GeForce RTX 5080, 580.178.04 (not used by the benchmark models)
 - OS: Linux-7.2.15-100.fc43.x86_64-x86_64-with-glibc2.42
 - Triton: 2.61.0 (nvcr.io/nvidia/tritonserver:25.09-py3)
-- perf_analyzer: Perf Analyzer Version 0.0.0 (commit 3a49a23)
+- perf_analyzer: perf-analyzer 2.60.0 from PyPI (the binary reports Perf Analyzer Version 0.0.0 (commit 3a49a23))
 - Concurrency: 1, 4, 16, 64; measurement window 5000 ms, stability 10 %
 
 ### `argmax`

@@ -1,5 +1,6 @@
 import argparse
 import csv
+import importlib.metadata
 import json
 import os
 import platform
@@ -149,7 +150,8 @@ def environment(args):
             f"- GPU: {gpu} (not used by the benchmark models)",
             f"- OS: {platform.platform()}",
             f"- Triton: {server['version']} (nvcr.io/nvidia/tritonserver:25.09-py3)",
-            f"- perf_analyzer: {version.stdout.strip() or version.stderr.strip()}",
+            f"- perf_analyzer: perf-analyzer {importlib.metadata.version('perf-analyzer')} from PyPI "
+            f"(the binary reports {version.stdout.strip() or version.stderr.strip()})",
             f"- Concurrency: {', '.join(map(str, args.concurrency))}; "
             f"measurement window {args.measurement_interval} ms, stability 10 %",
         ]
