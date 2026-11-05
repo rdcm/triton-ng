@@ -190,6 +190,7 @@ pub mod __macro_support {
     use crate::request::Request;
     use crate::response_allocator::ResponseAllocator;
     use std::ffi::c_void;
+    use triton_ng_macros::triton_call;
 
     /// Opaque error pointer returned by Triton backend entry points.
     /// Equivalent to `*const TRITONSERVER_Error` at the ABI level.
@@ -197,10 +198,48 @@ pub mod __macro_support {
 
     const NULL_ERROR: ErrorPtr = std::ptr::null::<c_void>();
 
-    /// TRITONBACKEND_Initialize.
+    /// TRITONBACKEND_Initialize. Rejects a server whose backend API version
+    /// this build cannot run on, before the hook.
     pub unsafe fn initialize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { self::backend(backend) };
-        into_error_ptr(catch(|| B::initialize(&backend)))
+        into_error_ptr(catch(|| {
+            check_api_version()?;
+            B::initialize(&backend)
+        }))
+    }
+
+    /// Fails unless the server's backend API version is compatible with the
+    /// headers this crate was built against, and logs both versions.
+    fn check_api_version() -> Result<(), Error> {
+        let mut major = 0;
+        let mut minor = 0;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ApiVersion(
+            &mut major, &mut minor
+        ))?;
+        validate_api_version(major, minor)
+            .map_err(|message| TritonError::with_code(ErrorCode::Unsupported, message))?;
+        crate::log::info(&format!(
+            "TRITONBACKEND API version: server {major}.{minor}, compiled {}.{}",
+            triton_ng_sys::TRITONBACKEND_API_VERSION_MAJOR,
+            triton_ng_sys::TRITONBACKEND_API_VERSION_MINOR
+        ));
+        Ok(())
+    }
+
+    /// The check tritonbackend.h asks for: same major version, server minor not
+    /// lower than the compiled one, so that every symbol this build uses exists.
+    /// Returns the message of the mismatch; the caller gives it the
+    /// `UNSUPPORTED` code the header asks for.
+    fn validate_api_version(server_major: u32, server_minor: u32) -> Result<(), String> {
+        let compiled_major = triton_ng_sys::TRITONBACKEND_API_VERSION_MAJOR;
+        let compiled_minor = triton_ng_sys::TRITONBACKEND_API_VERSION_MINOR;
+        if server_major != compiled_major || server_minor < compiled_minor {
+            return Err(format!(
+                "the server's TRITONBACKEND API version {server_major}.{server_minor} is older than \
+                 the {compiled_major}.{compiled_minor} this backend was built against",
+            ));
+        }
+        Ok(())
     }
 
     /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
@@ -476,6 +515,47 @@ pub mod __macro_support {
             .collect();
 
         Ok((model, requests))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::validate_api_version;
+        use triton_ng_sys::{TRITONBACKEND_API_VERSION_MAJOR, TRITONBACKEND_API_VERSION_MINOR};
+
+        #[test]
+        fn the_same_version_and_a_newer_server_are_accepted() {
+            for minor in [
+                TRITONBACKEND_API_VERSION_MINOR,
+                TRITONBACKEND_API_VERSION_MINOR + 1,
+            ] {
+                validate_api_version(TRITONBACKEND_API_VERSION_MAJOR, minor).unwrap();
+            }
+        }
+
+        #[test]
+        fn another_major_version_is_rejected() {
+            for major in [
+                TRITONBACKEND_API_VERSION_MAJOR - 1,
+                TRITONBACKEND_API_VERSION_MAJOR + 1,
+            ] {
+                let message =
+                    validate_api_version(major, TRITONBACKEND_API_VERSION_MINOR).unwrap_err();
+                assert!(message.contains(&format!("{major}.{TRITONBACKEND_API_VERSION_MINOR}")));
+                assert!(message.contains(&format!(
+                    "{TRITONBACKEND_API_VERSION_MAJOR}.{TRITONBACKEND_API_VERSION_MINOR}"
+                )));
+            }
+        }
+
+        #[test]
+        fn an_older_server_is_rejected() {
+            let message = validate_api_version(
+                TRITONBACKEND_API_VERSION_MAJOR,
+                TRITONBACKEND_API_VERSION_MINOR - 1,
+            )
+            .unwrap_err();
+            assert!(message.contains("older than"));
+        }
     }
 }
 

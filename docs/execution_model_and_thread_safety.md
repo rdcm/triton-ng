@@ -104,6 +104,13 @@ by dropping the future of `infer_async` or the stream, or with `InferenceStream:
 **Shutdown.** Triton finalizes an instance only between executes, so no batch of it is running when
 `CustomBackend::model_instance_finalize` is called.
 
+**Backend API version.** `TRITONBACKEND_Initialize` reads the backend API version of the server
+first and fails with `UNSUPPORTED` when the major version differs from the one of the headers
+triton-ng was built against, or the minor version of the server is lower: every call the backend
+makes is compiled against those headers, and Triton does nothing with the version a backend
+reports about itself. The versions go to the log, `TRITONBACKEND API version: server 1.19,
+compiled 1.19`, next to the line Triton prints for its own backends.
+
 [`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
 `hold_until_cancelled` parameter repeats a BLS call and checks `Request::is_cancelled` between the
