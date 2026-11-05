@@ -216,6 +216,39 @@ both are dropped when the model or the instance is finalized, before the server 
 `MemoryManager` and every buffer type are `Send + Sync`. The memory manager can be used from any
 thread: Triton's pools are thread-safe.
 
+## Reporting memory usage
+
+Triton shows the memory a model holds in the `memory_usage` of `/v2/models/<model>/stats`, for the
+models of backends that report it. Report it from the hooks: `model.report_memory_usage(&[...])`
+for what the model itself holds, `instance.report_memory_usage(&[...])` for what one instance
+holds. Both lists end up in the same `memory_usage` of the model, one entry per memory type and
+id; each call replaces what the previous one of the same kind reported, and an empty slice clears
+it.
+
+```rust ignore
+fn model_initialize(model: &Model) -> Result<(), Error> {
+    model.report_memory_usage(&[BufferAttributes::cpu(64 << 10)?])?;
+    Ok(())
+}
+
+fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    let device = instance.device_id()? as i64;
+    instance.report_memory_usage(&[BufferAttributes::gpu(device, 8 << 20)?])?;
+    Ok(())
+}
+```
+
+The numbers are what the backend reports, not what Triton measures: report the total of each
+memory type and device, and keep it up to date when it changes. Triton copies the entries while
+the call runs, so the slices can be dropped afterwards. The example backend reports the size of
+its state and of one instance state, and `/v2/models/mnist/stats` then shows both in the same
+list of the model:
+
+```json
+"memory_usage": [{"type": "CPU", "id": 0, "byte_size": 280},
+                 {"type": "CPU_PINNED", "id": 0, "byte_size": 240}]
+```
+
 ## Example
 
 [`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) answers a request with the

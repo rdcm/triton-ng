@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::mem::size_of;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, Context, CorrelationId, Counter,
-    CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge, GaugeFamily, GpuBuffer,
-    Histogram, HistogramFamily, InferenceRequest, InferenceResult, InstanceGroupKind,
-    MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request,
-    RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
+    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes, Context,
+    CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge,
+    GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest, InferenceResult,
+    InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
+    Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -228,11 +229,15 @@ impl CustomBackend for MnistBackend {
             cancelled: AtomicI64::new(0),
             kept_inputs: Mutex::new(Vec::new()),
         })?;
+        model.report_memory_usage(&[BufferAttributes::cpu(size_of::<State>() as u64)?])?;
         Ok(())
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
-        instance.set_state(Buffers::default())
+        instance.set_state(Buffers::default())?;
+        instance
+            .report_memory_usage(&[BufferAttributes::cpu_pinned(size_of::<Buffers>() as u64)?])?;
+        Ok(())
     }
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {

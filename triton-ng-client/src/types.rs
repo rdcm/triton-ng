@@ -122,6 +122,21 @@ impl ModelStatistics {
         self.0.execution_count
     }
 
+    /// The memory the model and its instances reported, one entry per memory
+    /// type and id. Empty when the backend reports none, which is the case for
+    /// every backend Triton ships except this one.
+    pub fn memory_usage(&self) -> Vec<MemoryUsage> {
+        self.0
+            .memory_usage
+            .iter()
+            .map(|usage| MemoryUsage {
+                memory_type: usage.r#type.clone(),
+                id: usage.id,
+                byte_size: usage.byte_size,
+            })
+            .collect()
+    }
+
     /// Consumes the wrapper and returns the underlying proto value.
     pub fn into_proto(self) -> crate::generated::inference::ModelStatistics {
         self.0
@@ -136,6 +151,18 @@ impl fmt::Debug for ModelStatistics {
             self.0.name, self.0.version, self.0.inference_count
         )
     }
+}
+
+/// Memory of one memory type and id, as a model reports it for
+/// [`ModelStatistics::memory_usage`].
+#[derive(Debug, Clone)]
+pub struct MemoryUsage {
+    /// The memory type Triton names: `"CPU"`, `"CPU_PINNED"` or `"GPU"`.
+    pub memory_type: String,
+    /// The id of the memory type: the CUDA device for `"GPU"`, zero otherwise.
+    pub id: i64,
+    /// Bytes held on that memory type and id.
+    pub byte_size: u64,
 }
 
 /// A registered system shared-memory region.

@@ -130,6 +130,26 @@ async fn custom_backend_reports_its_requests_and_batches_to_the_statistics() -> 
 }
 
 #[tokio::test]
+async fn custom_backend_reports_the_memory_the_model_and_its_instances_hold() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let usage = sut.model_memory_usage(&config.backend_model).await?;
+
+    let model = usage
+        .iter()
+        .find(|usage| usage.memory_type == "CPU")
+        .context("the model reported no CPU memory")?;
+    assert!(model.byte_size > 0);
+
+    let instance = usage
+        .iter()
+        .find(|usage| usage.memory_type == "CPU_PINNED")
+        .context("no instance reported its memory")?;
+    assert!(instance.byte_size > 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn repository_index_lists_all_available_models() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

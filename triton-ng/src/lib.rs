@@ -15,6 +15,8 @@ mod backend_attributes;
 mod backend_config;
 #[path = "batch_statistics.rs"]
 pub(crate) mod batch_statistics;
+#[path = "buffer_attributes.rs"]
+mod buffer_attributes;
 #[path = "buffers.rs"]
 mod buffers;
 #[path = "custom_backend.rs"]
@@ -98,6 +100,7 @@ pub use auto_complete_config::*;
 pub use backend::*;
 pub use backend_attributes::*;
 pub use backend_config::*;
+pub use buffer_attributes::*;
 pub use buffers::*;
 pub use custom_backend::*;
 pub use error::*;

@@ -1,3 +1,4 @@
+use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
 use crate::executor::InstanceExecutor;
 use crate::model::Model;
@@ -81,6 +82,40 @@ impl ModelInstance {
             &mut _
         ))?;
         Ok(Model::from_ptr(ptr))
+    }
+
+    /// Reports the memory the instance itself holds, for the `memory_usage` of
+    /// `/v2/models/<model>/stats`.
+    ///
+    /// Pass one [`BufferAttributes`] per memory type and id, each holding the
+    /// total of that kind, and call it from
+    /// `CustomBackend::model_instance_initialize` or any later hook of the
+    /// instance: each call replaces what the previous one reported and an empty
+    /// slice clears it. Triton copies the entries while the call runs, so the
+    /// slice can be dropped afterwards. The memory the model itself holds is
+    /// reported through [`crate::Model::report_memory_usage`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when `usage` holds more entries than Triton can count, or when
+    /// Triton rejects the report.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    ///     let device = instance.device_id()? as i64;
+    ///     instance.report_memory_usage(&[BufferAttributes::gpu(device, 8 << 20)?])?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn report_memory_usage(&self, usage: &[BufferAttributes]) -> Result<(), TritonError> {
+        let (mut usage, count) = BufferAttributes::report(usage)?;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceReportMemoryUsage(
+            self.ptr,
+            usage.as_mut_ptr(),
+            count
+        ))
     }
 
     /// Stores backend-defined state for this instance.

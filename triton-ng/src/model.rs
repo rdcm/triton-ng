@@ -1,3 +1,4 @@
+use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
 use crate::message::Message;
 use crate::server::Server;
@@ -204,6 +205,39 @@ impl Model {
     /// ```
     pub fn load_file(&self, file_name: &str) -> Result<Vec<u8>, Error> {
         Ok(std::fs::read(self.path(file_name)?)?)
+    }
+
+    /// Reports the memory the model itself holds, for the `memory_usage` of
+    /// `/v2/models/<model>/stats`.
+    ///
+    /// Pass one [`BufferAttributes`] per memory type and id, each holding the
+    /// total of that kind, and call it from `CustomBackend::model_initialize`
+    /// or any later hook of the model: each call replaces what the previous one
+    /// reported and an empty slice clears it. Triton copies the entries while
+    /// the call runs, so the slice can be dropped afterwards. Instances report
+    /// their own memory through [`crate::ModelInstance::report_memory_usage`].
+    ///
+    /// # Errors
+    ///
+    /// Fails when `usage` holds more entries than Triton can count, or when
+    /// Triton rejects the report.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model) -> Result<(), Error> {
+    ///     let weights = 64 << 20;
+    ///     model.report_memory_usage(&[BufferAttributes::gpu(0, weights)?])?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn report_memory_usage(&self, usage: &[BufferAttributes]) -> Result<(), TritonError> {
+        let (mut usage, count) = BufferAttributes::report(usage)?;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelReportMemoryUsage(
+            self.ptr,
+            usage.as_mut_ptr(),
+            count
+        ))
     }
 
     /// The server the model is loaded in, for BLS calls from the hooks that have a `Model`; batches get it from [`crate::Context::server`].

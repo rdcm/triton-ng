@@ -116,6 +116,15 @@ impl Sut {
             .collect())
     }
 
+    pub async fn model_memory_usage(&self, model: &str) -> Result<Vec<client::MemoryUsage>> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        Ok(stats.memory_usage())
+    }
+
     pub async fn infer(
         &self,
         model: &str,

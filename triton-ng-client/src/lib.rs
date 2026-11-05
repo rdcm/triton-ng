@@ -21,6 +21,6 @@ pub use infer::{
 };
 pub use tonic::transport::{Certificate, ClientTlsConfig, Identity};
 pub use types::{
-    CudaMemoryRegion, LogSettingValue, ModelConfig, ModelIndex, ModelInfo, ModelStatistics,
-    ServerInfo, SharedMemoryRegion, TensorMetadata,
+    CudaMemoryRegion, LogSettingValue, MemoryUsage, ModelConfig, ModelIndex, ModelInfo,
+    ModelStatistics, ServerInfo, SharedMemoryRegion, TensorMetadata,
 };
