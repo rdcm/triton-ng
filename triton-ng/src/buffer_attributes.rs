@@ -40,27 +40,30 @@ impl BufferAttributes {
     /// let weights = BufferAttributes::new(MemoryType::Cpu, 4096)?;
     /// ```
     pub fn new(memory_type: MemoryType, byte_size: u64) -> Result<Self, TritonError> {
+        let size = usize::try_from(byte_size)
+            .map_err(|_| TritonError::from_message("memory usage byte size is too large"))?;
         let (kind, memory_type_id) = memory_type.to_sys();
-        let ptr = triton_call!(triton_ng_sys::TRITONSERVER_BufferAttributesNew(&mut _))?;
+        // The attributes are owned from here on, so a failing setter deletes them.
+        let attributes = Self {
+            ptr: triton_call!(triton_ng_sys::TRITONSERVER_BufferAttributesNew(&mut _))?,
+            memory_type,
+            byte_size,
+        };
         // Triton reads every field of the entry, and the C object starts with
         // none of them set, so all three are set here.
         triton_call!(triton_ng_sys::TRITONSERVER_BufferAttributesSetMemoryType(
-            ptr, kind
+            attributes.ptr,
+            kind
         ))?;
         triton_call!(triton_ng_sys::TRITONSERVER_BufferAttributesSetMemoryTypeId(
-            ptr,
+            attributes.ptr,
             memory_type_id
         ))?;
-        let size = usize::try_from(byte_size)
-            .map_err(|_| TritonError::from_message("memory usage byte size is too large"))?;
         triton_call!(triton_ng_sys::TRITONSERVER_BufferAttributesSetByteSize(
-            ptr, size
+            attributes.ptr,
+            size
         ))?;
-        Ok(Self {
-            ptr,
-            memory_type,
-            byte_size,
-        })
+        Ok(attributes)
     }
 
     /// Groups `usage` by memory type and builds the entries Triton takes,
