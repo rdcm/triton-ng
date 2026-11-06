@@ -61,5 +61,6 @@ download-model:
 	mkdir -p models/mnist_steps/1
 	mkdir -p models/identity_gpu/1
 	mkdir -p models/identity_forward/1
+	mkdir -p models/memory_usage/1
 	wget https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx
 	mv mnist-12.onnx models/mnist_onnx/1/model.onnx

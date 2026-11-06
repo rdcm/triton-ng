@@ -1,4 +1,4 @@
-use crate::memory_manager::MemoryType;
+use crate::memory_manager::SysMemoryType;
 use std::ffi::c_void;
 
 /// Memory Triton reads or writes: where it is, its address and size. A
@@ -8,7 +8,7 @@ use std::ffi::c_void;
 pub struct RawBuffer {
     pub(crate) ptr: *mut c_void,
     pub(crate) len: usize,
-    pub(crate) memory_type: MemoryType,
+    pub(crate) memory_type: SysMemoryType,
     pub(crate) memory_type_id: i64,
 }
 

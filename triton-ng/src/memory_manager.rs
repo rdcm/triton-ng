@@ -5,13 +5,14 @@ use crate::{PinnedRamBuffer, RamBuffer, UninitGpuBuffer};
 use std::ffi::c_void;
 use triton_ng_macros::triton_call;
 
-pub(crate) type MemoryType = triton_ng_sys::TRITONSERVER_MemoryType;
+/// `TRITONSERVER_MemoryType`, the C value of a [`crate::MemoryType`].
+pub(crate) type SysMemoryType = triton_ng_sys::TRITONSERVER_MemoryType;
 
-pub(crate) const CPU: MemoryType =
+pub(crate) const CPU: SysMemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU;
-pub(crate) const CPU_PINNED: MemoryType =
+pub(crate) const CPU_PINNED: SysMemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_CPU_PINNED;
-pub(crate) const GPU: MemoryType =
+pub(crate) const GPU: SysMemoryType =
     triton_ng_sys::TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU;
 
 /// Triton's memory manager: buffers from the server's own pools. Batches get
@@ -52,13 +53,13 @@ pub struct MemoryManager {
 }
 
 type ManagerPtr = *mut triton_ng_sys::TRITONBACKEND_MemoryManager;
-type Allocate = fn(ManagerPtr, usize, MemoryType, i64) -> Result<*mut c_void, Error>;
-type Free = fn(ManagerPtr, *mut c_void, MemoryType, i64);
+type Allocate = fn(ManagerPtr, usize, SysMemoryType, i64) -> Result<*mut c_void, Error>;
+type Free = fn(ManagerPtr, *mut c_void, SysMemoryType, i64);
 
 fn triton_allocate(
     manager: ManagerPtr,
     len: usize,
-    memory_type: MemoryType,
+    memory_type: SysMemoryType,
     memory_type_id: i64,
 ) -> Result<*mut c_void, Error> {
     Ok(triton_call!(
@@ -75,7 +76,7 @@ fn triton_allocate(
 fn triton_free(
     manager: ManagerPtr,
     ptr: *mut c_void,
-    memory_type: MemoryType,
+    memory_type: SysMemoryType,
     memory_type_id: i64,
 ) {
     if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_MemoryManagerFree(

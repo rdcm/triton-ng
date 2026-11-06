@@ -130,6 +130,62 @@ async fn custom_backend_reports_its_requests_and_batches_to_the_statistics() -> 
 }
 
 #[tokio::test]
+async fn custom_backend_reports_the_memory_the_model_and_its_instances_hold() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let usage = sut.model_memory_usage(&config.backend_model).await?;
+
+    let cpu: Vec<_> = usage
+        .iter()
+        .filter(|usage| usage.memory_type == "CPU" && usage.id == 0)
+        .collect();
+    assert_eq!(
+        cpu.len(),
+        1,
+        "the model and its instances report one CPU entry"
+    );
+    assert!(cpu[0].byte_size > 0);
+    Ok(())
+}
+
+/// The fixture of `models/memory_usage` reports two entries of one memory type
+/// and id and a pinned buffer that it really allocates; its sizes are the
+/// constants of the example backend.
+#[tokio::test]
+async fn memory_reports_are_summed_per_memory_type_and_keep_their_kind() -> Result<()> {
+    let model = "memory_usage";
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    sut.repository_model_load(model).await?;
+    let usage = sut.model_memory_usage(model).await;
+    let unloaded = sut.repository_model_unload(model).await;
+    let usage = usage?;
+    unloaded?;
+
+    let cpu: Vec<_> = usage
+        .iter()
+        .filter(|usage| usage.memory_type == "CPU" && usage.id == 0)
+        .collect();
+    assert_eq!(
+        cpu.len(),
+        1,
+        "the two reported CPU entries are summed into one"
+    );
+    assert_eq!(cpu[0].byte_size, 111 + 222);
+
+    let pinned: u64 = usage
+        .iter()
+        .filter(|usage| usage.memory_type == "CPU_PINNED")
+        .map(|usage| usage.byte_size)
+        .sum();
+    assert_eq!(
+        pinned, 4096,
+        "the instance reports the pinned buffer it holds"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn repository_index_lists_all_available_models() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

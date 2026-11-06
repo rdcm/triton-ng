@@ -1,3 +1,5 @@
+use crate::memory_manager::SysMemoryType;
+
 /// Tensor data type — mirrors `TRITONSERVER_DataType` without exposing the C enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
@@ -334,6 +336,43 @@ impl RequestFlags {
         };
         let end = if self.sequence_end { SEQUENCE_END } else { 0 };
         start | end
+    }
+}
+
+/// The kind of memory a buffer or a memory usage report is about
+/// (`TRITONSERVER_MemoryType` without the C enum).
+///
+/// # Examples
+///
+/// ```ignore
+/// let staging = ctx.memory().pinned(1 << 20)?;
+/// instance.report_memory_usage(&[
+///     BufferAttributes::new(MemoryType::CpuPinned, staging.len() as u64)?,
+///     BufferAttributes::new(MemoryType::Gpu { device_id: 0 }, 8 << 20)?,
+/// ])?;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryType {
+    /// Ordinary host memory.
+    Cpu,
+    /// Page-locked host memory, the kind [`crate::PinnedRamBuffer`] holds.
+    CpuPinned,
+    /// Memory of the CUDA device `device_id`, counting from zero.
+    Gpu {
+        /// The CUDA device, as [`crate::ModelInstance::device_id`] returns it.
+        device_id: i32,
+    },
+}
+
+impl MemoryType {
+    /// The C memory type and the memory type id Triton takes for it.
+    pub(crate) fn to_sys(self) -> (SysMemoryType, i64) {
+        use crate::memory_manager::{CPU, CPU_PINNED, GPU};
+        match self {
+            Self::Cpu => (CPU, 0),
+            Self::CpuPinned => (CPU_PINNED, 0),
+            Self::Gpu { device_id } => (GPU, i64::from(device_id)),
+        }
     }
 }
 
