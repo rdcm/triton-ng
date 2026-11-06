@@ -13,6 +13,7 @@ for a minimal backend, the gRPC client and running the example.
 | [Metrics](https://github.com/rdcm/triton-ng/blob/main/docs/metrics.md) | Counters, gauges and histograms of the backend on Triton's Prometheus endpoint; the inference statistics triton-ng reports for every model |
 | [Model management and configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md) | The backend config from `--backend-config`, backend attributes (preferred instance groups, parallel instance loading), completing model configs, loading and unloading models from a backend, rescheduling requests of iterative sequences |
 | [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md) | RAM, pinned and GPU buffers from Triton's memory manager for BLS inputs and outputs, caching them in a backend, passing inputs of a request on without a copy |
+| [C API coverage](https://github.com/rdcm/triton-ng/blob/main/docs/c_api_coverage.md) | What of `tritonbackend.h` and the server functions a backend calls triton-ng wraps, and what it does not |
 | [Benchmarks](https://github.com/rdcm/triton-ng/blob/main/docs/benchmarks.md) | python_backend and triton-ng on the same BLS workloads with `perf_analyzer`: method, models, environment, results |
 
 [`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) is the MNIST example backend that

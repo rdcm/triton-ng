@@ -168,6 +168,11 @@ pub mod docs {
     #[doc = include_str!("../docs/memory_buffers.md")]
     pub mod memory_buffers {}
 
+    #[doc = "C API coverage: what of `tritonbackend.h` and of the server functions a backend calls is wrapped, and what is not."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/c_api_coverage.md")]
+    pub mod c_api_coverage {}
+
     #[doc = "Benchmarks: python_backend and triton-ng on the same BLS workloads with `perf_analyzer`, the method, the models, the environment and the results."]
     #[doc = ""]
     #[doc = include_str!("../docs/benchmarks.md")]
