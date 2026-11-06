@@ -1,5 +1,6 @@
 use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
+use crate::memory_manager::MemoryManager;
 use crate::message::Message;
 use crate::server::Server;
 use crate::utils::{cstr_to_string, parse_parameter};
@@ -211,15 +212,18 @@ impl Model {
     /// `/v2/models/<model>/stats`.
     ///
     /// Pass one [`BufferAttributes`] per memory type and id, each holding the
-    /// total of that kind, and call it from `CustomBackend::model_initialize`
-    /// or any later hook of the model: each call replaces what the previous one
-    /// reported and an empty slice clears it. Triton copies the entries while
-    /// the call runs, so the slice can be dropped afterwards. Instances report
-    /// their own memory through [`crate::ModelInstance::report_memory_usage`].
+    /// total of that kind; entries of the same memory type and id are summed
+    /// before they are reported, since Triton keeps one entry per memory type
+    /// and id. Call it from `CustomBackend::model_initialize` or any later hook
+    /// of the model: each call replaces what the previous one reported and an
+    /// empty slice clears it. Triton copies the entries while the call runs, so
+    /// the slice can be dropped afterwards. Instances report their own memory
+    /// through [`crate::ModelInstance::report_memory_usage`].
     ///
     /// # Errors
     ///
-    /// Fails when `usage` holds more entries than Triton can count, or when
+    /// Fails when the entries of one memory type and id add up to more than a
+    /// `u64`, when `usage` holds more entries than Triton can count, or when
     /// Triton rejects the report.
     ///
     /// # Examples
@@ -227,17 +231,42 @@ impl Model {
     /// ```ignore
     /// fn model_initialize(model: &Model) -> Result<(), Error> {
     ///     let weights = 64 << 20;
-    ///     model.report_memory_usage(&[BufferAttributes::gpu(0, weights)?])?;
+    ///     model.report_memory_usage(&[BufferAttributes::new(MemoryType::Gpu { device_id: 0 }, weights)?])?;
     ///     Ok(())
     /// }
     /// ```
     pub fn report_memory_usage(&self, usage: &[BufferAttributes]) -> Result<(), TritonError> {
-        let (mut usage, count) = BufferAttributes::report(usage)?;
+        let (entries, count) = BufferAttributes::report(usage)?;
+        let mut pointers: Vec<_> = entries.iter().map(BufferAttributes::as_ptr).collect();
         triton_call!(triton_ng_sys::TRITONBACKEND_ModelReportMemoryUsage(
             self.ptr,
-            usage.as_mut_ptr(),
+            pointers.as_mut_ptr(),
             count
         ))
+    }
+
+    /// Triton's memory manager, the one batches get from
+    /// [`crate::Context::memory`].
+    ///
+    /// Usable in every hook of the model and of its instances, for buffers that
+    /// live in the state of the model or of an instance instead of being
+    /// allocated per batch.
+    ///
+    /// # Errors
+    ///
+    /// Fails when Triton cannot hand out the memory manager.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    ///     let pinned = instance.model()?.memory_manager()?.pinned(1 << 20)?;
+    ///     instance.set_state(Staging(pinned))?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn memory_manager(&self) -> Result<MemoryManager, TritonError> {
+        MemoryManager::of_model(self)
     }
 
     /// The server the model is loaded in, for BLS calls from the hooks that have a `Model`; batches get it from [`crate::Context::server`].

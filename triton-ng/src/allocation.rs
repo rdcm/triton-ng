@@ -1,5 +1,5 @@
-use crate::memory_manager::MemoryManager;
-use crate::{Error, MemoryType, RawBuffer};
+use crate::memory_manager::{MemoryManager, SysMemoryType};
+use crate::{Error, RawBuffer};
 use std::ffi::c_void;
 use std::ptr;
 
@@ -11,7 +11,7 @@ pub(crate) struct Allocation {
     pub(crate) manager: MemoryManager,
     pub(crate) ptr: *mut c_void,
     pub(crate) len: usize,
-    pub(crate) memory_type: MemoryType,
+    pub(crate) memory_type: SysMemoryType,
     pub(crate) memory_type_id: i64,
 }
 
@@ -24,7 +24,7 @@ impl Allocation {
     pub(crate) fn new(
         manager: &MemoryManager,
         len: usize,
-        memory_type: MemoryType,
+        memory_type: SysMemoryType,
         memory_type_id: i64,
     ) -> Result<Self, Error> {
         let ptr = if len == 0 {
@@ -48,7 +48,7 @@ impl Allocation {
     pub(crate) fn zeroed(
         manager: &MemoryManager,
         len: usize,
-        memory_type: MemoryType,
+        memory_type: SysMemoryType,
         memory_type_id: i64,
     ) -> Result<Self, Error> {
         let allocation = Self::new(manager, len, memory_type, memory_type_id)?;

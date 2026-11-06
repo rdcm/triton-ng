@@ -123,8 +123,7 @@ impl ModelStatistics {
     }
 
     /// The memory the model and its instances reported, one entry per memory
-    /// type and id. Empty when the backend reports none, which is the case for
-    /// every backend Triton ships except this one.
+    /// type and id. Empty when the backend has not reported any memory usage.
     pub fn memory_usage(&self) -> Vec<MemoryUsage> {
         self.0
             .memory_usage

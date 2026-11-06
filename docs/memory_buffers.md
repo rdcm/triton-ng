@@ -223,17 +223,20 @@ models of backends that report it. Report it from the hooks: `model.report_memor
 for what the model itself holds, `instance.report_memory_usage(&[...])` for what one instance
 holds. Both lists end up in the same `memory_usage` of the model, one entry per memory type and
 id; each call replaces what the previous one of the same kind reported, and an empty slice clears
-it.
+it. Triton keeps one entry per memory type and id, so entries of the same one are summed by the
+report call: reporting `cpu(111)` and `cpu(222)` results in one entry of 333 bytes.
 
 ```rust ignore
 fn model_initialize(model: &Model) -> Result<(), Error> {
-    model.report_memory_usage(&[BufferAttributes::cpu(64 << 10)?])?;
+    model.report_memory_usage(&[BufferAttributes::new(MemoryType::Cpu, 64 << 10)?])?;
     Ok(())
 }
 
 fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
-    let device = instance.device_id()? as i64;
-    instance.report_memory_usage(&[BufferAttributes::gpu(device, 8 << 20)?])?;
+    let device = MemoryType::Gpu {
+        device_id: instance.device_id()?,
+    };
+    instance.report_memory_usage(&[BufferAttributes::new(device, 8 << 20)?])?;
     Ok(())
 }
 ```
@@ -241,13 +244,16 @@ fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
 The numbers are what the backend reports, not what Triton measures: report the total of each
 memory type and device, and keep it up to date when it changes. Triton copies the entries while
 the call runs, so the slices can be dropped afterwards. The example backend reports the size of
-its state and of one instance state, and `/v2/models/mnist/stats` then shows both in the same
-list of the model:
+its Rust state, which is ordinary RAM, and the `memory_usage` fixture of `models/memory_usage`
+reports two CPU entries that add up to one and a pinned buffer that its instance really allocates:
 
 ```json
-"memory_usage": [{"type": "CPU", "id": 0, "byte_size": 280},
-                 {"type": "CPU_PINNED", "id": 0, "byte_size": 240}]
+"memory_usage": [{"type": "CPU", "id": 0, "byte_size": 333},
+                 {"type": "CPU_PINNED", "id": 0, "byte_size": 4096}]
 ```
+
+A pinned buffer of an instance is pinned memory, the size of the Rust state around it is not: what
+an instance reports as `cpu_pinned` should be the page-locked buffers it holds.
 
 ## Example
 

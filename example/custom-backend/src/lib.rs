@@ -10,8 +10,9 @@ use triton_ng::{
     AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes, Context,
     CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge,
     GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest, InferenceResult,
-    InstanceGroupKind, MemoryManager, Model, ModelInstance, Parameter, PinnedRamBuffer, RamBuffer,
-    Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
+    InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter, PinnedRamBuffer,
+    RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError,
+    UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -21,6 +22,11 @@ const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
 const IDENTITY_INPUT: &str = "INPUT0";
 const IDENTITY_OUTPUT: &str = "OUTPUT0";
+/// The two entries the memory usage fixture reports for its model; the report
+/// sums them into one.
+const CHECK_MODEL_BYTES: [u64; 2] = [111, 222];
+/// The pinned buffer the memory usage fixture keeps per instance.
+const CHECK_PINNED_BYTES: usize = 4096;
 
 #[derive(Clone, Copy)]
 enum OutputMemory {
@@ -105,6 +111,10 @@ struct Buffers {
     ram_allocated: AtomicI64,
     pinned_allocated: AtomicI64,
     gpu_allocated: AtomicI64,
+    /// The pinned buffer of the memory usage fixture, kept for as long as the
+    /// instance lives so that the report describes an allocation that exists.
+    #[expect(dead_code, reason = "kept alive for the memory usage report")]
+    check: Option<PinnedRamBuffer>,
 }
 
 impl Buffers {
@@ -229,14 +239,40 @@ impl CustomBackend for MnistBackend {
             cancelled: AtomicI64::new(0),
             kept_inputs: Mutex::new(Vec::new()),
         })?;
-        model.report_memory_usage(&[BufferAttributes::cpu(size_of::<State>() as u64)?])?;
+        if reports_memory_check(model)? {
+            model.report_memory_usage(&[
+                BufferAttributes::new(MemoryType::Cpu, CHECK_MODEL_BYTES[0])?,
+                BufferAttributes::new(MemoryType::Cpu, CHECK_MODEL_BYTES[1])?,
+            ])?;
+        } else {
+            model.report_memory_usage(&[BufferAttributes::new(
+                MemoryType::Cpu,
+                size_of::<State>() as u64,
+            )?])?;
+        }
         Ok(())
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
-        instance.set_state(Buffers::default())?;
-        instance
-            .report_memory_usage(&[BufferAttributes::cpu_pinned(size_of::<Buffers>() as u64)?])?;
+        let model = instance.model()?;
+        if !reports_memory_check(&model)? {
+            instance.set_state(Buffers::default())?;
+            instance.report_memory_usage(&[BufferAttributes::new(
+                MemoryType::Cpu,
+                size_of::<Buffers>() as u64,
+            )?])?;
+            return Ok(());
+        }
+        // A pinned buffer that really exists, unlike the size of the Rust state.
+        let pinned = model.memory_manager()?.pinned(CHECK_PINNED_BYTES)?;
+        instance.set_state(Buffers {
+            check: Some(pinned),
+            ..Default::default()
+        })?;
+        instance.report_memory_usage(&[BufferAttributes::new(
+            MemoryType::CpuPinned,
+            CHECK_PINNED_BYTES as u64,
+        )?])?;
         Ok(())
     }
 
@@ -439,6 +475,12 @@ impl CustomBackend for MnistBackend {
 ///
 /// The sequence batcher fills the slots of other sequences with null
 /// requests, which have no correlation ID: they are dropped unanswered.
+/// Whether the model is the fixture that checks the memory usage report, see
+/// `models/memory_usage/config.pbtxt`.
+fn reports_memory_check(model: &Model) -> Result<bool, Error> {
+    Ok(model.config_parameter("report_memory_check")?.as_deref() == Some("true"))
+}
+
 fn stream_steps(state: &State, requests: Vec<Request>) -> Result<(), Error> {
     for request in requests {
         let Some(id) = request.correlation_id()? else {

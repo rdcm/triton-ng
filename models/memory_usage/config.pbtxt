@@ -1,0 +1,44 @@
+name: "memory_usage"
+backend: "custom_backend"
+max_batch_size: 8
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+# Reported as two entries of the same memory type and id, which the backend sums
+# into one, and as a pinned buffer the instance really allocates. Loaded by the
+# integration test, not by `make docker-env-up`.
+parameters: {
+  key: "report_memory_check"
+  value: { string_value: "true" }
+}
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
