@@ -64,6 +64,16 @@ the hook the backend sets nothing and Triton uses its defaults.
 The example backend prefers two CPU instances: `mnist_stream`, `mnist_auto` and `mnist_steps` have
 no `instance_group` and get them, `mnist` names its group in its config and keeps it.
 
+## Instance host policy
+
+`ModelInstance::host_policy` returns the `HostPolicy` Triton selected for the instance. Its name
+is the `host_policy` field of the `instance_group`, and `cpu`, `gpu_<device-id>` or `model` when
+the config leaves the field out, which is what Triton's `backend_model.cc` passes for every group
+kind. The settings are the ones Triton was started with for that name as `--host-policy`; a name
+Triton does not know gives an empty map, not a load failure. The owned copy exposes its name with
+`HostPolicy::name`, one value with `HostPolicy::setting`, and every value with
+`HostPolicy::settings`.
+
 ## Completing the model config
 
 `CustomBackend::auto_complete_config` fills in what the `config.pbtxt` of a model leaves out, like

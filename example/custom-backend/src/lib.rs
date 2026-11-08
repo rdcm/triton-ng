@@ -316,12 +316,15 @@ impl CustomBackend for MnistBackend {
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+        let host_policy = instance.host_policy()?;
         let details = format!(
-            "{} passive={} profiles={:?} secondary_devices={:?}",
+            "{} passive={} profiles={:?} secondary_devices={:?} host_policy={:?} settings={:?}",
             instance.name()?,
             instance.is_passive()?,
             instance.profile_names()?,
-            instance.secondary_devices()?
+            instance.secondary_devices()?,
+            host_policy.name(),
+            host_policy.settings()
         );
         println!("Initializing instance {details}");
         let model = instance.model()?;
