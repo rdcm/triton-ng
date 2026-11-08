@@ -250,11 +250,17 @@ pub mod __macro_support {
         Ok(())
     }
 
-    /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
-    /// after the hook.
+    /// TRITONBACKEND_Finalize. Drops the backend state and lets the shared BLS
+    /// response allocator go after the hook.
     pub unsafe fn finalize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { self::backend(backend) };
         let result = forbid_model_control("finalize", || catch(|| B::finalize(&backend)));
+        if let Err(e) = catch(|| {
+            backend.clear_state()?;
+            Ok(())
+        }) {
+            crate::log::error(&format!("failed to clear backend state: {e}"));
+        }
         ResponseAllocator::release_shared();
         into_error_ptr(result)
     }

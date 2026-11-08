@@ -11,10 +11,24 @@ use std::ptr;
 use std::sync::Arc;
 use triton_ng_macros::triton_call;
 
+/// A secondary device configured for a model instance, returned by
+/// [`ModelInstance::secondary_devices`].
+///
+/// Owns its values and holds nothing of Triton.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecondaryDevice {
+    /// The device kind, as named by Triton's model config, such as `KIND_NVDLA`.
+    pub kind: String,
+    /// The identifier of the device within its kind.
+    pub id: i64,
+}
+
 /// A model instance: Triton runs one per `instance_group` entry and device.
 ///
-/// Every instance has its own Triton thread that runs the batches given to
-/// it one after another, see [`crate::CustomBackend::model_instance_execute`].
+/// By default every instance has its own Triton thread that runs the batches
+/// given to it one after another, see [`crate::CustomBackend::model_instance_execute`].
+/// [`crate::ExecutionPolicy::DeviceBlocking`] makes the non-passive GPU
+/// instances of one model and device share a thread.
 ///
 /// Borrows the `TRITONBACKEND_ModelInstance`: Triton owns it and keeps it
 /// alive for the hook, so there is nothing to drop. Neither `Send` nor
@@ -82,6 +96,109 @@ impl ModelInstance {
             &mut _
         ))?;
         Ok(Model::from_ptr(ptr))
+    }
+
+    /// Names of the optimization profiles configured for this instance, in the
+    /// order of `instance_group.profile` in the model config.
+    ///
+    /// The returned strings are copies; Triton keeps the originals for as long
+    /// as the instance lives.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    ///     let profiles = instance.profile_names()?;
+    ///     instance.set_state(ProfileCache::new(&profiles))?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn profile_names(&self) -> Result<Vec<String>, TritonError> {
+        let mut count = 0;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceProfileCount(
+            self.ptr, &mut count
+        ))?;
+        (0..count)
+            .map(|index| {
+                let mut name = ptr::null();
+                triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceProfileName(
+                    self.ptr, index, &mut name
+                ))?;
+                if name.is_null() {
+                    return Err(TritonError::from_message(format!(
+                        "TRITONBACKEND_ModelInstanceProfileName returned null for index {index}"
+                    )));
+                }
+                // SAFETY: the core returns `Profiles()[index].c_str()`, owned by
+                // the instance. It is copied here and never modified or freed.
+                Ok(unsafe { cstr_to_string(name) })
+            })
+            .collect()
+    }
+
+    /// Whether this instance is passive: Triton does not schedule inference
+    /// requests on it (`instance_group.passive` in the model config).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if !instance.is_passive()? {
+    ///     log::info("this instance accepts scheduled requests");
+    /// }
+    /// ```
+    pub fn is_passive(&self) -> Result<bool, TritonError> {
+        let mut is_passive = false;
+        triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceIsPassive(
+            self.ptr,
+            &mut is_passive
+        ))?;
+        Ok(is_passive)
+    }
+
+    /// Secondary devices configured for this instance through
+    /// `instance_group.secondary_devices` in the model config.
+    ///
+    /// The returned devices own their strings; Triton keeps the originals for
+    /// as long as the instance lives.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+    ///     for device in instance.secondary_devices()? {
+    ///         log::info(&format!("using {} {}", device.kind, device.id));
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn secondary_devices(&self) -> Result<Vec<SecondaryDevice>, TritonError> {
+        let mut count = 0;
+        triton_call!(
+            triton_ng_sys::TRITONBACKEND_ModelInstanceSecondaryDeviceCount(self.ptr, &mut count)
+        )?;
+        (0..count)
+            .map(|index| {
+                let mut kind = ptr::null();
+                let mut id = 0;
+                triton_call!(
+                    triton_ng_sys::TRITONBACKEND_ModelInstanceSecondaryDeviceProperties(
+                        self.ptr,
+                        index,
+                        &mut kind,
+                        &mut id
+                    )
+                )?;
+                if kind.is_null() {
+                    return Err(TritonError::from_message(format!(
+                        "TRITONBACKEND_ModelInstanceSecondaryDeviceProperties returned a null kind for index {index}"
+                    )));
+                }
+                // SAFETY: the core returns `SecondaryDevices()[index].kind_.c_str()`,
+                // owned by the instance. It is copied here and never modified or freed.
+                let kind = unsafe { cstr_to_string(kind) };
+                Ok(SecondaryDevice { kind, id })
+            })
+            .collect()
     }
 
     /// Reports the memory the instance itself holds, for the `memory_usage` of

@@ -9,7 +9,8 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Poll, Wake, Waker};
 use std::thread::{self, Thread};
 
-/// What a batch gets from its model: the server for BLS calls, Triton's
+/// What a batch gets from its backend, model and instance: the state stored
+/// with [`crate::Backend::set_state`], the server for BLS calls, Triton's
 /// memory manager, the state stored with [`Model::set_state`] and the state
 /// of its instance stored with [`crate::ModelInstance::set_state`].
 ///
@@ -32,6 +33,7 @@ use std::thread::{self, Thread};
 pub struct Context {
     server: Server,
     memory: MemoryManager,
+    backend_state: Option<SharedState>,
     state: Option<SharedState>,
     instance_state: Option<SharedState>,
     device_id: i32,
@@ -52,6 +54,24 @@ impl Context {
     /// ```
     pub fn memory(&self) -> &MemoryManager {
         &self.memory
+    }
+
+    /// The state shared by every model of the backend, stored with
+    /// [`crate::Backend::set_state`].
+    ///
+    /// Fails when the backend has no state or it is not a `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let pool_size = ctx.backend_state::<BackendState>()?.pool_size;
+    /// ```
+    pub fn backend_state<T: Any>(&self) -> Result<&T, Error> {
+        self.backend_state
+            .as_deref()
+            .ok_or("backend state is not initialized")?
+            .downcast_ref::<T>()
+            .ok_or_else(|| "backend state has unexpected type".into())
     }
 
     /// The state stored with [`Model::set_state`].
@@ -174,9 +194,9 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// Server and memory manager of `model`, the state of the model and of the
-/// instance run by `executor`, and the device of the instance, as passed to
-/// batches.
+/// Server and memory manager of `model`, the state of its backend, of the
+/// model and of the instance run by `executor`, and the device of the instance,
+/// as passed to batches.
 pub(crate) fn context(
     model: &Model,
     executor: &InstanceExecutor,
@@ -185,6 +205,7 @@ pub(crate) fn context(
     Ok(Context {
         server: model.get_server()?,
         memory: MemoryManager::of_model(model)?,
+        backend_state: model.backend_state()?,
         state: model.shared_state()?,
         instance_state: executor.state.get().cloned(),
         device_id,

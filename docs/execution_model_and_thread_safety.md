@@ -1,12 +1,14 @@
 # Execution model and thread safety
 
-**Instances and batches.** Triton runs `instance_group.count` instances of a model, each with its
-own Triton thread that calls execute. `model_instance_execute` is an `async fn`: triton-ng runs
-the future of the batch to its end on that thread and only then returns to Triton, so an instance
-works on one batch at a time and the batches of a model run in parallel on its instances. While
-the future waits for BLS calls the thread is blocked and does nothing else; the response callback,
-called on a thread of the target model, unblocks it. Meanwhile Triton keeps new requests in its queue, where they are
-batched together.
+**Instances and batches.** By default Triton runs `instance_group.count` instances of a model,
+each with its own Triton thread that calls execute. With `ExecutionPolicy::DeviceBlocking`, the
+non-passive GPU instances of one model and device share an execution thread; CPU instances and
+instances of other models keep their own threads. `model_instance_execute` is an `async fn`:
+triton-ng runs the future of the batch to its end on the calling thread and only then returns to
+Triton, so an instance works on one batch at a time and batches use the available execution
+threads. While the future waits for BLS calls the thread is blocked and does nothing else; the
+response callback, called on a thread of the target model, unblocks it. Meanwhile Triton keeps
+new requests in its queue, where they are batched together.
 
 There is no async runtime around the future: it may await several BLS calls at once (`join!`),
 but timers, I/O and spawning of tokio or other runtimes do not work in it. Why the batch runs
@@ -17,11 +19,15 @@ scheduler collected, and the backend should process it as a whole, sending it to
 models as batched BLS calls. Never split it into tasks per request: every downstream call would
 run with batch size one.
 
-**State.** `CustomBackend::model_initialize` stores the state of the model (tokenizers, vocabularies,
-parsed parameters) with `Model::set_state`. It is shared by all instances and reaches every batch
-through `Context::state::<T>()`, together with the `Server` for BLS calls and Triton's
-`MemoryManager`. `Model` is not available in `model_instance_execute`: read everything the batches
-need from it in `model_initialize`.
+**State.** `CustomBackend::initialize` stores state shared by every model of the backend with
+`Backend::set_state`. It reaches every batch through `Context::backend_state::<T>()` and later
+backend hooks through `Backend::state::<T>()`. It is dropped after `CustomBackend::finalize`.
+
+`CustomBackend::model_initialize` stores the state of the model (tokenizers, vocabularies, parsed
+parameters) with `Model::set_state`. It is shared by all instances and reaches every batch through
+`Context::state::<T>()`, together with the `Server` for BLS calls and Triton's `MemoryManager`.
+`Model` is not available in `model_instance_execute`: read everything the batches need from it in
+`model_initialize`.
 
 `CustomBackend::model_instance_initialize` can store state of one instance with
 `ModelInstance::set_state`, for what must not be shared between instances, like caches of GPU

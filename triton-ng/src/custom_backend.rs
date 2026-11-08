@@ -41,8 +41,10 @@ pub trait CustomBackend {
     /// Initialize a backend. This function is optional, a backend is not
     /// required to implement it. This function is called once when a
     /// backend is loaded to allow the backend to initialize any state
-    /// associated with the backend. A backend has a single state that is
-    /// shared across all models that use the backend.
+    /// associated with the backend. Use [`Backend::set_state`] to keep state
+    /// shared across all models that use the backend; batches get it through
+    /// [`Context::backend_state`]. This is also where the execution policy is
+    /// set with [`Backend::set_execution_policy`].
     ///
     /// Corresponds to TRITONBACKEND_Initialize.
     fn initialize(_backend: &Backend) -> Result<(), Error> {
@@ -51,9 +53,10 @@ pub trait CustomBackend {
 
     /// Finalize for a backend. This function is optional, a backend is
     /// not required to implement it. This function is called once, just
-    /// before the backend is unloaded. All state associated with the
-    /// backend should be freed and any threads created for the backend
-    /// should be exited/joined before returning from this function.
+    /// before the backend is unloaded. Any threads created for the backend
+    /// should be exited/joined before returning from this function. The state
+    /// stored with [`Backend::set_state`] is dropped right after this function
+    /// returns, once no batch holds it.
     ///
     /// Corresponds to TRITONBACKEND_Finalize.
     fn finalize(_backend: &Backend) -> Result<(), Error> {
@@ -168,8 +171,9 @@ pub trait CustomBackend {
     ///
     /// The future may await several BLS calls at once (`join!`), they all
     /// run in Triton meanwhile. There is no async runtime around it: timers,
-    /// I/O and spawning of tokio or other runtimes do not work in it, and a
-    /// blocking call blocks only this instance.
+    /// I/O and spawning of tokio or other runtimes do not work in it. A
+    /// blocking call blocks the execution thread, including every instance
+    /// sharing it under [`crate::ExecutionPolicy::DeviceBlocking`].
     ///
     /// Process the batch as a whole and send it downstream as batched BLS
     /// calls: splitting it into tasks per request loses Triton's batching.

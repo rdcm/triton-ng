@@ -939,7 +939,7 @@ async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Resul
 }
 
 #[tokio::test]
-async fn custom_backend_reads_its_backend_config() -> Result<()> {
+async fn custom_backend_shares_its_state_and_reads_its_artifacts() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
 
@@ -953,7 +953,18 @@ async fn custom_backend_reads_its_backend_config() -> Result<()> {
         .await?
         .parameters;
     assert_eq!(echoed.get("greeting"), Some(&string("hello")));
-    assert!(echoed.contains_key("backend-directory"), "{echoed:?}");
+    let backend_directory = echoed
+        .get("backend-directory")
+        .and_then(|value| match value {
+            Parameter::String(directory) => Some(directory),
+            _ => None,
+        })
+        .context("backend-directory is missing or not a string")?;
+    assert_eq!(echoed.get("artifact_type"), Some(&string("FileSystem")));
+    assert_eq!(
+        echoed.get("artifact_directory"),
+        Some(&string(&format!("{backend_directory}/custom_backend")))
+    );
     Ok(())
 }
 

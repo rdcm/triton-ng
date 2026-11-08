@@ -4,15 +4,15 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes, Context,
-    CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge,
-    GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest, InferenceResult,
-    InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter, PinnedRamBuffer,
-    RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError,
-    UninitGpuBuffer,
+    ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
+    Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode,
+    ExecutionPolicy, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest,
+    InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter,
+    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput,
+    TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -54,7 +54,11 @@ impl FromStr for OutputMemory {
     }
 }
 
-static BACKEND_CONFIG: OnceLock<BackendConfig> = OnceLock::new();
+struct BackendState {
+    config: BackendConfig,
+    artifact_type: ArtifactType,
+    artifact_directory: PathBuf,
+}
 
 struct State {
     model: String,
@@ -190,9 +194,19 @@ struct MnistBackend;
 impl CustomBackend for MnistBackend {
     fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
-        BACKEND_CONFIG
-            .set(backend.config()?)
-            .map_err(|_| "the backend is initialized twice")?;
+        let (artifact_type, artifact_directory) = backend.artifacts()?;
+        backend.set_state(BackendState {
+            config: backend.config()?,
+            artifact_type,
+            artifact_directory,
+        })?;
+        let state = backend.state::<BackendState>()?;
+        println!(
+            "Backend artifacts: {:?} at {}",
+            state.artifact_type,
+            state.artifact_directory.display()
+        );
+        backend.set_execution_policy(ExecutionPolicy::Blocking)?;
         Ok(())
     }
 
@@ -254,6 +268,13 @@ impl CustomBackend for MnistBackend {
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+        println!(
+            "Initializing instance {}: profiles {:?}, passive {}, secondary devices {:?}",
+            instance.name()?,
+            instance.profile_names()?,
+            instance.is_passive()?,
+            instance.secondary_devices()?
+        );
         let model = instance.model()?;
         if !reports_memory_check(&model)? {
             instance.set_state(Buffers::default())?;
@@ -394,7 +415,7 @@ impl CustomBackend for MnistBackend {
                 continue;
             }
             if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
-                echo_backend_config(request)?;
+                echo_backend_config(&ctx, request)?;
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
@@ -691,17 +712,20 @@ fn answer_done(request: Request) -> Result<(), Error> {
     Ok(())
 }
 
-fn echo_backend_config(request: Request) -> Result<(), Error> {
-    let config = BACKEND_CONFIG
-        .get()
-        .ok_or("the backend config is not read")?;
+fn echo_backend_config(ctx: &Context, request: Request) -> Result<(), Error> {
+    let state = ctx.backend_state::<BackendState>()?;
     let mut response = Response::new(request)?;
     response
         .create_output("DIGIT", DataType::Int32, &[1, 1])?
         .write_i32_vec(&[0])?;
-    for (key, value) in config.parameters() {
+    for (key, value) in state.config.parameters() {
         response.set_parameter(key, value)?;
     }
+    response.set_parameter("artifact_type", format!("{:?}", state.artifact_type))?;
+    response.set_parameter(
+        "artifact_directory",
+        state.artifact_directory.to_string_lossy().as_ref(),
+    )?;
     response.send()?;
     Ok(())
 }

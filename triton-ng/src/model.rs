@@ -1,3 +1,4 @@
+use crate::backend::Backend;
 use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
 use crate::memory_manager::MemoryManager;
@@ -101,6 +102,15 @@ impl Model {
     /// A new reference to the state stored with [`Model::set_state`], if any.
     pub(crate) fn shared_state(&self) -> Result<Option<SharedState>, Error> {
         Ok(self.stored_state()?.map(Arc::clone))
+    }
+
+    /// A new reference to the state of the backend this model uses, if any.
+    pub(crate) fn backend_state(&self) -> Result<Option<SharedState>, Error> {
+        let backend = triton_call!(triton_ng_sys::TRITONBACKEND_ModelBackend(
+            self.as_ptr(),
+            &mut _
+        ))?;
+        Backend::from_ptr(backend).shared_state()
     }
 
     fn stored_state(&self) -> Result<Option<&SharedState>, Error> {

@@ -34,9 +34,8 @@ Absent from the tree; the C functions are named so that they can be compared aga
 | Sequences and state | `TRITONBACKEND_StateNew`, `TRITONBACKEND_StateUpdate`, `TRITONBACKEND_StateBuffer*` | Serve `sequence_batching` models with state of their own |
 | Custom batching | `TRITONBACKEND_ModelBatcherInitialize`/`Finalize`, `TRITONBACKEND_ModelBatchInitialize`/`Finalize`/`IncludeRequest` | Decide itself which requests form a batch |
 | Host policy | `TRITONBACKEND_ModelInstanceHostPolicy`, `TRITONBACKEND_InputPropertiesForHostPolicy`, `TRITONBACKEND_InputBufferForHostPolicy` | Read the host policy of an instance, or the inputs Triton keeps for it |
-| Instance details | `TRITONBACKEND_ModelInstances`, `TRITONBACKEND_ModelInstanceProfileCount`/`ProfileName`, `TRITONBACKEND_ModelInstanceIsPassive`, `TRITONBACKEND_ModelInstanceSecondaryDeviceCount`/`Properties` | Read the profile names, passivity and secondary devices of an instance |
+| Instance details | `TRITONBACKEND_ModelInstances` | List the instances of a model |
 | Buffers of a response and an input | `TRITONBACKEND_InputBufferAttributes`, `TRITONBACKEND_OutputBufferAttributes`, `TRITONBACKEND_InferenceResponseOutput`, `TRITONBACKEND_InferenceResponseOutputByName`, `TRITONBACKEND_RequestInputByIndex` | Read a buffer with its attributes of a response, or an input by index |
-| Backend level | `TRITONBACKEND_BackendArtifacts`, `TRITONBACKEND_BackendSetState`, `TRITONBACKEND_BackendState`, `TRITONBACKEND_BackendSetExecutionPolicy` | Read the artifact files, store state, or ask for an execution policy at the backend level |
 | BLS request mutation | `TRITONSERVER_InferenceRequestRemoveInput`, `TRITONSERVER_InferenceRequestRemoveRequestedOutput`, `TRITONSERVER_InferenceRequestAppendInputDataWithHostPolicy` | Take an input or an output back from a BLS request, or append host-policy data |
 
 The decoupled path of Triton (`TRITONBACKEND_ResponseFactoryNew`, `...SendFlags`) is wrapped;
