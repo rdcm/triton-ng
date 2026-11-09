@@ -65,5 +65,7 @@ download-model:
 	mkdir -p models/instance_details/1
 	mkdir -p models/device_blocking/1
 	mkdir -p models/cpu_parallel/1
+	mkdir -p models/host_policy_pinned/1
+	mkdir -p models/host_policy_unknown/1
 	wget https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx
 	mv mnist-12.onnx models/mnist_onnx/1/model.onnx

@@ -1,0 +1,40 @@
+name: "host_policy_pinned"
+backend: "custom_backend"
+max_batch_size: 8
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+# A host policy named "pinned" that `make docker-env-up` gives Triton with
+# `--host-policy=pinned,cpu-cores=0-3`, so `ModelInstance::host_policy` reports
+# a name of its own next to settings.
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+    host_policy: "pinned"
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}

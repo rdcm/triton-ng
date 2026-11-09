@@ -1,0 +1,40 @@
+name: "host_policy_unknown"
+backend: "custom_backend"
+max_batch_size: 8
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+# Names a policy Triton was not started with. The core falls back to an empty
+# policy instead of failing the load, so the instance reports this name with no
+# settings.
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+    host_policy: "unset_policy"
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}

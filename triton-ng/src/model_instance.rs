@@ -93,11 +93,16 @@ impl ModelInstance {
 
     /// The host policy Triton selected for this instance.
     ///
+    /// This reads what Triton configured: it says nothing about the affinity of
+    /// the thread and does not give access to the inputs Triton keeps per
+    /// policy, which needs `TRITONBACKEND_InputPropertiesForHostPolicy` and
+    /// `TRITONBACKEND_InputBufferForHostPolicy` (not wrapped).
+    ///
     /// The name is the `host_policy` field of the instance's `instance_group`,
     /// or the default Triton picks for the kind of the group when the config
-    /// leaves it out: `cpu`, `gpu_<device-id>` or `model`. The settings come
-    /// from the `--host-policy` options Triton was started with, so a policy
-    /// Triton does not know gives an empty map.
+    /// leaves it out: `cpu`, `gpu_<device-id>` or `model`. The settings are the
+    /// ones Triton was started with for the selected name, which a default name
+    /// can have too; a name Triton does not know gives an empty map.
     ///
     /// The returned [`HostPolicy`] owns its strings. Triton retains the
     /// underlying message, which stays alive with the instance.

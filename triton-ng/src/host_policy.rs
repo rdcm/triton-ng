@@ -85,9 +85,9 @@ impl HostPolicy {
         self.settings.get(key).map(String::as_str)
     }
 
-    /// Every setting as `(key, value)`, sorted by key. Empty when Triton has
-    /// no settings for that name, which it never has for the default `cpu`,
-    /// `gpu_<device-id>` and `model` names.
+    /// Every setting as `(key, value)`, sorted by key. Empty when no settings
+    /// were configured for the selected policy name; a default name such as
+    /// `cpu` can carry settings too, as in `--host-policy=cpu,cpu-cores=0-3`.
     ///
     /// # Examples
     ///
