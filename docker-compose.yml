@@ -26,12 +26,18 @@ services:
       --load-model=mnist_stream
       --load-model=mnist_auto
       --load-model=mnist_steps
+      --load-model=instance_details
+      --load-model=device_blocking
+      --load-model=cpu_parallel
       --trace-config=triton,file=/traces/trace.json
       --backend-config=custom_backend,greeting=hello
+      --backend-config=custom_backend_device_blocking,greeting=hello
+      --backend-config=custom_backend_device_blocking,execution-policy=device-blocking
     volumes:
       - ./models:/models
       - ./target/traces:/traces
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so
+      - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend_device_blocking/libtriton_custom_backend_device_blocking.so
     ports:
       - "8000:8000" # HTTP
       - "8001:8001" # gRPC

@@ -1,9 +1,11 @@
+use crate::backend::Backend;
+use crate::backend_state::SharedState;
 use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
 use crate::memory_manager::MemoryManager;
 use crate::message::Message;
 use crate::server::Server;
-use crate::utils::{cstr_to_string, parse_parameter};
+use crate::utils::{cstr_to_path, cstr_to_string, parse_parameter};
 use std::any::Any;
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -11,9 +13,6 @@ use std::ptr;
 use std::str::FromStr;
 use std::sync::Arc;
 use triton_ng_macros::triton_call;
-
-/// Type-erased model state, shared by the model and the batches in flight.
-pub(crate) type SharedState = Arc<dyn Any + Send + Sync>;
 
 /// Model state stored behind `TRITONBACKEND_ModelSetState`.
 type BoxedState = SharedState;
@@ -103,6 +102,20 @@ impl Model {
         Ok(self.stored_state()?.map(Arc::clone))
     }
 
+    /// A new reference to the state of the backend this model uses, if any.
+    pub(crate) fn backend_state(&self) -> Result<Option<SharedState>, Error> {
+        let backend = triton_call!(triton_ng_sys::TRITONBACKEND_ModelBackend(
+            self.as_ptr(),
+            &mut _
+        ))?;
+        if backend.is_null() {
+            return Err("TRITONBACKEND_ModelBackend returned null".into());
+        }
+        // SAFETY: the core returns the backend the model was loaded with, which
+        // outlives the model; the wrapper only borrows it here.
+        Backend::from_ptr(backend).shared_state()
+    }
+
     fn stored_state(&self) -> Result<Option<&SharedState>, Error> {
         let state_ptr = self.raw_state()?;
         if state_ptr.is_null() {
@@ -178,7 +191,9 @@ impl Model {
                 "the model repository is not on the local file system",
             ));
         }
-        Ok(PathBuf::from(unsafe { cstr_to_string(directory) }))
+        // SAFETY: the core returns the path of the repository, owned by the
+        // model. It is copied here and never modified or freed.
+        unsafe { cstr_to_path(directory) }
     }
 
     /// Path of `file_name` in the directory of the served version of the model.

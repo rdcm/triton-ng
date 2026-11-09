@@ -6,10 +6,19 @@ what to tune when a model needs more concurrency.
 ## How Triton forms a batch
 
 Everything below is from the core of the Triton release triton-ng targets (`deps/triton-core`,
-r25.09). A model with `dynamic_batching` has one *batcher thread* and one *execution thread per
-instance* (`backend_model_instance.cc`, `TritonBackendThread::BackendThread`). The execution
-thread takes a batch (a `Payload`) from the batch queue of the model and calls
+r25.09). By default a model with `dynamic_batching` has one *batcher thread* and one *execution
+thread per instance* (`backend_model_instance.cc`, `TritonBackendThread::BackendThread`). With
+`ExecutionPolicy::DeviceBlocking`, the non-passive GPU instances of one model and device share an
+execution thread. The execution thread takes a batch (a `Payload`) from the batch queue of the model and calls
 `TRITONBACKEND_ModelInstanceExecute` on it; it takes the next batch only after that call returns.
+
+Two things narrow that sharing, both from the core of r25.09. A model that configures
+`sequence_batching` keeps `ExecutionPolicy::Blocking`, and Triton logs that it overrides the policy. An
+instance takes the thread of a sibling the core has created already (`GetInstancesByDevice` reads the
+instances of the model being loaded), so a backend that also sets `parallel_model_instance_loading`
+creates its instances at the same time and none of them finds a sibling: the example backend therefore
+turns parallel instance loading off when it selects the policy, and
+`custom_backend_serializes_the_gpu_instances_of_a_device` measures the result.
 
 The batcher thread moves requests from the request queue into a batch only when there is a *slot*
 for it (`dynamic_batch_scheduler.cc`, `WaitForPayloadSlotAvailable`; `rate_limiter.cc`,
@@ -43,7 +52,8 @@ The future still wins over a synchronous backend inside the batch: several BLS c
 together (`futures::future::join_all`, `tokio::join!`) run in Triton at the same time, so a backend
 can send the sub-batches of a batch, or the stages of different requests, downstream at once
 while the thread sleeps. What does not work inside the future: timers, I/O and spawning of
-tokio or other runtimes, because nothing drives them. A blocking call blocks the instance.
+tokio or other runtimes, because nothing drives them. A blocking call blocks the execution thread,
+including every instance that shares it under `ExecutionPolicy::DeviceBlocking`.
 
 triton-ng 0.1 and 0.2 ran every batch on a tokio runtime per instance and returned from execute
 at once. The model parameters `worker_threads` and `max_batches_in_flight` of those versions are
@@ -51,8 +61,9 @@ gone; a model that still sets them fails to load with an error that says so.
 
 ## Tuning: `instance_group` count
 
-The number of batches a model works on at once is the number of its instances. More instances
-overlap the CPU work and the BLS waits of several batches, which raises throughput as long as the
+By default the number of batches a model works on at once is the number of its instances;
+`ExecutionPolicy::DeviceBlocking` runs at most one batch per device for GPU instances of the model.
+More instances overlap the CPU work and the BLS waits of several batches, which raises throughput as long as the
 load keeps every instance's batches full; past that point batches get smaller and the downstream
 models run with smaller inputs. Measure with the average batch size
 (`nv_inference_count / nv_inference_exec_count`) and the queue time of the model, which triton-ng

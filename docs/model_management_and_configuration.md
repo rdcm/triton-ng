@@ -28,8 +28,10 @@ Next to the keys from the command line Triton adds its own keys for every backen
 for this backend wins over it.
 
 `BackendConfig` is a copy: Triton keeps the config it was started with, and triton-ng reads it
-without taking it. Keep what the models need in a `static` (`OnceLock`) set in `initialize`, see
-the example backend.
+without taking it. Keep what every model needs with `Backend::set_state`: later backend hooks read
+it with `Backend::state`, and batches with `Context::backend_state`. The example backend stores its
+configuration this way. `Backend::artifacts` also returns the artifact type and the directory that
+contains the backend shared library and the files next to it.
 
 ## Backend attributes
 

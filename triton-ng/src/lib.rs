@@ -13,6 +13,8 @@ pub(crate) mod backend_attribute;
 mod backend_attributes;
 #[path = "backend_config.rs"]
 mod backend_config;
+#[path = "backend_state.rs"]
+pub(crate) mod backend_state;
 #[path = "batch_statistics.rs"]
 pub(crate) mod batch_statistics;
 #[path = "buffer_attributes.rs"]
@@ -250,11 +252,16 @@ pub mod __macro_support {
         Ok(())
     }
 
-    /// TRITONBACKEND_Finalize. Lets the shared BLS response allocator go
-    /// after the hook.
+    /// TRITONBACKEND_Finalize. Drops the backend state and lets the shared BLS
+    /// response allocator go after the hook.
     pub unsafe fn finalize<B: CustomBackend>(backend: *mut c_void) -> ErrorPtr {
         let backend = unsafe { self::backend(backend) };
         let result = forbid_model_control("finalize", || catch(|| B::finalize(&backend)));
+        // SAFETY: the hook returned, so no reference from `Backend::state` is
+        // alive any more; only the batches hold the state through an `Arc`.
+        if let Err(e) = unsafe { backend.clear_state() } {
+            crate::log::error(&format!("failed to clear backend state: {e}"));
+        }
         ResponseAllocator::release_shared();
         into_error_ptr(result)
     }

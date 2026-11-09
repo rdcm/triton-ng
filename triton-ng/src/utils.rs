@@ -1,7 +1,8 @@
 use crate::error::{Error, ErrorCode, TritonError};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::ffi::{CString, c_char};
+use std::ffi::{CStr, CString, OsStr, c_char};
 use std::io::Cursor;
+use std::path::PathBuf;
 
 /// Splits serialized BYTES tensor content (`u32` little-endian length + bytes
 /// per element) into elements. A length running past the end is an error.
@@ -61,6 +62,39 @@ pub unsafe fn cstr_to_string(ptr: *const c_char) -> String {
         String::new()
     } else {
         unsafe { std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned() }
+    }
+}
+
+/// A [`PathBuf`] from a NUL-terminated string Triton owns.
+///
+/// On Unix the bytes of the string are taken as they are, so a directory whose
+/// name is not UTF-8 stays the directory Triton loaded. Elsewhere the string
+/// has to be UTF-8, since the paths Triton hands out are encoded text there.
+///
+/// Fails on a null pointer and on a path the platform cannot represent.
+///
+/// # Safety
+///
+/// `ptr` must be null or a live NUL-terminated string for the whole call.
+pub unsafe fn cstr_to_path(ptr: *const c_char) -> Result<PathBuf, TritonError> {
+    if ptr.is_null() {
+        return Err(TritonError::from_message("a path is null"));
+    }
+    let cstr = unsafe { std::ffi::CStr::from_ptr(ptr) };
+    path_from_cstr(cstr)
+        .ok_or_else(|| TritonError::from_message("a path Triton returned is not UTF-8"))
+}
+
+/// The path behind `cstr`, `None` when the platform cannot represent it.
+fn path_from_cstr(cstr: &CStr) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Some(PathBuf::from(OsStr::from_bytes(cstr.to_bytes())))
+    }
+    #[cfg(not(unix))]
+    {
+        cstr.to_str().map(PathBuf::from)
     }
 }
 
@@ -157,5 +191,17 @@ mod tests {
     fn truncated_length_is_rejected() {
         assert!(decode_string(&[1, 0]).is_err());
         assert!(count_strings(&[1, 0]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_keeps_bytes_that_are_not_utf8() {
+        use super::path_from_cstr;
+        use std::ffi::CStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let cstr = CStr::from_bytes_with_nul(b"/opt/back\xffends\0").expect("a NUL-free path");
+        let path = path_from_cstr(cstr).expect("the bytes are the path on Unix");
+        assert_eq!(path.as_os_str().as_bytes(), b"/opt/back\xffends");
     }
 }

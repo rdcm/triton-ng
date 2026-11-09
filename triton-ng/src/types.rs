@@ -158,6 +158,79 @@ impl InstanceGroupKind {
     }
 }
 
+/// How the files of a backend or model are made available to it.
+///
+/// Returned with the backend directory by [`crate::Backend::artifacts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactType {
+    /// The artifacts are in a directory of the local file system.
+    FileSystem,
+}
+
+impl ArtifactType {
+    /// Fails on a type this version of triton-ng does not know.
+    #[allow(non_upper_case_globals)]
+    pub(crate) fn from_sys(v: triton_ng_sys::TRITONBACKEND_ArtifactType) -> Result<Self, String> {
+        match v {
+            triton_ng_sys::TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM => {
+                Ok(Self::FileSystem)
+            }
+            other => Err(format!("unknown artifact type {other}")),
+        }
+    }
+}
+
+/// How Triton schedules the instances of the models of a backend, set with
+/// [`crate::Backend::set_execution_policy`].
+///
+/// # Examples
+///
+/// ```ignore
+/// fn initialize(backend: &Backend) -> Result<(), Error> {
+///     backend.set_execution_policy(ExecutionPolicy::DeviceBlocking)?;
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionPolicy {
+    /// Triton may execute the next batch of an instance as soon as the previous
+    /// execute call returns. This is Triton's default.
+    Blocking,
+    /// Non-passive GPU instances of one model and device share an execution
+    /// thread, so their execute calls run one at a time. CPU instances and
+    /// instances of other models execute independently.
+    DeviceBlocking,
+}
+
+impl ExecutionPolicy {
+    pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONBACKEND_ExecutionPolicy {
+        match self {
+            Self::Blocking => {
+                triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
+            }
+            Self::DeviceBlocking => {
+                triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
+            }
+        }
+    }
+
+    /// Fails on a policy this version of triton-ng does not know.
+    #[allow(non_upper_case_globals)]
+    pub(crate) fn from_sys(
+        v: triton_ng_sys::TRITONBACKEND_ExecutionPolicy,
+    ) -> Result<Self, String> {
+        match v {
+            triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING => {
+                Ok(Self::Blocking)
+            }
+            triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING => {
+                Ok(Self::DeviceBlocking)
+            }
+            other => Err(format!("unknown execution policy {other}")),
+        }
+    }
+}
+
 /// Value of a request or response parameter, see [`crate::Request::parameter`]
 /// and [`crate::Response::set_parameter`].
 ///
@@ -378,7 +451,7 @@ impl MemoryType {
 
 #[cfg(test)]
 mod tests {
-    use super::{InstanceGroupKind, Parameter, RequestFlags};
+    use super::{ArtifactType, ExecutionPolicy, InstanceGroupKind, Parameter, RequestFlags};
     use std::ffi::{CString, c_void};
     use triton_ng_sys::*;
 
@@ -393,6 +466,46 @@ mod tests {
             assert_eq!(InstanceGroupKind::from_sys(kind.to_sys()), Ok(kind));
         }
         assert!(InstanceGroupKind::from_sys(42).is_err());
+    }
+
+    #[test]
+    fn artifact_types_are_checked() {
+        assert_eq!(
+            ArtifactType::from_sys(
+                TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM
+            ),
+            Ok(ArtifactType::FileSystem)
+        );
+        assert!(ArtifactType::from_sys(42).is_err());
+    }
+
+    #[test]
+    fn execution_policies_have_their_triton_values() {
+        assert_eq!(
+            ExecutionPolicy::Blocking.to_sys(),
+            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
+        );
+        assert_eq!(
+            ExecutionPolicy::DeviceBlocking.to_sys(),
+            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
+        );
+    }
+
+    #[test]
+    fn execution_policies_are_checked() {
+        assert_eq!(
+            ExecutionPolicy::from_sys(
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
+            ),
+            Ok(ExecutionPolicy::Blocking)
+        );
+        assert_eq!(
+            ExecutionPolicy::from_sys(
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
+            ),
+            Ok(ExecutionPolicy::DeviceBlocking)
+        );
+        assert!(ExecutionPolicy::from_sys(42).is_err());
     }
 
     #[test]

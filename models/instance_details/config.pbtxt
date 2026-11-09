@@ -1,0 +1,55 @@
+name: "instance_details"
+backend: "custom_backend"
+max_batch_size: 8
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+# Two GPU instances on the same device: one passive with a secondary device,
+# one active without. `default-max-batch-size` keeps the backend from asking for
+# an instance group of its own, so these are the groups Triton creates.
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+    gpus: [ 0 ]
+    passive: true
+    secondary_devices [
+      {
+        kind: KIND_NVDLA
+        device_id: 7
+      }
+    ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}

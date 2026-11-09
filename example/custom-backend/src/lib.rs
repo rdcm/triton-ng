@@ -3,16 +3,16 @@ use std::future::Future;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use triton_ng::{
-    AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes, Context,
-    CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode, Gauge,
-    GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest, InferenceResult,
-    InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter, PinnedRamBuffer,
-    RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput, TritonError,
-    UninitGpuBuffer,
+    ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
+    Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode,
+    ExecutionPolicy, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest,
+    InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter,
+    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput,
+    TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -54,7 +54,16 @@ impl FromStr for OutputMemory {
     }
 }
 
-static BACKEND_CONFIG: OnceLock<BackendConfig> = OnceLock::new();
+struct BackendState {
+    config: BackendConfig,
+    artifact_type: ArtifactType,
+    artifact_directory: PathBuf,
+    /// The policy Triton holds for this backend, read back after it was set.
+    execution_policy: ExecutionPolicy,
+    /// Counted by `count_backend_state`, to show that the state of the backend
+    /// is one value for every model that uses it.
+    requests: AtomicU64,
+}
 
 struct State {
     model: String,
@@ -67,6 +76,14 @@ struct State {
     stream_model: Option<String>,
     forward_model: Option<String>,
     forwards_input: bool,
+    /// What every instance reported in its own hook, answered by
+    /// `echo_instance_details`.
+    instances: Mutex<Vec<String>>,
+    /// How many execute calls of this model run at once, and the most that ever
+    /// did. A model whose instances share an execution thread under
+    /// `ExecutionPolicy::DeviceBlocking` never goes past one.
+    in_flight: AtomicI64,
+    max_in_flight: AtomicI64,
     held: AtomicI64,
     cancelled: AtomicI64,
     kept_inputs: Mutex<Vec<Arc<SharedInput>>>,
@@ -77,6 +94,28 @@ struct Metrics {
     answered: Counter,
     held: Gauge,
     bls_seconds: Histogram,
+}
+
+/// Counts the execute calls of a model that run at once.
+///
+/// Dropped when the call returns, so `in_flight` goes back down however the
+/// call ends.
+struct InFlight<'a> {
+    state: &'a State,
+}
+
+impl<'a> InFlight<'a> {
+    fn enter(state: &'a State) -> Self {
+        let in_flight = state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        state.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+        Self { state }
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.state.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Metrics {
@@ -190,16 +229,36 @@ struct MnistBackend;
 impl CustomBackend for MnistBackend {
     fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
-        BACKEND_CONFIG
-            .set(backend.config()?)
-            .map_err(|_| "the backend is initialized twice")?;
+        let (artifact_type, artifact_directory) = backend.artifacts()?;
+        let policy = execution_policy(backend)?;
+        backend.set_execution_policy(policy)?;
+        let held = backend.execution_policy()?;
+        println!("Backend execution policy: set {policy:?}, Triton holds {held:?}");
+        backend.set_state(BackendState {
+            config: backend.config()?,
+            artifact_type,
+            artifact_directory,
+            execution_policy: held,
+            requests: AtomicU64::new(0),
+        })?;
+        let state = backend.state::<BackendState>()?;
+        println!(
+            "Backend artifacts: {:?} at {}",
+            state.artifact_type,
+            state.artifact_directory.display()
+        );
         Ok(())
     }
 
-    fn attributes(_backend: &Backend) -> Result<BackendAttributes, Error> {
+    fn attributes(backend: &Backend) -> Result<BackendAttributes, Error> {
+        // Instances that share an execution thread under
+        // `ExecutionPolicy::DeviceBlocking` are created one after another: the
+        // core gives an instance the thread of a sibling it has already
+        // created, and loading them in parallel hides that sibling.
+        let parallel = execution_policy(backend)? == ExecutionPolicy::Blocking;
         Ok(BackendAttributes::new()
             .preferred_instance_group(InstanceGroupKind::Cpu, 2, &[])?
-            .parallel_model_instance_loading(true))
+            .parallel_model_instance_loading(parallel))
     }
 
     fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Result<(), Error> {
@@ -235,6 +294,9 @@ impl CustomBackend for MnistBackend {
             stream_model: model.config_parameter("stream_model")?,
             forward_model: model.config_parameter("forward_model")?,
             forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
+            instances: Mutex::new(Vec::new()),
+            in_flight: AtomicI64::new(0),
+            max_in_flight: AtomicI64::new(0),
             held: AtomicI64::new(0),
             cancelled: AtomicI64::new(0),
             kept_inputs: Mutex::new(Vec::new()),
@@ -254,7 +316,21 @@ impl CustomBackend for MnistBackend {
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+        let details = format!(
+            "{} passive={} profiles={:?} secondary_devices={:?}",
+            instance.name()?,
+            instance.is_passive()?,
+            instance.profile_names()?,
+            instance.secondary_devices()?
+        );
+        println!("Initializing instance {details}");
         let model = instance.model()?;
+        model
+            .state::<State>()?
+            .instances
+            .lock()
+            .map_err(|_| "the instance list is poisoned")?
+            .push(details);
         if !reports_memory_check(&model)? {
             instance.set_state(Buffers::default())?;
             instance.report_memory_usage(&[BufferAttributes::new(
@@ -278,6 +354,7 @@ impl CustomBackend for MnistBackend {
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
         let state = ctx.state::<State>()?;
+        let _in_flight = InFlight::enter(state);
         if state.iterative_sequence {
             return stream_steps(state, requests);
         }
@@ -394,12 +471,30 @@ impl CustomBackend for MnistBackend {
                 continue;
             }
             if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
-                echo_backend_config(request)?;
+                echo_backend_config(&ctx, request)?;
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
                 echo_metadata(request)?;
                 continue;
+            }
+            if request.parameter("echo_instance_details")? == Some(Parameter::Bool(true)) {
+                echo_instance_details(&ctx, request)?;
+                continue;
+            }
+            if request.parameter("count_backend_state")? == Some(Parameter::Bool(true)) {
+                echo_backend_state_count(&ctx, request)?;
+                continue;
+            }
+            if request.parameter("echo_concurrency")? == Some(Parameter::Bool(true)) {
+                echo_concurrency(state, request)?;
+                continue;
+            }
+            if let Some(Parameter::Int(micros)) = request.parameter("hold_micros")? {
+                let micros = u64::try_from(micros).map_err(|_| "hold_micros is negative")?;
+                // Holds the execution thread of the instance so that a test can
+                // observe how many of them run at once.
+                std::thread::park_timeout(Duration::from_micros(micros));
             }
             if request.parameter("forward_metadata")? == Some(Parameter::Bool(true)) {
                 let image = request.get_input(IMAGE)?.as_bytes()?;
@@ -691,17 +786,86 @@ fn answer_done(request: Request) -> Result<(), Error> {
     Ok(())
 }
 
-fn echo_backend_config(request: Request) -> Result<(), Error> {
-    let config = BACKEND_CONFIG
-        .get()
-        .ok_or("the backend config is not read")?;
+/// The policy the backend asks Triton for, `device-blocking` when the model
+/// repository runs a second copy of this backend that is configured for it.
+fn execution_policy(backend: &Backend) -> Result<ExecutionPolicy, Error> {
+    match backend.config()?.parameter("execution-policy") {
+        None | Some("blocking") => Ok(ExecutionPolicy::Blocking),
+        Some("device-blocking") => Ok(ExecutionPolicy::DeviceBlocking),
+        Some(other) => Err(format!("unknown execution-policy '{other}'").into()),
+    }
+}
+
+/// Answers how many execute calls of the model ran at once since the last
+/// read, and resets the maximum.
+fn echo_concurrency(state: &State, request: Request) -> Result<(), Error> {
+    let max = state.max_in_flight.swap(0, Ordering::SeqCst);
     let mut response = Response::new(request)?;
     response
         .create_output("DIGIT", DataType::Int32, &[1, 1])?
         .write_i32_vec(&[0])?;
-    for (key, value) in config.parameters() {
+    response.set_parameter("max_in_flight", Parameter::Int(max))?;
+    response.set_parameter(
+        "in_flight",
+        Parameter::Int(state.in_flight.load(Ordering::SeqCst)),
+    )?;
+    response.send()?;
+    Ok(())
+}
+
+/// Answers what every instance of the model reported about itself, sorted by
+/// instance name.
+fn echo_instance_details(ctx: &Context, request: Request) -> Result<(), Error> {
+    let mut details = ctx
+        .state::<State>()?
+        .instances
+        .lock()
+        .map_err(|_| "the instance list is poisoned")?
+        .clone();
+    details.sort();
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    for (index, detail) in details.iter().enumerate() {
+        response.set_parameter(&format!("instance_{index}"), detail.as_str())?;
+    }
+    response.send()?;
+    Ok(())
+}
+
+/// Counts the call in the state of the backend and answers the new value, so a
+/// client can see that two models share one state.
+fn echo_backend_state_count(ctx: &Context, request: Request) -> Result<(), Error> {
+    let counted = ctx
+        .backend_state::<BackendState>()?
+        .requests
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    response.set_parameter("backend_state_count", Parameter::Int(counted as i64))?;
+    response.send()?;
+    Ok(())
+}
+
+fn echo_backend_config(ctx: &Context, request: Request) -> Result<(), Error> {
+    let state = ctx.backend_state::<BackendState>()?;
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    for (key, value) in state.config.parameters() {
         response.set_parameter(key, value)?;
     }
+    response.set_parameter("artifact_type", format!("{:?}", state.artifact_type))?;
+    response.set_parameter("execution_policy", format!("{:?}", state.execution_policy))?;
+    response.set_parameter(
+        "artifact_directory",
+        state.artifact_directory.to_string_lossy().as_ref(),
+    )?;
     response.send()?;
     Ok(())
 }
