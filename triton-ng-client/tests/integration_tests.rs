@@ -1125,12 +1125,12 @@ async fn custom_backend_reports_the_host_policy_of_its_instances() -> Result<()>
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
 
-    // `make docker-env-up` starts Triton with `--host-policy=pinned,cpu-cores=0-3`
-    // and `--host-policy=cpu,cpu-cores=0-3`.
+    // `make docker-env-up` starts Triton with `--host-policy=pinned,cpu-cores=0-7`
+    // and `--host-policy=cpu,cpu-cores=0-7`.
     for (model, name, settings) in [
-        ("host_policy_pinned", "pinned", "cpu-cores=0-3"),
+        ("host_policy_pinned", "pinned", "cpu-cores=0-7"),
         ("host_policy_unknown", "unset_policy", ""),
-        ("mnist_auto", "cpu", "cpu-cores=0-3"),
+        ("mnist_auto", "cpu", "cpu-cores=0-7"),
     ] {
         let echoed = sut
             .infer_with_parameters(

@@ -40,8 +40,8 @@ services:
       --backend-config=custom_backend,greeting=hello
       --backend-config=custom_backend_device_blocking,greeting=hello
       --backend-config=custom_backend_device_blocking,execution-policy=device-blocking
-      --host-policy=pinned,cpu-cores=0-3
-      --host-policy=cpu,cpu-cores=0-3
+      --host-policy=pinned,cpu-cores=0-7
+      --host-policy=cpu,cpu-cores=0-7
     volumes:
       - ./models:/models
       - ./target/traces:/traces

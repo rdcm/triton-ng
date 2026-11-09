@@ -19,7 +19,7 @@ output [
 ]
 
 # A host policy named "pinned" that `make docker-env-up` gives Triton with
-# `--host-policy=pinned,cpu-cores=0-3`, so `ModelInstance::host_policy` reports
+# `--host-policy=pinned,cpu-cores=0-7`, so `ModelInstance::host_policy` reports
 # a name of its own next to settings.
 instance_group [
   {

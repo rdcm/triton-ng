@@ -70,7 +70,7 @@ no `instance_group` and get them, `mnist` names its group in its config and keep
 is the `host_policy` field of the `instance_group`, and `cpu`, `gpu_<device-id>` or `model` when
 the config leaves the field out, which is what Triton's `backend_model.cc` passes for every group
 kind. The settings are the ones Triton was started with for the selected name as `--host-policy`,
-which a default name can have as well: `--host-policy=cpu,cpu-cores=0-3` configures every instance
+which a default name can have as well: `--host-policy=cpu,cpu-cores=0-7` configures every instance
 that ends up on the default `cpu` name. A name Triton does not know gives an empty map, not a load
 failure. The owned copy exposes its name with `HostPolicy::name`, one value with
 `HostPolicy::setting`, and every value with `HostPolicy::settings`.
@@ -80,7 +80,7 @@ does not give access to the inputs Triton keeps per policy, which needs
 `TRITONBACKEND_InputPropertiesForHostPolicy` and `TRITONBACKEND_InputBufferForHostPolicy`, neither
 of them wrapped. `models/host_policy_pinned` and `models/host_policy_unknown` are the fixtures of
 the integration test: the first selects the `pinned` policy `make docker-env-up` gives Triton as
-`--host-policy=pinned,cpu-cores=0-3`, the second names a policy Triton was not started with. Both
+`--host-policy=pinned,cpu-cores=0-7`, the second names a policy Triton was not started with. Both
 need `SYS_NICE` and `IPC_LOCK` in the container: without them the core fails to reset the NUMA
 memory policy of a pinned instance.
 

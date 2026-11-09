@@ -10,10 +10,9 @@ use triton_ng::{
     ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
     Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode,
     ExecutionPolicy, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, HostPolicy,
-    InferenceRequest,
-    InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput,
-    TritonError, UninitGpuBuffer,
+    InferenceRequest, InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model,
+    ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response,
+    ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
