@@ -1121,6 +1121,41 @@ async fn concurrent_executions(sut: &Sut, config: &Config, model: &str) -> Resul
 }
 
 #[tokio::test]
+async fn custom_backend_reports_the_host_policy_of_its_instances() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // `make docker-env-up` starts Triton with `--host-policy=pinned,cpu-cores=0-7`
+    // and `--host-policy=cpu,cpu-cores=0-7`.
+    for (model, name, settings) in [
+        ("host_policy_pinned", "pinned", "cpu-cores=0-7"),
+        ("host_policy_unknown", "unset_policy", ""),
+        ("mnist_auto", "cpu", "cpu-cores=0-7"),
+    ] {
+        let echoed = sut
+            .infer_with_parameters(
+                model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([("echo_host_policy".to_string(), Parameter::Bool(true))]),
+            )
+            .await?
+            .parameters;
+        assert_eq!(
+            echoed.get("host_policy_name"),
+            Some(&string(name)),
+            "{model}"
+        );
+        assert_eq!(
+            echoed.get("host_policy_settings"),
+            Some(&string(settings)),
+            "{model}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn model_without_instance_group_gets_the_one_the_backend_prefers() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

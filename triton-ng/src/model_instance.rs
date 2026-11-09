@@ -1,6 +1,8 @@
 use crate::buffer_attributes::BufferAttributes;
 use crate::error::{Error, TritonError};
 use crate::executor::InstanceExecutor;
+use crate::host_policy::HostPolicy;
+use crate::message::serialize_to_json;
 use crate::model::Model;
 use crate::types::InstanceGroupKind;
 use crate::utils::cstr_to_string;
@@ -87,6 +89,56 @@ impl ModelInstance {
             self.ptr, &mut kind
         ))?;
         InstanceGroupKind::from_sys(kind).map_err(TritonError::from_message)
+    }
+
+    /// The host policy Triton selected for this instance.
+    ///
+    /// This reads what Triton configured: it says nothing about the affinity of
+    /// the thread and does not give access to the inputs Triton keeps per
+    /// policy, which needs `TRITONBACKEND_InputPropertiesForHostPolicy` and
+    /// `TRITONBACKEND_InputBufferForHostPolicy` (not wrapped).
+    ///
+    /// The name is the `host_policy` field of the instance's `instance_group`,
+    /// or the default Triton picks for the kind of the group when the config
+    /// leaves it out: `cpu`, `gpu_<device-id>` or `model`. The settings are the
+    /// ones Triton was started with for the selected name, which a default name
+    /// can have too; a name Triton does not know gives an empty map.
+    ///
+    /// The returned [`HostPolicy`] owns its strings. Triton retains the
+    /// underlying message, which stays alive with the instance.
+    ///
+    /// # Errors
+    ///
+    /// Fails when Triton cannot return or serialize the host policy, when
+    /// Triton returns a null message, or when the message is not the documented
+    /// `{"<policy-name>": {"<setting>": "<value>"}}` JSON.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let policy = instance.host_policy()?;
+    /// log::info(&format!("host policy: {}", policy.name()));
+    /// if let Some(node) = policy.setting("numa-node") {
+    ///     log::info(&format!("NUMA node: {node}"));
+    /// }
+    /// ```
+    pub fn host_policy(&self) -> Result<HostPolicy, TritonError> {
+        let message = triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceHostPolicy(
+            self.ptr,
+            &mut _
+        ))?;
+        if message.is_null() {
+            return Err(TritonError::from_message(
+                "TRITONBACKEND_ModelInstanceHostPolicy returned null",
+            ));
+        }
+
+        // SAFETY: the message is a member of the TritonModelInstance (core
+        // backend_model_instance.cc, `&ti->HostPolicyMessage()`), which stays
+        // alive for this borrowed `ModelInstance`. Triton keeps owning it:
+        // serialization only reads it and never deletes it.
+        let json = unsafe { serialize_to_json(message) }?;
+        HostPolicy::from_json(&json).map_err(TritonError::from_message)
     }
 
     /// The model this instance belongs to.

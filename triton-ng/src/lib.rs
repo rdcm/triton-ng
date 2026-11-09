@@ -31,6 +31,8 @@ mod executor;
 pub(crate) mod failure;
 #[path = "final_response.rs"]
 pub(crate) mod final_response;
+#[path = "host_policy.rs"]
+mod host_policy;
 #[path = "inference_request.rs"]
 mod inference_request;
 #[path = "inference_response.rs"]
@@ -107,6 +109,7 @@ pub use buffers::*;
 pub use custom_backend::*;
 pub use error::*;
 pub use executor::Context;
+pub use host_policy::*;
 pub use inference_request::*;
 pub use inference_result::*;
 pub use inference_stream::*;
@@ -630,6 +633,7 @@ mod tests {
             UninitGpuBuffer,
             OutputBuffer,
             InferenceResult,
+            HostPolicy,
             InferenceStream,
             RequestCancel,
             Message,

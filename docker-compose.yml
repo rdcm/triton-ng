@@ -11,6 +11,11 @@ services:
               count: all
               capabilities: [gpu]
     ipc: host
+    # Host policies call set_mempolicy and pthread_setaffinity_np, which need
+    # these capabilities in the container that Triton runs in.
+    cap_add:
+      - SYS_NICE
+      - IPC_LOCK
     ulimits:
       memlock: -1
       stack: 67108864
@@ -29,10 +34,14 @@ services:
       --load-model=instance_details
       --load-model=device_blocking
       --load-model=cpu_parallel
+      --load-model=host_policy_pinned
+      --load-model=host_policy_unknown
       --trace-config=triton,file=/traces/trace.json
       --backend-config=custom_backend,greeting=hello
       --backend-config=custom_backend_device_blocking,greeting=hello
       --backend-config=custom_backend_device_blocking,execution-policy=device-blocking
+      --host-policy=pinned,cpu-cores=0-7
+      --host-policy=cpu,cpu-cores=0-7
     volumes:
       - ./models:/models
       - ./target/traces:/traces

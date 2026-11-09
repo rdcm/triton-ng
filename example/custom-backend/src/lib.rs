@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use triton_ng::{
     ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
     Context, CorrelationId, Counter, CounterFamily, CustomBackend, DataType, Error, ErrorCode,
-    ExecutionPolicy, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, InferenceRequest,
-    InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model, ModelInstance, Parameter,
-    PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response, ResponseSender, SharedInput,
-    TritonError, UninitGpuBuffer,
+    ExecutionPolicy, Gauge, GaugeFamily, GpuBuffer, Histogram, HistogramFamily, HostPolicy,
+    InferenceRequest, InferenceResult, InstanceGroupKind, MemoryManager, MemoryType, Model,
+    ModelInstance, Parameter, PinnedRamBuffer, RamBuffer, Request, RequestFlags, Response,
+    ResponseSender, SharedInput, TritonError, UninitGpuBuffer,
 };
 
 const IMAGE: &str = "Input3";
@@ -150,6 +150,9 @@ struct Buffers {
     ram_allocated: AtomicI64,
     pinned_allocated: AtomicI64,
     gpu_allocated: AtomicI64,
+    /// The host policy Triton gave this instance, read in the instance hook and
+    /// answered by `echo_host_policy`.
+    host_policy: Option<HostPolicy>,
     /// The pinned buffer of the memory usage fixture, kept for as long as the
     /// instance lives so that the report describes an allocation that exists.
     #[expect(dead_code, reason = "kept alive for the memory usage report")]
@@ -316,12 +319,15 @@ impl CustomBackend for MnistBackend {
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
+        let host_policy = instance.host_policy()?;
         let details = format!(
-            "{} passive={} profiles={:?} secondary_devices={:?}",
+            "{} passive={} profiles={:?} secondary_devices={:?} host_policy={:?} settings={:?}",
             instance.name()?,
             instance.is_passive()?,
             instance.profile_names()?,
-            instance.secondary_devices()?
+            instance.secondary_devices()?,
+            host_policy.name(),
+            host_policy.settings()
         );
         println!("Initializing instance {details}");
         let model = instance.model()?;
@@ -332,7 +338,10 @@ impl CustomBackend for MnistBackend {
             .map_err(|_| "the instance list is poisoned")?
             .push(details);
         if !reports_memory_check(&model)? {
-            instance.set_state(Buffers::default())?;
+            instance.set_state(Buffers {
+                host_policy: Some(host_policy),
+                ..Default::default()
+            })?;
             instance.report_memory_usage(&[BufferAttributes::new(
                 MemoryType::Cpu,
                 size_of::<Buffers>() as u64,
@@ -342,6 +351,7 @@ impl CustomBackend for MnistBackend {
         // A pinned buffer that really exists, unlike the size of the Rust state.
         let pinned = model.memory_manager()?.pinned(CHECK_PINNED_BYTES)?;
         instance.set_state(Buffers {
+            host_policy: Some(host_policy),
             check: Some(pinned),
             ..Default::default()
         })?;
@@ -472,6 +482,10 @@ impl CustomBackend for MnistBackend {
             }
             if request.parameter("echo_backend_config")? == Some(Parameter::Bool(true)) {
                 echo_backend_config(&ctx, request)?;
+                continue;
+            }
+            if request.parameter("echo_host_policy")? == Some(Parameter::Bool(true)) {
+                echo_host_policy(&ctx, request)?;
                 continue;
             }
             if request.parameter("echo_metadata")? == Some(Parameter::Bool(true)) {
@@ -794,6 +808,30 @@ fn execution_policy(backend: &Backend) -> Result<ExecutionPolicy, Error> {
         Some("device-blocking") => Ok(ExecutionPolicy::DeviceBlocking),
         Some(other) => Err(format!("unknown execution-policy '{other}'").into()),
     }
+}
+
+/// Answers the host policy the instance hook stored, with its settings joined
+/// as `key=value,key=value`.
+fn echo_host_policy(ctx: &Context, request: Request) -> Result<(), Error> {
+    let policy = ctx
+        .instance_state::<Buffers>()?
+        .host_policy
+        .as_ref()
+        .ok_or("the instance hook stored no host policy")?;
+    let settings = policy
+        .settings()
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1, 1])?
+        .write_i32_vec(&[0])?;
+    response.set_parameter("host_policy_name", policy.name())?;
+    response.set_parameter("host_policy_settings", settings)?;
+    response.send()?;
+    Ok(())
 }
 
 /// Answers how many execute calls of the model ran at once since the last
