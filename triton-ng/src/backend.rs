@@ -1,18 +1,15 @@
 use crate::backend_config::BackendConfig;
+use crate::backend_state::{self, SharedState, StateError, StateStore};
 use crate::error::{Error, TritonError};
 use crate::message::serialize_to_json;
-use crate::model::SharedState;
 use crate::types::{ArtifactType, ExecutionPolicy};
-use crate::utils::cstr_to_string;
+use crate::utils::{cstr_to_path, cstr_to_string};
 use libc::c_char;
 use std::any::Any;
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::Arc;
 use triton_ng_macros::triton_call;
-
-type BoxedState = SharedState;
 
 /// The backend, given to [`crate::CustomBackend::initialize`],
 /// [`crate::CustomBackend::attributes`] and [`crate::CustomBackend::finalize`].
@@ -107,10 +104,7 @@ impl Backend {
         }
         // SAFETY: the core returns `tb->Directory().c_str()`, owned by the
         // backend. It is copied here and never modified or freed.
-        Ok((
-            artifact,
-            PathBuf::from(unsafe { cstr_to_string(directory) }),
-        ))
+        Ok((artifact, unsafe { cstr_to_path(directory)? }))
     }
 
     /// Sets how Triton schedules execution on the instances of this backend.
@@ -132,6 +126,32 @@ impl Backend {
             self.ptr,
             policy.to_sys()
         ))
+    }
+
+    /// The execution policy Triton holds for this backend: the one set with
+    /// [`Backend::set_execution_policy`], or [`ExecutionPolicy::Blocking`] when
+    /// none was set, which is Triton's default.
+    ///
+    /// Fails when Triton cannot answer or reports a policy this version of
+    /// triton-ng does not know.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn initialize(backend: &Backend) -> Result<(), Error> {
+    ///     backend.set_execution_policy(ExecutionPolicy::DeviceBlocking)?;
+    ///     assert_eq!(backend.execution_policy()?, ExecutionPolicy::DeviceBlocking);
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn execution_policy(&self) -> Result<ExecutionPolicy, TritonError> {
+        let mut policy =
+            triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING;
+        triton_call!(triton_ng_sys::TRITONBACKEND_BackendExecutionPolicy(
+            self.ptr,
+            &mut policy
+        ))?;
+        ExecutionPolicy::from_sys(policy).map_err(TritonError::from_message)
     }
 
     /// Stores backend-defined state shared by every model of this backend.
@@ -156,21 +176,7 @@ impl Backend {
     /// }
     /// ```
     pub fn set_state<T: Any + Send + Sync>(&self, state: T) -> Result<(), TritonError> {
-        if !self.raw_state()?.is_null() {
-            return Err(TritonError::from_message("backend state is already set"));
-        }
-
-        let boxed: Box<BoxedState> = Box::new(Arc::new(state));
-        let state_ptr = Box::into_raw(boxed) as *mut c_void;
-
-        if let Err(e) = triton_call!(triton_ng_sys::TRITONBACKEND_BackendSetState(
-            self.ptr, state_ptr
-        )) {
-            unsafe { drop(Box::from_raw(state_ptr as *mut BoxedState)) };
-            return Err(e);
-        }
-
-        Ok(())
+        backend_state::set(self, state).map_err(state_error)
     }
 
     /// Returns the state previously stored with [`Backend::set_state`].
@@ -187,45 +193,27 @@ impl Backend {
     /// }
     /// ```
     pub fn state<T: Any>(&self) -> Result<&T, Error> {
-        let state = self
-            .stored_state()?
-            .ok_or("backend state is not initialized")?;
-        state
-            .downcast_ref::<T>()
-            .ok_or_else(|| "backend state has unexpected type".into())
+        backend_state::get(self).map_err(|e| state_error(e).into())
     }
 
     /// A new reference to the state stored with [`Backend::set_state`], if any.
     pub(crate) fn shared_state(&self) -> Result<Option<SharedState>, Error> {
-        Ok(self.stored_state()?.map(Arc::clone))
-    }
-
-    fn stored_state(&self) -> Result<Option<&SharedState>, Error> {
-        let state_ptr = self.raw_state()?;
-        if state_ptr.is_null() {
-            return Ok(None);
-        }
-
-        // SAFETY: the pointer was produced by `set_state` from a `Box<BoxedState>`
-        // and stays valid until `clear_state`, which only runs on backend finalize.
-        Ok(Some(unsafe { &*(state_ptr as *const BoxedState) }))
+        backend_state::shared(self).map_err(|e| state_error(e).into())
     }
 
     /// Drops the state stored with [`Backend::set_state`], if any.
-    pub(crate) fn clear_state(&self) -> Result<(), TritonError> {
-        let state_ptr = self.raw_state()?;
-        if state_ptr.is_null() {
-            return Ok(());
-        }
-
-        triton_call!(triton_ng_sys::TRITONBACKEND_BackendSetState(
-            self.ptr,
-            ptr::null_mut()
-        ))?;
-        unsafe { drop(Box::from_raw(state_ptr as *mut BoxedState)) };
-
-        Ok(())
+    ///
+    /// # Safety
+    ///
+    /// No reference returned by [`Backend::state`] may be alive: it points into
+    /// the state this drops.
+    pub(crate) unsafe fn clear_state(&self) -> Result<(), TritonError> {
+        backend_state::clear(self).map_err(state_error)
     }
+}
+
+impl StateStore for Backend {
+    type Error = TritonError;
 
     fn raw_state(&self) -> Result<*mut c_void, TritonError> {
         let mut state_ptr: *mut c_void = ptr::null_mut();
@@ -234,5 +222,24 @@ impl Backend {
             &mut state_ptr
         ))?;
         Ok(state_ptr)
+    }
+
+    fn set_raw_state(&self, state: *mut c_void) -> Result<(), TritonError> {
+        triton_call!(triton_ng_sys::TRITONBACKEND_BackendSetState(
+            self.ptr, state
+        ))
+    }
+}
+
+/// The error of `backend_state` as a Triton error.
+fn state_error(e: StateError<TritonError>) -> TritonError {
+    match e {
+        StateError::Store(e) => e,
+        StateError::AlreadySet => TritonError::from_message("backend state is already set"),
+        StateError::NotInitialized => TritonError::from_message("backend state is not initialized"),
+        StateError::WrongType => TritonError::from_message("backend state has unexpected type"),
+        StateError::DropPanicked => {
+            TritonError::from_message("dropping the backend state panicked")
+        }
     }
 }

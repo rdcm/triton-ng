@@ -969,6 +969,158 @@ async fn custom_backend_shares_its_state_and_reads_its_artifacts() -> Result<()>
 }
 
 #[tokio::test]
+async fn custom_backend_shares_its_state_between_models() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // One state counts both models: a state per model or per instance would
+    // start over for the second one.
+    let mut counted = Vec::new();
+    for model in ["mnist", "mnist_auto"] {
+        let echoed = sut
+            .infer_with_parameters(
+                model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([("count_backend_state".to_string(), Parameter::Bool(true))]),
+            )
+            .await?
+            .parameters;
+        counted.push(match echoed.get("backend_state_count") {
+            Some(Parameter::Int(count)) => *count,
+            other => anyhow::bail!("no count from {model}: {other:?}"),
+        });
+    }
+    anyhow::ensure!(
+        counted[1] > counted[0],
+        "the counter of the second model continues the first: {counted:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_reports_the_details_of_its_instances() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let echoed = sut
+        .infer_with_parameters(
+            "instance_details",
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("echo_instance_details".to_string(), Parameter::Bool(true))]),
+        )
+        .await?
+        .parameters;
+
+    let mut details: Vec<&str> = echoed
+        .iter()
+        .filter(|(name, _)| name.starts_with("instance_"))
+        .filter_map(|(_, value)| match value {
+            Parameter::String(detail) => Some(detail.as_str()),
+            _ => None,
+        })
+        .collect();
+    details.sort();
+    anyhow::ensure!(details.len() == 2, "two instances: {details:?}");
+
+    let passive = details
+        .iter()
+        .find(|detail| detail.contains("passive=true"))
+        .context("no passive instance")?;
+    assert!(
+        passive.contains("secondary_devices=[SecondaryDevice { kind: \"KIND_NVDLA\", id: 7 }]"),
+        "a passive instance keeps its secondary device: {passive}"
+    );
+    let active = details
+        .iter()
+        .find(|detail| detail.contains("passive=false"))
+        .context("no active instance")?;
+    assert!(
+        active.contains("secondary_devices=[]"),
+        "an active instance without a secondary device: {active}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_backend_serializes_the_gpu_instances_of_a_device() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // The example backend selects `ExecutionPolicy::DeviceBlocking`, which the
+    // core applies to the non-passive GPU instances of one model and device
+    // only.
+    assert_eq!(
+        concurrent_executions(&sut, &config, "device_blocking").await?,
+        1
+    );
+    assert!(
+        concurrent_executions(&sut, &config, "cpu_parallel").await? >= 2,
+        "two CPU instances keep executing at the same time"
+    );
+
+    // The policy the backend asked for is the one Triton holds, read back with
+    // `TRITONBACKEND_BackendExecutionPolicy`.
+    for (model, policy) in [("mnist", "Blocking"), ("device_blocking", "DeviceBlocking")] {
+        let echoed = sut
+            .infer_with_parameters(
+                model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([("echo_backend_config".to_string(), Parameter::Bool(true))]),
+            )
+            .await?
+            .parameters;
+        assert_eq!(
+            echoed.get("execution_policy"),
+            Some(&string(policy)),
+            "{model}"
+        );
+    }
+    Ok(())
+}
+
+/// Sends eight overlapping requests to `model` and answers the most execute
+/// calls of that model that ran at once.
+async fn concurrent_executions(sut: &Sut, config: &Config, model: &str) -> Result<i64> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let model = model.to_string();
+        let input = config.mnist_blank_input();
+        let output = config.backend_output_name.clone();
+        let url = config.triton_url.clone();
+        tasks.spawn(async move {
+            let sut = Sut::new(&url).await?;
+            sut.infer_with_parameters(
+                &model,
+                vec![input],
+                &[&output],
+                HashMap::from([("hold_micros".to_string(), Parameter::Int(50_000))]),
+            )
+            .await
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result??;
+    }
+
+    let echoed = sut
+        .infer_with_parameters(
+            model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("echo_concurrency".to_string(), Parameter::Bool(true))]),
+        )
+        .await?
+        .parameters;
+    match echoed.get("max_in_flight") {
+        Some(Parameter::Int(max)) => Ok(*max),
+        other => anyhow::bail!("no maximum from {model}: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn model_without_instance_group_gets_the_one_the_backend_prefers() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

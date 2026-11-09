@@ -1,6 +1,7 @@
+use crate::backend_state::SharedState;
 use crate::error::Error;
 use crate::memory_manager::MemoryManager;
-use crate::model::{Model, SharedState};
+use crate::model::Model;
 use crate::server::Server;
 use std::any::Any;
 use std::future::Future;

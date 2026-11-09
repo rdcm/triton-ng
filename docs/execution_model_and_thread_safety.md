@@ -3,7 +3,10 @@
 **Instances and batches.** By default Triton runs `instance_group.count` instances of a model,
 each with its own Triton thread that calls execute. With `ExecutionPolicy::DeviceBlocking`, the
 non-passive GPU instances of one model and device share an execution thread; CPU instances and
-instances of other models keep their own threads. `model_instance_execute` is an `async fn`:
+instances of other models keep their own threads. The core keeps `Blocking` for a model with
+`sequence_batching`, and an instance can only take the thread of a sibling created before it, so a
+backend that loads its instances in parallel gets one thread per instance; the example backend
+stops loading them in parallel when it selects the policy. `model_instance_execute` is an `async fn`:
 triton-ng runs the future of the batch to its end on the calling thread and only then returns to
 Triton, so an instance works on one batch at a time and batches use the available execution
 threads. While the future waits for BLS calls the thread is blocked and does nothing else; the
@@ -21,7 +24,9 @@ run with batch size one.
 
 **State.** `CustomBackend::initialize` stores state shared by every model of the backend with
 `Backend::set_state`. It reaches every batch through `Context::backend_state::<T>()` and later
-backend hooks through `Backend::state::<T>()`. It is dropped after `CustomBackend::finalize`.
+backend hooks through `Backend::state::<T>()`. It is dropped after `CustomBackend::finalize`, and a
+batch that still holds it keeps it alive. `Backend::execution_policy` reads the policy Triton holds
+for the backend, the one `Backend::set_execution_policy` set or Triton's blocking default.
 
 `CustomBackend::model_initialize` stores the state of the model (tokenizers, vocabularies, parsed
 parameters) with `Model::set_state`. It is shared by all instances and reaches every batch through

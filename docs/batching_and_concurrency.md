@@ -12,6 +12,14 @@ thread per instance* (`backend_model_instance.cc`, `TritonBackendThread::Backend
 execution thread. The execution thread takes a batch (a `Payload`) from the batch queue of the model and calls
 `TRITONBACKEND_ModelInstanceExecute` on it; it takes the next batch only after that call returns.
 
+Two things narrow that sharing, both from the core of r25.09. A model that configures
+`sequence_batching` keeps `ExecutionPolicy::Blocking`, and Triton logs that it overrides the policy. An
+instance takes the thread of a sibling the core has created already (`GetInstancesByDevice` reads the
+instances of the model being loaded), so a backend that also sets `parallel_model_instance_loading`
+creates its instances at the same time and none of them finds a sibling: the example backend therefore
+turns parallel instance loading off when it selects the policy, and
+`custom_backend_serializes_the_gpu_instances_of_a_device` measures the result.
+
 The batcher thread moves requests from the request queue into a batch only when there is a *slot*
 for it (`dynamic_batch_scheduler.cc`, `WaitForPayloadSlotAvailable`; `rate_limiter.cc`,
 `PayloadSlotAvailable`):

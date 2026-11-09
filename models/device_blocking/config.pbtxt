@@ -1,0 +1,42 @@
+name: "device_blocking"
+backend: "custom_backend_device_blocking"
+max_batch_size: 8
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+# Two GPU instances on the same device. The model uses a second copy of the
+# example backend, which `make docker-env-up` configures for
+# `ExecutionPolicy::DeviceBlocking`: these two share one execution thread and
+# their execute calls never overlap. No other test uses this model, so its
+# counters are its own.
+instance_group [
+  {
+    count: 2
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}

@@ -213,6 +213,22 @@ impl ExecutionPolicy {
             }
         }
     }
+
+    /// Fails on a policy this version of triton-ng does not know.
+    #[allow(non_upper_case_globals)]
+    pub(crate) fn from_sys(
+        v: triton_ng_sys::TRITONBACKEND_ExecutionPolicy,
+    ) -> Result<Self, String> {
+        match v {
+            triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING => {
+                Ok(Self::Blocking)
+            }
+            triton_ng_sys::TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING => {
+                Ok(Self::DeviceBlocking)
+            }
+            other => Err(format!("unknown execution policy {other}")),
+        }
+    }
 }
 
 /// Value of a request or response parameter, see [`crate::Request::parameter`]
@@ -473,6 +489,23 @@ mod tests {
             ExecutionPolicy::DeviceBlocking.to_sys(),
             TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
         );
+    }
+
+    #[test]
+    fn execution_policies_are_checked() {
+        assert_eq!(
+            ExecutionPolicy::from_sys(
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
+            ),
+            Ok(ExecutionPolicy::Blocking)
+        );
+        assert_eq!(
+            ExecutionPolicy::from_sys(
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
+            ),
+            Ok(ExecutionPolicy::DeviceBlocking)
+        );
+        assert!(ExecutionPolicy::from_sys(42).is_err());
     }
 
     #[test]
