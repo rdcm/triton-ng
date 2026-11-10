@@ -101,6 +101,9 @@ impl Response {
     /// before [`Response::send`]. Without this call Triton records nothing for
     /// the response.
     ///
+    /// A response that cannot be sent is replaced by an error response, and
+    /// that one is recorded too, see [`Request::enable_statistics`].
+    ///
     /// # Examples
     ///
     /// ```ignore
@@ -113,6 +116,7 @@ impl Response {
     /// ```
     pub fn enable_statistics(&mut self) {
         self.body.enable_statistics();
+        self.request.enable_statistics();
     }
 }
 
@@ -254,8 +258,11 @@ impl ResponseBody {
             flags,
             ptr::null_mut(),
         ));
+        // The response ends when it went out; building its report is not part of
+        // the time Triton records for it.
+        let end_ns = crate::batch_statistics::now_ns();
         if let Some(statistics) = statistics
-            && let Err(e) = statistics.report(None)
+            && let Err(e) = statistics.report(end_ns, None)
         {
             crate::log::error(&format!("failed to report response statistics: {e}"));
         }
@@ -349,11 +356,16 @@ impl ResponseStatistics {
     /// Reports the response to Triton, with the factory of its request, which
     /// the report dereferences to number the response.
     ///
+    /// `end_ns` is the moment the response went out: the backend reads the clock
+    /// right after `TRITONBACKEND_ResponseSend` returns, so that building the
+    /// report is not part of the time Triton records.
+    ///
     /// `error` is the error object the response was sent with, which Triton does
     /// not own: it counts the response as failed, or as cancelled when the code
     /// of the error says so, and reads the object while it records it.
     pub(crate) fn report(
         &self,
+        end_ns: u64,
         error: Option<*mut triton_ng_sys::TRITONSERVER_Error>,
     ) -> Result<(), TritonError> {
         let factory = crate::response_factory::ResponseFactory::new(self.request)?;
@@ -394,8 +406,7 @@ impl ResponseStatistics {
             }
             triton_call!(
                 triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetResponseEnd(
-                    statistics,
-                    crate::batch_statistics::now_ns()
+                    statistics, end_ns
                 )
             )?;
             if let Some(error) = error {

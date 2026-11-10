@@ -168,6 +168,22 @@ impl Sut {
         Ok(counts)
     }
 
+    /// The nanoseconds of the responses the statistics count as successful,
+    /// summed over the responses Triton keeps.
+    pub async fn successful_response_ns(&self, model: &str) -> Result<u64> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        Ok(stats
+            .into_proto()
+            .response_stats
+            .values()
+            .map(|statistics| statistics.success.as_ref().map_or(0, |bucket| bucket.ns))
+            .sum())
+    }
+
     pub async fn infer(
         &self,
         model: &str,

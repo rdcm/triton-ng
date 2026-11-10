@@ -439,6 +439,27 @@ impl Request {
         Ok(cancelled)
     }
 
+    /// Asks Triton to record the time of the error response Triton sends for
+    /// this request, which `/v2/models/<model>/stats` shows as `response_stats`.
+    ///
+    /// An error response is created while it is sent, so there is no
+    /// [`crate::Response`] to enable the statistics on, unlike
+    /// [`crate::Response::enable_statistics`]. Without this call [`Request::respond_error`],
+    /// [`Request::respond_error_with_code`] and [`Request::respond_cancelled`]
+    /// record nothing for the request.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// if let Err(e) = validate(&request) {
+    ///     request.enable_statistics();
+    ///     request.respond_error_with_code(e.code(), &e.to_string())?;
+    /// }
+    /// ```
+    pub fn enable_statistics(&mut self) {
+        self.final_response.enable_statistics();
+    }
+
     /// Sends a final response carrying `message` as an internal error, see
     /// [`Request::respond_error_with_code`].
     ///

@@ -123,11 +123,14 @@ keeps the bookkeeping out of the path of every response that does not need it:
 `compute_infer` is the time before the first output was created and `compute_output` the time
 after it, both inside `success`, which is the whole interval.
 
-A response the backend fails has no response object to opt in with: an error response is created
-while it is sent. Its statistics are reported anyway, with the error that was sent, so Triton counts
-it in `fail`, or in `cancel` when the request was cancelled. Without that the two counts would stay
-empty and a failed response would not appear in `response_stats` at all.
+An error response is created while it is sent, so it has no response object to opt in with, unlike
+a response the backend builds. A request opts in for it with `Request::enable_statistics`, and
+`Response::enable_statistics` enables it as well: a response that cannot be sent is replaced by an
+error response, and that one is counted. Triton counts the error response in `fail`, or in `cancel`
+when the request was cancelled. Without the opt-in a failed or cancelled response stays out of
+`response_stats`.
 
 The example backend enables it for a request that asks with its `enable_statistics` parameter, on
-a plain response and on every response of a stream, and
-`custom_backend_reports_the_response_statistics_it_enables` checks both in `response_stats`.
+a plain response, on every response of a stream, and on the error or cancelled response it answers
+with, and `custom_backend_reports_the_response_statistics_it_enables` checks them in
+`response_stats`.

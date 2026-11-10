@@ -3,6 +3,7 @@ use crate::request_release::RequestRelease;
 use crate::response::FINAL;
 use crate::response_factory::ResponseFactory;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use triton_ng_macros::triton_call;
 
@@ -25,6 +26,9 @@ pub(crate) struct FinalResponse {
     request: *mut triton_ng_sys::TRITONBACKEND_Request,
     gate: Mutex<Gate<Pending>>,
     release: Arc<RequestRelease>,
+    /// Whether the backend asked for the statistics of the responses of this
+    /// request, see `Request::enable_statistics`.
+    statistics: AtomicBool,
 }
 
 // SAFETY: Triton lets a request be answered from any thread, one thread at a
@@ -61,7 +65,14 @@ impl FinalResponse {
             request,
             gate: Mutex::new(Gate::default()),
             release,
+            statistics: AtomicBool::new(false),
         }
+    }
+
+    /// Records that the backend asked for the statistics of the error response
+    /// Triton sends for this request, see `Request::enable_statistics`.
+    pub(crate) fn enable_statistics(&self) {
+        self.statistics.store(true, Ordering::Relaxed);
     }
 
     /// Sends `pending` now, or keeps it for the last shared input. A failure
@@ -109,8 +120,14 @@ impl FinalResponse {
                     FINAL,
                     ptr::null_mut(),
                 ));
-                if let Some(statistics) = statistics
-                    && let Err(e) = statistics.report(None)
+                // The response ends when it went out; building its report is not
+                // part of the time Triton records for it.
+                let end_ns = crate::batch_statistics::now_ns();
+                // A response that did not go out is counted through the error
+                // response that replaces it, see `send_error`.
+                if sent.is_ok()
+                    && let Some(statistics) = statistics
+                    && let Err(e) = statistics.report(end_ns, None)
                 {
                     crate::log::error(&format!("failed to report response statistics: {e}"));
                 }
@@ -141,13 +158,16 @@ impl FinalResponse {
             return Err(TritonError::from_message("failed to create error object"));
         }
         // An error response is created here, so it has no response object the
-        // backend could have enabled the statistics on: they are reported
-        // anyway, with the error, which is what puts the response into the
+        // backend could have enabled the statistics on: it enables them on the
+        // request instead, see `Request::enable_statistics`, and they are
+        // reported with the error, which is what puts the response into the
         // `fail` or `cancel` count of `response_stats`.
-        let statistics = crate::response::ResponseStatistics::for_request(
-            self.request,
-            self.release.statistics().instance(),
-        );
+        let statistics = self.statistics.load(Ordering::Relaxed).then(|| {
+            crate::response::ResponseStatistics::for_request(
+                self.request,
+                self.release.statistics().instance(),
+            )
+        });
 
         let response = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
             &mut _,
@@ -160,9 +180,14 @@ impl FinalResponse {
             FINAL,
             error.as_ptr(),
         ));
+        // The response ends when it went out; building its report is not part of
+        // the time Triton records for it.
+        let end_ns = crate::batch_statistics::now_ns();
         // Reported before the error object is dropped: Triton reads it while it
         // records the response.
-        if let Err(e) = statistics.report(Some(error.as_ptr())) {
+        if let Some(statistics) = statistics
+            && let Err(e) = statistics.report(end_ns, Some(error.as_ptr()))
+        {
             crate::log::error(&format!("failed to report response statistics: {e}"));
         }
         sent
