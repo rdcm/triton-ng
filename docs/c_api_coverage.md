@@ -29,7 +29,6 @@ Absent from the tree; the C functions are named so that they can be compared aga
 
 | Area | Functions | What a backend cannot do |
 |---|---|---|
-| Response statistics | `TRITONBACKEND_ModelInstanceReportResponseStatistics`, `TRITONBACKEND_ModelInstanceResponseStatistics*` | Fill `response_stats` of the model statistics, which reports per-response compute output times |
 | Trace activities | `TRITONSERVER_InferenceTraceReportActivity` | Add a custom activity to the trace of a request |
 | Sequences and state | `TRITONBACKEND_StateNew`, `TRITONBACKEND_StateUpdate`, `TRITONBACKEND_StateBuffer*` | Serve `sequence_batching` models with state of their own |
 | Custom batching | `TRITONBACKEND_ModelBatcherInitialize`/`Finalize`, `TRITONBACKEND_ModelBatchInitialize`/`Finalize`/`IncludeRequest` | Decide itself which requests form a batch |

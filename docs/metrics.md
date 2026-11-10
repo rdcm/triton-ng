@@ -92,3 +92,45 @@ reports, and triton-ng reports every batch and every request:
 the queue time tells how long requests wait for an instance: the two numbers to watch when
 choosing `instance_group` count, see [Batching and concurrency](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
 A rescheduled request (`Request::reschedule`) is reported when its last step is released.
+
+## Statistics of one response
+
+`response_stats` of `/v2/models/<model>/stats` reports every response of a decoupled model on its
+own, and a backend opts one in with `Response::enable_statistics` or
+`StreamResponse::enable_statistics`, just before sending it:
+
+```rust ignore
+let mut response = Response::new(request)?;
+response
+    .create_output("DIGIT", DataType::Int32, &[1])?
+    .write_i32_vec(&[digit])?;
+response.enable_statistics();
+response.send()?;
+```
+
+The clock starts when the response was created, so filling the outputs is inside the measured
+interval, and Triton splits the interval where the first output was created: the time before it is
+the compute time, the time after it the time spent writing the outputs. A response without any
+output is counted as an empty one. Without the call Triton records nothing for the response, which
+keeps the bookkeeping out of the path of every response that does not need it:
+
+```json
+"response_stats": {"0": {"compute_infer": {"count": 1, "ns": 200},
+                          "compute_output": {"count": 1, "ns": 98000},
+                          "success": {"count": 1, "ns": 98200}}}
+```
+
+`compute_infer` is the time before the first output was created and `compute_output` the time
+after it, both inside `success`, which is the whole interval.
+
+An error response is created while it is sent, so it has no response object to opt in with, unlike
+a response the backend builds. A request opts in for it with `Request::enable_statistics`, and
+`Response::enable_statistics` enables it as well: a response that cannot be sent is replaced by an
+error response, and that one is counted. Triton counts the error response in `fail`, or in `cancel`
+when the request was cancelled. Without the opt-in a failed or cancelled response stays out of
+`response_stats`.
+
+The example backend enables it for a request that asks with its `enable_statistics` parameter, on
+a plain response, on every response of a stream, and on the error or cancelled response it answers
+with, and `custom_backend_reports_the_response_statistics_it_enables` checks them in
+`response_stats`.

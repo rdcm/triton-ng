@@ -125,6 +125,65 @@ impl Sut {
         Ok(stats.memory_usage())
     }
 
+    /// The number of responses the model reported per-response statistics for,
+    /// the sum over every bucket Triton keeps for a response.
+    pub async fn response_statistics(&self, model: &str) -> Result<u64> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        Ok(stats
+            .into_proto()
+            .response_stats
+            .values()
+            .map(|statistics| {
+                [
+                    statistics.success.as_ref(),
+                    statistics.fail.as_ref(),
+                    statistics.empty_response.as_ref(),
+                    statistics.cancel.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|bucket| bucket.count)
+                .sum::<u64>()
+            })
+            .sum())
+    }
+
+    /// How many responses of the model the statistics count as failed and how
+    /// many as cancelled, summed over the responses Triton keeps.
+    pub async fn failed_and_cancelled_responses(&self, model: &str) -> Result<(u64, u64)> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        let mut counts = (0, 0);
+        for statistics in stats.into_proto().response_stats.values() {
+            counts.0 += statistics.fail.as_ref().map_or(0, |bucket| bucket.count);
+            counts.1 += statistics.cancel.as_ref().map_or(0, |bucket| bucket.count);
+        }
+        Ok(counts)
+    }
+
+    /// The nanoseconds of the responses the statistics count as successful,
+    /// summed over the responses Triton keeps.
+    pub async fn successful_response_ns(&self, model: &str) -> Result<u64> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        Ok(stats
+            .into_proto()
+            .response_stats
+            .values()
+            .map(|statistics| statistics.success.as_ref().map_or(0, |bucket| bucket.ns))
+            .sum())
+    }
+
     pub async fn infer(
         &self,
         model: &str,

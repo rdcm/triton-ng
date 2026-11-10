@@ -378,12 +378,15 @@ impl CustomBackend for MnistBackend {
         let mut buffered = Vec::new();
         let mut pending = Vec::new();
 
-        for request in requests {
+        for mut request in requests {
             if request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true)) {
                 held.push(request);
                 continue;
             }
             if let Some(Parameter::String(code)) = request.parameter("error_code")? {
+                if request.parameter("enable_statistics")? == Some(Parameter::Bool(true)) {
+                    request.enable_statistics();
+                }
                 match code.parse::<ErrorCode>() {
                     Ok(code) => {
                         request.respond_error_with_code(code, "error requested by the client")?
@@ -434,6 +437,41 @@ impl CustomBackend for MnistBackend {
                 if request.into_sender().is_ok() {
                     return Err("a request of a model that is not decoupled got a sender".into());
                 }
+                continue;
+            }
+            if let Some(Parameter::Bool(keep)) = request.parameter("shared_input")? {
+                let (image, copy) = {
+                    let input = request.get_input(IMAGE)?;
+                    (Arc::new(input.share()?), input.as_bytes()?)
+                };
+                match digit_of_shared_input(&ctx, state, image, copy, keep).await {
+                    Ok(digit) => respond(&ctx, state, request, digit)?,
+                    Err(e) => request.respond_error(&e.to_string())?,
+                }
+                continue;
+            }
+            if request.parameter("enable_statistics")? == Some(Parameter::Bool(true)) {
+                let hold = match request.parameter("hold_micros")? {
+                    Some(Parameter::Int(micros)) => {
+                        let micros =
+                            u64::try_from(micros).map_err(|_| "hold_micros is negative")?;
+                        Some(Duration::from_micros(micros))
+                    }
+                    _ => None,
+                };
+                let mut response = Response::new(request)?;
+                response
+                    .create_output("DIGIT", DataType::Int32, &[1, 1])?
+                    .write_i32_vec(&[0])?;
+                // The interval starts when the response was created, so work done
+                // before the opt-in is inside it.
+                if let Some(hold) = hold {
+                    std::thread::park_timeout(hold);
+                }
+                // Enabling twice must neither move the start nor report twice.
+                response.enable_statistics();
+                response.enable_statistics();
+                response.send()?;
                 continue;
             }
             if let Some(Parameter::String(model)) = request.parameter("load_model")? {
@@ -524,17 +562,6 @@ impl CustomBackend for MnistBackend {
             }
             if request.parameter("release_shared_inputs")? == Some(Parameter::Bool(true)) {
                 kept_inputs(state)?.clear();
-            }
-            if let Some(Parameter::Bool(keep)) = request.parameter("shared_input")? {
-                let (image, copy) = {
-                    let input = request.get_input(IMAGE)?;
-                    (Arc::new(input.share()?), input.as_bytes()?)
-                };
-                match digit_of_shared_input(&ctx, state, image, copy, keep).await {
-                    Ok(digit) => respond(&ctx, state, request, digit)?,
-                    Err(e) => request.respond_error(&e.to_string())?,
-                }
-                continue;
             }
             if let Some(Parameter::String(memory)) = request.parameter("memory")? {
                 match memory.parse::<OutputMemory>() {
@@ -645,6 +672,7 @@ async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> 
             .collect::<Result<Vec<_>, Error>>()?;
         let hold = request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true));
         let unfinished = request.parameter("unfinished")? == Some(Parameter::Bool(true));
+        let statistics = request.parameter("enable_statistics")? == Some(Parameter::Bool(true));
 
         let mut sender = request.into_sender()?;
         for inference in inferences {
@@ -655,6 +683,9 @@ async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> 
                 .write_i32_vec(&[digit])?;
             response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
             response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+            if statistics {
+                response.enable_statistics();
+            }
             response.send()?;
         }
 
@@ -1175,6 +1206,7 @@ fn argmax(logits: &[f32]) -> Result<i32, Error> {
 }
 
 fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result<(), Error> {
+    let statistics = request.parameter("enable_statistics")? == Some(Parameter::Bool(true));
     let buffers = ctx.instance_state::<Buffers>()?;
     let mut response = Response::new(request)?;
     response
@@ -1196,6 +1228,9 @@ fn respond(ctx: &Context, state: &State, request: Request, digit: i32) -> Result
         buffers.gpu_allocated.load(Ordering::SeqCst),
     )?;
     state.metrics.answered.increment(1.0)?;
+    if statistics {
+        response.enable_statistics();
+    }
     response.send()?;
     Ok(())
 }
@@ -1229,11 +1264,14 @@ async fn work_step(ctx: &Context, state: &State, images: &[u8]) -> Result<(), Er
 async fn respond_when_cancelled(
     ctx: &Context,
     state: &State,
-    request: Request,
+    mut request: Request,
 ) -> Result<(), Error> {
     let images = request.get_input(IMAGE)?.as_bytes()?;
     while !request.is_cancelled()? {
         work_step(ctx, state, &images).await?;
+    }
+    if request.parameter("enable_statistics")? == Some(Parameter::Bool(true)) {
+        request.enable_statistics();
     }
     request.respond_cancelled()?;
     Ok(())

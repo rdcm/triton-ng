@@ -87,8 +87,36 @@ impl Response {
     /// Fails without sending while an output is not written; the request
     /// gets an error response then.
     pub fn send(mut self) -> Result<(), TritonError> {
+        let statistics = self.body.take_statistics();
         let response = self.body.take()?;
-        self.request.send_final(Pending::Response(response))
+        self.request
+            .send_final(Pending::Response(response, statistics))
+    }
+
+    /// Asks Triton to record the time this response took, which
+    /// `/v2/models/<model>/stats` shows as `response_stats`.
+    ///
+    /// The clock starts when [`Response::new`] created the response, so the
+    /// work that fills the outputs is inside it even when this is called just
+    /// before [`Response::send`]. Without this call Triton records nothing for
+    /// the response.
+    ///
+    /// A response that cannot be sent is replaced by an error response, and
+    /// that one is recorded too, see [`Request::enable_statistics`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut response = Response::new(request)?;
+    /// response
+    ///     .create_output("DIGIT", DataType::Int32, &[1])?
+    ///     .write_i32_vec(&[digit])?;
+    /// response.enable_statistics();
+    /// response.send()?;
+    /// ```
+    pub fn enable_statistics(&mut self) {
+        self.body.enable_statistics();
+        self.request.enable_statistics();
     }
 }
 
@@ -104,6 +132,8 @@ pub(crate) struct ResponseBody {
     /// Outputs created but not written yet. Triton frontends read every
     /// output of a sent response, so one without a buffer crashes the server.
     pending_outputs: usize,
+    /// What Triton needs to time this response, when the backend enables it.
+    statistics: ResponseStatistics,
 }
 
 // SAFETY: see `Request`. Outputs are created through `&mut self`, so they are
@@ -119,6 +149,27 @@ impl ResponseBody {
         Ok(Self {
             ptr,
             pending_outputs: 0,
+            statistics: ResponseStatistics::new(request),
+        })
+    }
+
+    /// Enables the per-response statistics of Triton for this response.
+    pub(crate) fn enable_statistics(&mut self) {
+        self.statistics.enabled = true;
+    }
+
+    /// The statistics to report with the final send, when they are enabled.
+    pub(crate) fn take_statistics(&mut self) -> Option<ResponseStatistics> {
+        if !self.statistics.enabled {
+            return None;
+        }
+        self.statistics.enabled = false;
+        Some(ResponseStatistics {
+            request: self.statistics.request,
+            instance: self.statistics.instance,
+            start_ns: self.statistics.start_ns,
+            output_start_ns: self.statistics.output_start_ns,
+            enabled: false,
         })
     }
 
@@ -135,7 +186,7 @@ impl ResponseBody {
         }
         let elements = element_count(shape)
             .map_err(|e| TritonError::from_message(format!("output '{name}': {e}")))?;
-
+        self.statistics.output_started();
         let name_cstr = cstring_from_str(name)?;
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseOutput(
             self.ptr,
@@ -198,14 +249,24 @@ impl ResponseBody {
 
     /// Sends the response with `flags`, see [`ResponseBody::take`].
     pub(crate) fn send(&mut self, flags: u32) -> Result<(), TritonError> {
+        let statistics = self.take_statistics();
         let response = self.take()?;
 
         // ResponseSend takes ownership of the response whatever it returns.
-        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
+        let sent = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
             response,
             flags,
             ptr::null_mut(),
-        ))
+        ));
+        // The response ends when it went out; building its report is not part of
+        // the time Triton records for it.
+        let end_ns = crate::batch_statistics::now_ns();
+        if let Some(statistics) = statistics
+            && let Err(e) = statistics.report(end_ns, None)
+        {
+            crate::log::error(&format!("failed to report response statistics: {e}"));
+        }
+        sent
     }
 
     /// Hands the response over to be sent: the caller owns it then and must
@@ -239,6 +300,135 @@ impl Drop for ResponseBody {
 
 pub(crate) const FINAL: u32 =
     triton_ng_sys::tritonserver_responsecompleteflag_enum_TRITONSERVER_RESPONSE_COMPLETE_FINAL;
+
+/// What Triton needs to record the time of one response, which is what
+/// `/v2/models/<model>/stats` shows as `response_stats`.
+///
+/// Created with the response, so the start is the moment the backend began
+/// building it; reported only when the backend enabled it, and only once.
+#[derive(Debug)]
+pub(crate) struct ResponseStatistics {
+    /// The request the response answers, kept alive by the response.
+    request: *mut triton_ng_sys::TRITONBACKEND_Request,
+    instance: *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
+    /// Nanoseconds of the clock Triton stamps its statistics with.
+    start_ns: u64,
+    /// When the backend began to fill the outputs, which separates the time it
+    /// spent computing from the time it spent writing. `None` when it created
+    /// no output at all, which Triton counts as an empty response.
+    output_start_ns: Option<u64>,
+    enabled: bool,
+}
+
+// SAFETY: the pointers belong to the request and the instance that the
+// response is built for, both of which outlive it.
+unsafe impl Send for ResponseStatistics {}
+
+impl ResponseStatistics {
+    fn new(request: &Request) -> Self {
+        Self::for_request(request.as_ptr(), request.statistics().instance())
+    }
+
+    /// Statistics of a response of the request at `request`, on `instance`.
+    ///
+    /// Built from the raw parts for an error response, which is created while it
+    /// is sent: there is no [`Request`] left to borrow the two from.
+    pub(crate) fn for_request(
+        request: *mut triton_ng_sys::TRITONBACKEND_Request,
+        instance: *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
+    ) -> Self {
+        Self {
+            request,
+            instance,
+            start_ns: crate::batch_statistics::now_ns(),
+            output_start_ns: None,
+            enabled: false,
+        }
+    }
+
+    /// Records the moment the backend created its first output, once.
+    fn output_started(&mut self) {
+        if self.output_start_ns.is_none() {
+            self.output_start_ns = Some(crate::batch_statistics::now_ns());
+        }
+    }
+
+    /// Reports the response to Triton, with the factory of its request, which
+    /// the report dereferences to number the response.
+    ///
+    /// `end_ns` is the moment the response went out: the backend reads the clock
+    /// right after `TRITONBACKEND_ResponseSend` returns, so that building the
+    /// report is not part of the time Triton records.
+    ///
+    /// `error` is the error object the response was sent with, which Triton does
+    /// not own: it counts the response as failed, or as cancelled when the code
+    /// of the error says so, and reads the object while it records it.
+    pub(crate) fn report(
+        &self,
+        end_ns: u64,
+        error: Option<*mut triton_ng_sys::TRITONSERVER_Error>,
+    ) -> Result<(), TritonError> {
+        let factory = crate::response_factory::ResponseFactory::new(self.request)?;
+        let statistics =
+            triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsNew(&mut _))?;
+        if statistics.is_null() {
+            return Err(TritonError::from_message(
+                "TRITONBACKEND_ModelInstanceResponseStatisticsNew returned null",
+            ));
+        }
+
+        let reported = (|| {
+            triton_call!(
+                triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetModelInstance(
+                    statistics,
+                    self.instance
+                )
+            )?;
+            triton_call!(
+                triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetResponseFactory(
+                    statistics,
+                    factory.as_ptr()
+                )
+            )?;
+            triton_call!(
+                triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetResponseStart(
+                    statistics,
+                    self.start_ns
+                )
+            )?;
+            if let Some(output_start_ns) = self.output_start_ns {
+                triton_call!(
+                    triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetComputeOutputStart(
+                        statistics,
+                        output_start_ns
+                    )
+                )?;
+            }
+            triton_call!(
+                triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetResponseEnd(
+                    statistics, end_ns
+                )
+            )?;
+            if let Some(error) = error {
+                triton_call!(
+                    triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetError(
+                        statistics, error
+                    )
+                )?;
+            }
+            triton_call!(
+                triton_ng_sys::TRITONBACKEND_ModelInstanceReportResponseStatistics(statistics)
+            )
+        })();
+
+        if let Err(e) = triton_call!(
+            triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsDelete(statistics)
+        ) {
+            crate::log::error(&format!("failed to delete response statistics: {e}"));
+        }
+        reported
+    }
+}
 
 /// Number of elements of a tensor with `shape`.
 pub(crate) fn element_count(shape: &[i64]) -> Result<usize, String> {
