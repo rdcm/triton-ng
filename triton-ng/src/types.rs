@@ -68,6 +68,28 @@ impl DataType {
         })
     }
 
+    /// The type a model config names (`TYPE_FP32`), `None` for a name this
+    /// version does not know.
+    pub(crate) fn from_config_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "TYPE_BOOL" => Self::Bool,
+            "TYPE_UINT8" => Self::Uint8,
+            "TYPE_UINT16" => Self::Uint16,
+            "TYPE_UINT32" => Self::Uint32,
+            "TYPE_UINT64" => Self::Uint64,
+            "TYPE_INT8" => Self::Int8,
+            "TYPE_INT16" => Self::Int16,
+            "TYPE_INT32" => Self::Int32,
+            "TYPE_INT64" => Self::Int64,
+            "TYPE_FP16" => Self::Fp16,
+            "TYPE_FP32" => Self::Fp32,
+            "TYPE_FP64" => Self::Fp64,
+            "TYPE_STRING" => Self::Bytes,
+            "TYPE_BF16" => Self::Bf16,
+            _ => return None,
+        })
+    }
+
     pub(crate) fn to_sys(self) -> triton_ng_sys::TRITONSERVER_DataType {
         use triton_ng_sys::*;
         match self {
@@ -471,7 +493,8 @@ impl MemoryType {
 #[cfg(test)]
 mod tests {
     use super::{
-        ArtifactType, ExecutionPolicy, InstanceGroupKind, MemoryType, Parameter, RequestFlags,
+        ArtifactType, DataType, ExecutionPolicy, InstanceGroupKind, MemoryType, Parameter,
+        RequestFlags,
     };
     use std::ffi::{CString, c_void};
     use triton_ng_sys::*;
@@ -624,5 +647,21 @@ mod tests {
             )
         };
         assert!(null.is_err());
+    }
+
+    #[test]
+    fn a_config_name_reads_back_as_its_type() {
+        for datatype in [
+            DataType::Bool,
+            DataType::Uint64,
+            DataType::Int32,
+            DataType::Fp32,
+            DataType::Bytes,
+            DataType::Bf16,
+        ] {
+            let name = datatype.config_name().expect("a config name");
+            assert_eq!(DataType::from_config_name(name), Some(datatype));
+        }
+        assert_eq!(DataType::from_config_name("TYPE_NOPE"), None);
     }
 }

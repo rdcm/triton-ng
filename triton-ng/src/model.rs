@@ -423,6 +423,36 @@ impl Model {
         }
     }
 
+    /// The states the `state` section of the `sequence_batching` configuration
+    /// declares, in the order the configuration lists them.
+    ///
+    /// A [`crate::State`] is created from one of them, which is how the
+    /// datatype and the fixed dimensions of the configured state reach the code
+    /// that writes it. A backend asks for them once, when it initializes the
+    /// model, and keeps them.
+    ///
+    /// Fails when the configuration cannot be read, an entry has no
+    /// `output_name` or `input_name`, or names a datatype this version does not
+    /// know.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// fn model_initialize(model: &Model, state: &mut State) -> Result<(), Error> {
+    ///     state.states = model.sequence_states()?;
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn sequence_states(&self) -> Result<Vec<crate::StateConfig>, TritonError> {
+        let json = self.config_json()?;
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| TritonError::from_message(e.to_string()))?;
+        let Some(states) = value["sequence_batching"]["state"].as_array() else {
+            return Ok(Vec::new());
+        };
+        states.iter().map(crate::StateConfig::from_json).collect()
+    }
+
     /// Reads a string parameter from the model configuration `parameters` map.
     pub fn config_parameter(&self, key: &str) -> Result<Option<String>, TritonError> {
         let json = self.config_json()?;

@@ -2217,6 +2217,34 @@ async fn sequence_state_counts_the_requests_of_one_sequence() -> Result<()> {
 }
 
 #[tokio::test]
+async fn state_of_a_shape_the_configuration_does_not_declare_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(42)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("bad_state_shape".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of the wrong shape was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("has the dimension 2 where the configuration declares 1"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
@@ -2238,6 +2266,9 @@ async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Res
 
     let message = format!("{error:#}");
     assert!(message.contains("no_such_state"), "{message}");
-    assert!(message.contains("not a valid state name"), "{message}");
+    assert!(
+        message.contains("the model configuration declares no state"),
+        "{message}"
+    );
     Ok(())
 }

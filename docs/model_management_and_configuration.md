@@ -250,25 +250,37 @@ the backend writes what the next request of the sequence should see through `Sta
 
 ```rust ignore
 let previous = request.get_input("counter_in")?.as_fp32_vec()?;
-let mut state = State::new(&request, "counter_out", DataType::Fp32, &[1])?;
+let mut state = State::new(&mut request, &counter, &[1])?;
 state.write_bytes(&(previous[0] + 1.0).to_ne_bytes())?;
 state.update()?;
 ```
 
 - **The state belongs to the request.** Triton frees it with the request, there is no delete call,
-  and `State` borrows the request for that reason: a state that is still held keeps the request
-  from being answered, rescheduled or dropped, so using a state after its request is gone does not
+  and `State` borrows the request mutably for that reason: a state that is still held keeps the
+  request and its inputs out of reach, so using a state after its request is gone does not
   compile. `update` consumes the state because Triton declares it invalid after the update.
-- **`State::new` takes the `output_name`**, and the datatype and shape have to be the ones of the
-  configuration. A mismatch is not detected here: Triton takes both from the call and the next
-  request of the sequence would read the wrong number of bytes.
-- **The buffer** is the one Triton keeps for the state. `State::buffer` hands it out with its
-  memory type, its address and its size; `State::buffer_attributes` reads where Triton keeps it
-  without touching the data. Host memory can come back plain or pinned, since Triton allocates it
-  through its pinned pool. `write_bytes` copies into host memory and refuses a state in GPU memory
-  (`use_growable_memory`), whose device address goes to the CUDA API of the backend; Triton
-  allocates the buffer of a state on demand, so the attributes are readable after the first
-  `State::buffer` or `write_bytes`.
+- **The state comes from the configuration.** `Model::sequence_states` reads the `state` entries
+  once, at model initialization, and `State::new` takes one of them plus the shape the request
+  needs: the datatype comes from the entry, and the shape has to have its dimensions, with the
+  ones the configuration declares fixed, and a positive value for the ones it declares dynamic as
+  -1. Triton writes whatever datatype and shape it is given into the metadata of the state without
+  comparing them with the configuration, so a shape that does not fit is refused before Triton
+  sees it.
+- **One state per name and sequence.** Triton keeps one state object per configured name, so a
+  second `State` for the same entry would be the same memory: the mutable borrow of the request is
+  what makes that impossible, since a request has one `State` at a time. The borrow covers the
+  inputs of the request too, shared or not, so a slice of an input cannot be alive while the state
+  is written.
+- **Writing the state.** `write_bytes` copies host memory into the buffer, which can be plain or
+  pinned, since Triton allocates through its pinned pool; it refuses a state Triton keeps in GPU
+  memory, see `use_growable_memory`. For those, `device_buffer` hands out the device address with
+  the device id and the size to fill from CUDA code, and the backend has to finish those writes,
+  for instance by synchronizing its stream, before it updates. `buffer_attributes` reads where
+  Triton keeps the state without touching the data; Triton allocates the buffer on demand, so the
+  attributes are readable after the first write.
+- **No write, no update.** `update` fails when nothing was written, since Triton would hand the
+  buffer it allocated, holding whatever the allocator left in it, to the next request of the
+  sequence.
 - **Declare an `initial_state`.** Without one Triton allocates the memory of the state and does
   not initialize it, so the first request of a sequence would read whatever is there.
 - **No update, no change.** A request that never calls `update` leaves the sequence where it was

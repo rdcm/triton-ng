@@ -9,87 +9,181 @@ use std::marker::PhantomData;
 use std::ptr;
 use triton_ng_macros::triton_call;
 
-/// The state `name` of a request of a model with `sequence_batching` and a
-/// `state` section in its configuration.
+/// A state the model configuration declares, from
+/// [`crate::Model::sequence_states`].
 ///
-/// Borrows the `TRITONBACKEND_State` from the request it belongs to: Triton
-/// owns it inside the sequence states of the request and frees it with the
-/// request, there is no call that frees it. The borrow is what keeps the state
-/// from outliving the request: answering, rescheduling or dropping the request
-/// consumes it, so a state that is still held cannot be used after that, and
-/// the compiler says so.
+/// Holds the `state` entry of the `sequence_batching` configuration: the name a
+/// [`State`] is created under, its datatype, and its dimensions without the
+/// batch dimension, -1 for a dimension the configuration leaves dynamic.
+///
+/// A state is only created from one of these, which is what makes the datatype
+/// and the fixed dimensions of the configured state the ones Triton keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateConfig {
+    name: String,
+    input_name: String,
+    datatype: DataType,
+    dims: Vec<i64>,
+}
+
+impl StateConfig {
+    /// Reads one entry of `sequence_batching.state`.
+    pub(crate) fn from_json(entry: &serde_json::Value) -> Result<Self, TritonError> {
+        let string = |key: &str| {
+            entry[key]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| TritonError::from_message(format!("state entry has no '{key}'")))
+        };
+        let name = string("output_name")?;
+        let input_name = string("input_name")?;
+        let declared = string("data_type")?;
+        let datatype = DataType::from_config_name(&declared).ok_or_else(|| {
+            TritonError::from_message(format!(
+                "state '{name}' has the datatype {declared}, which this version does not know"
+            ))
+        })?;
+        let dims = entry["dims"]
+            .as_array()
+            .map(|dims| dims.iter().filter_map(serde_json::Value::as_i64).collect())
+            .unwrap_or_default();
+        Ok(Self {
+            name,
+            input_name,
+            datatype,
+            dims,
+        })
+    }
+
+    /// The `output_name` of the entry: the name the state is created under, and
+    /// the data the next request of the sequence reads as its input state.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The `input_name` of the entry, under which the input state of the
+    /// sequence reaches the backend as an input of the request.
+    pub fn input_name(&self) -> &str {
+        &self.input_name
+    }
+
+    /// The datatype of the state.
+    pub fn datatype(&self) -> DataType {
+        self.datatype
+    }
+
+    /// The dimensions of the state without the batch dimension, -1 for a
+    /// dimension the configuration leaves dynamic.
+    pub fn dims(&self) -> &[i64] {
+        &self.dims
+    }
+
+    /// The number of bytes a state of `shape` holds, a message saying why
+    /// `shape` does not fit the configuration.
+    fn check_shape(&self, shape: &[i64]) -> Result<u64, String> {
+        if shape.len() != self.dims.len() {
+            return Err(format!(
+                "has {} dimensions where the configuration declares {}",
+                shape.len(),
+                self.dims.len()
+            ));
+        }
+        for (dim, declared) in shape.iter().zip(&self.dims) {
+            if *dim <= 0 {
+                return Err(format!("has the dimension {dim}, which is not positive"));
+            }
+            if *declared >= 0 && *declared != *dim {
+                return Err(format!(
+                    "has the dimension {dim} where the configuration declares {declared}"
+                ));
+            }
+        }
+        state_byte_size(self.datatype, shape)
+    }
+}
+
+/// The state `config` of a request of a model with `sequence_batching`, filled
+/// with the shape the request needs.
+///
+/// Borrows the request mutably for as long as the state is alive: Triton keeps
+/// one state per name for the whole sequence, so a second state of the same
+/// configuration would be the same memory, and two slices of it would be
+/// aliasing pointers. The mutable borrow is what makes that a compile error,
+/// and it also keeps the inputs of the request, shared or not, out of reach
+/// while the state is written.
 ///
 /// [`State::update`] consumes the state, because Triton documents the state as
 /// valid only until the update: the data written into it belongs to the
 /// sequence afterwards, and the next request of the same sequence reads it as
-/// its input state, as the input its configuration pairs with the output.
+/// its input state, as the input its configuration pairs with it.
 ///
 /// Neither `Send` nor `Sync`, like the borrow of the request it holds.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
+/// let mut request = request;
 /// let previous = request.get_input("counter")?.as_fp32_vec()?;
+/// let mut state = State::new(&mut request, &config, &[1])?;
 /// state.write_bytes(&(previous[0] + 1.0).to_ne_bytes())?;
 /// state.update()?;
 /// ```
 pub struct State<'a> {
     ptr: *mut triton_ng_sys::TRITONBACKEND_State,
-    /// The size Triton resizes the state buffer to, from `datatype` and `shape`.
+    /// The size Triton resizes the state buffer to, from the datatype of the
+    /// configuration over `shape`.
     byte_size: u64,
+    /// Whether the buffer was written, see [`State::update`].
+    written: bool,
     /// Holds the request the state lives in, for as long as the state is used.
-    _request: &'a Request,
+    _request: PhantomData<&'a mut Request>,
 }
 
 impl<'a> State<'a> {
-    /// The state `name` of `request`, a tensor of `datatype` and `shape`
-    /// without the batch dimension, like the `state` entry of the model
-    /// configuration.
+    /// The state `config` of `request`, whose data has `shape` without the
+    /// batch dimension.
     ///
-    /// `name` is the `output_name` of that entry: the input state of the
-    /// sequence reaches the backend as an input under its `input_name`, which
-    /// the configuration pairs with it.
+    /// `shape` has to fit the configuration: the same number of dimensions, the
+    /// dimensions it declares fixed, and a positive value for every dimension
+    /// it declares dynamic as -1. Triton changes the metadata of the state to
+    /// what it is given and does not compare it with the configuration, so a
+    /// shape that does not fit would hand the wrong state to the next request
+    /// of the sequence; it is refused here, before Triton touches the state.
     ///
     /// Fails when the model has no sequence batching or no state of that name,
-    /// Triton has nothing to create the state on, `name` has a NUL byte, the
-    /// shape has a negative dimension, or `datatype` is BYTES, whose size
-    /// Triton cannot give.
-    ///
-    /// The datatype and the shape are the ones Triton uses for the state from
-    /// here on, so they have to be the ones of the model configuration: a
-    /// mismatch is not detected, Triton would hand the wrong number of bytes to
-    /// the next request of the sequence. The configuration also has to declare
-    /// an `initial_state`: without one Triton allocates the state memory and
-    /// leaves it uninitialized.
+    /// Triton has nothing to create the state on, or `shape` does not fit the
+    /// configuration. The configuration also has to declare an `initial_state`:
+    /// without one Triton allocates the memory of the state and leaves it
+    /// uninitialized.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
     /// state.write_bytes(&0.0_f32.to_ne_bytes())?;
     /// state.update()?;
     /// ```
     pub fn new(
-        request: &'a Request,
-        name: &str,
-        datatype: DataType,
+        request: &'a mut Request,
+        config: &StateConfig,
         shape: &[i64],
     ) -> Result<Self, TritonError> {
-        let name_cstr = cstring_from_str(name)?;
-        let byte_size = state_byte_size(datatype, shape)
-            .map_err(|e| TritonError::from_message(format!("state '{name}' {e}")))?;
+        let byte_size = config
+            .check_shape(shape)
+            .map_err(|e| TritonError::from_message(format!("state '{}' {e}", config.name)))?;
+        let name = cstring_from_str(&config.name)?;
         let dims_count = u32::try_from(shape.len()).map_err(|_| {
             TritonError::from_message(format!(
-                "state '{name}' has more dimensions than Triton takes"
+                "state '{}' has more dimensions than Triton takes",
+                config.name
             ))
         })?;
 
         let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_StateNew(
             &mut _,
             request.as_ptr(),
-            name_cstr.as_ptr(),
-            datatype.to_sys(),
+            name.as_ptr(),
+            config.datatype.to_sys(),
             shape.as_ptr(),
             dims_count,
         ))?;
@@ -97,65 +191,24 @@ impl<'a> State<'a> {
         Ok(Self {
             ptr,
             byte_size,
-            _request: request,
+            written: false,
+            _request: PhantomData,
         })
     }
 
-    /// The buffer Triton keeps for the state, asked for in `memory_type`, see
-    /// [`StateBuffer`].
-    ///
-    /// `memory_type` is what the state is asked for, not what it gets: Triton
-    /// reuses the buffer it has when its size matches, and allocates a new one
-    /// otherwise, falling back from GPU memory to pinned host memory to plain
-    /// host memory. The memory type the state is really in travels with the
-    /// buffer.
-    ///
-    /// Fails when Triton cannot resize the buffer, returns no buffer at all, or
-    /// names a memory type this version does not know.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
-    /// let values = state.buffer(MemoryType::Cpu)?.as_mut_slice().ok_or("the state is on the GPU")?;
-    /// values[..4].copy_from_slice(&7.0_f32.to_ne_bytes());
-    /// state.update()?;
-    /// ```
-    pub fn buffer(&mut self, memory_type: MemoryType) -> Result<StateBuffer<'_>, TritonError> {
-        let (mut kind, mut memory_type_id) = memory_type.to_sys();
-        let mut buffer: *mut c_void = ptr::null_mut();
-        triton_call!(triton_ng_sys::TRITONBACKEND_StateBuffer(
-            self.ptr,
-            &mut buffer,
-            self.byte_size,
-            &mut kind,
-            &mut memory_type_id,
-        ))?;
-        if buffer.is_null() {
-            return Err(TritonError::from_message(
-                "Triton returned a null state buffer",
-            ));
-        }
-        let memory_type =
-            MemoryType::from_sys(kind, memory_type_id).map_err(TritonError::from_message)?;
-        let len = usize::try_from(self.byte_size)
-            .map_err(|_| TritonError::from_message("the state is larger than usize bytes"))?;
-        Ok(StateBuffer {
-            ptr: buffer,
-            len,
-            memory_type,
-            _state: PhantomData,
-        })
+    /// The number of bytes the state holds, the size of its datatype over
+    /// `shape`.
+    pub fn byte_size(&self) -> u64 {
+        self.byte_size
     }
 
     /// Copies `bytes` into the state buffer: exactly as many bytes as the state
-    /// holds, which is the size of its datatype over its shape.
+    /// holds.
     ///
     /// The buffer is asked for in CPU memory. Triton allocates host memory
     /// through its pinned pool, so the buffer can come back pinned, which is
-    /// host memory as well and is copied into the same way; a state in GPU
-    /// memory is refused, since a copy from the host cannot fill it. Use
-    /// [`State::buffer`] for those.
+    /// host memory as well and is copied into the same way; a state Triton
+    /// keeps in GPU memory is refused, see [`State::device_buffer`].
     ///
     /// Fails when `bytes` is not the size of the state, when Triton cannot
     /// resize the buffer, or when the buffer Triton returns is not host memory.
@@ -163,7 +216,7 @@ impl<'a> State<'a> {
     /// # Examples
     ///
     /// ```ignore
-    /// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
     /// state.write_bytes(&7.0_f32.to_ne_bytes())?;
     /// state.update()?;
     /// ```
@@ -177,14 +230,58 @@ impl<'a> State<'a> {
             )));
         }
 
-        let mut buffer = self.buffer(MemoryType::Cpu)?;
-        let data = buffer.as_mut_slice().ok_or_else(|| {
-            TritonError::from_message(
-                "the state is held in GPU memory, which write_bytes cannot copy into; fill it through State::buffer",
-            )
-        })?;
-        data.copy_from_slice(bytes);
+        let (buffer, memory_type) = self.raw_buffer(MemoryType::Cpu)?;
+        if matches!(memory_type, MemoryType::Gpu { .. }) {
+            return Err(TritonError::from_message(
+                "the state is held in GPU memory, which write_bytes cannot copy into; fill it through State::device_buffer",
+            ));
+        }
+        // SAFETY: Triton returned `byte_size` bytes of host memory owned by the
+        // state, `bytes` holds exactly that many, and `&mut self` makes this the
+        // only write into the buffer.
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast::<u8>(), bytes.len()) };
+        self.written = true;
         Ok(())
+    }
+
+    /// The address Triton keeps a state in GPU memory at, with its device and
+    /// its size, for the CUDA code of the backend to fill.
+    ///
+    /// The state counts as written once this returns, and the backend has to
+    /// finish the writes on the device, for instance by synchronizing its
+    /// stream, before it calls [`State::update`]: Triton swaps the buffer of the
+    /// state then, and reads the device memory afterwards.
+    ///
+    /// Fails when Triton cannot allocate the buffer or hands it out in host
+    /// memory, which [`State::write_bytes`] fills.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
+    /// let buffer = state.device_buffer(MemoryType::Gpu { id: 0 })?;
+    /// copy_to_device(buffer.ptr, &next, stream)?;
+    /// stream.synchronize()?;
+    /// state.update()?;
+    /// ```
+    pub fn device_buffer(&mut self, memory_type: MemoryType) -> Result<DeviceBuffer, TritonError> {
+        if !matches!(memory_type, MemoryType::Gpu { .. }) {
+            return Err(TritonError::from_message(
+                "a device buffer is asked for in GPU memory",
+            ));
+        }
+        let (buffer, got) = self.raw_buffer(memory_type)?;
+        let MemoryType::Gpu { device_id } = got else {
+            return Err(TritonError::from_message(
+                "Triton handed the state out in host memory, which State::write_bytes fills",
+            ));
+        };
+        self.written = true;
+        Ok(DeviceBuffer {
+            ptr: buffer,
+            byte_size: self.byte_size,
+            device_id: i64::from(device_id),
+        })
     }
 
     /// Where Triton keeps the buffer of the state and how large it is, read
@@ -192,8 +289,9 @@ impl<'a> State<'a> {
     ///
     /// Triton allocates the buffer of a state on demand, so the state has to
     /// have one: an output state the configuration does not share with the
-    /// input gets its buffer from [`State::buffer`] or [`State::write_bytes`],
-    /// and reading the attributes before either of them fails.
+    /// input gets its buffer from [`State::write_bytes`] or
+    /// [`State::device_buffer`], and reading the attributes before either of
+    /// them fails.
     ///
     /// The `TRITONSERVER_BufferAttributes` belong to the state and are not
     /// freed here: the values are copied out of them.
@@ -204,7 +302,7 @@ impl<'a> State<'a> {
     /// # Examples
     ///
     /// ```ignore
-    /// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
     /// state.write_bytes(&0.0_f32.to_ne_bytes())?;
     /// let attributes = state.buffer_attributes()?;
     /// assert_eq!(attributes.byte_size, 4);
@@ -248,72 +346,66 @@ impl<'a> State<'a> {
     /// which the state is no longer valid and the next request of the sequence
     /// reads the data written here as its input state.
     ///
-    /// Consumes the state for that reason. Fails when Triton refuses the
-    /// update, which leaves the sequence on its previous state.
+    /// Consumes the state for that reason. Fails when the state was never
+    /// written, since Triton would hand the buffer Triton allocated, which holds
+    /// whatever the allocator left in it, to the next request of the sequence;
+    /// and when Triton refuses the update, which leaves the sequence on its
+    /// previous state.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let mut state = State::new(&request, "counter", DataType::Fp32, &[1])?;
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
     /// state.write_bytes(&3.0_f32.to_ne_bytes())?;
     /// state.update()?;
     /// ```
     pub fn update(self) -> Result<(), TritonError> {
+        if !self.written {
+            return Err(TritonError::from_message(
+                "the state was never written, so Triton would hand its uninitialized buffer to the next request",
+            ));
+        }
         triton_call!(triton_ng_sys::TRITONBACKEND_StateUpdate(self.ptr))
     }
-}
 
-/// The memory Triton holds for a [`State`]: where it is, its address and its
-/// size.
-///
-/// Borrowed from the state, which owns the memory: nothing here frees it, and
-/// Triton declares it invalid after [`State::update`], so the borrow of the
-/// state keeps the buffer from outliving the state it was asked from. Neither
-/// `Send` nor `Sync`.
-pub struct StateBuffer<'a> {
-    ptr: *mut c_void,
-    len: usize,
-    memory_type: MemoryType,
-    /// Ties the buffer to the borrow of the state that returned it.
-    _state: PhantomData<&'a mut ()>,
-}
-
-impl StateBuffer<'_> {
-    /// The number of bytes the state holds.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether the state holds no data at all.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// The memory Triton keeps the state in: plain or pinned CPU memory, or the
-    /// memory of a CUDA device.
-    pub fn memory_type(&self) -> MemoryType {
-        self.memory_type
-    }
-
-    /// The address of the data: a host address for CPU and pinned memory, a
-    /// device address for GPU memory, to be filled with the CUDA API of the
-    /// backend.
-    ///
-    /// The address belongs to Triton and is valid until [`State::update`].
-    pub fn as_ptr(&self) -> *mut c_void {
-        self.ptr
-    }
-
-    /// The data as a slice of the host, `None` when Triton keeps the state in
-    /// GPU memory, which a slice of the host cannot stand for.
-    pub fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        if matches!(self.memory_type, MemoryType::Gpu { .. }) {
-            return None;
+    /// The buffer Triton keeps for the state, asked for in `memory_type`, with
+    /// the memory type it really is in.
+    fn raw_buffer(
+        &mut self,
+        memory_type: MemoryType,
+    ) -> Result<(*mut c_void, MemoryType), TritonError> {
+        let (mut kind, mut memory_type_id) = memory_type.to_sys();
+        let mut buffer: *mut c_void = ptr::null_mut();
+        triton_call!(triton_ng_sys::TRITONBACKEND_StateBuffer(
+            self.ptr,
+            &mut buffer,
+            self.byte_size,
+            &mut kind,
+            &mut memory_type_id,
+        ))?;
+        if buffer.is_null() {
+            return Err(TritonError::from_message(
+                "Triton returned a null state buffer",
+            ));
         }
-        // SAFETY: Triton returned `len` bytes of host memory owned by the
-        // state, and `&mut self` makes this the only slice into it.
-        Some(unsafe { std::slice::from_raw_parts_mut(self.ptr.cast::<u8>(), self.len) })
+        let memory_type =
+            MemoryType::from_sys(kind, memory_type_id).map_err(TritonError::from_message)?;
+        Ok((buffer, memory_type))
     }
+}
+
+/// The device memory Triton keeps a [`State`] in, see
+/// [`State::device_buffer`].
+///
+/// The address belongs to Triton and is valid until [`State::update`].
+#[derive(Debug)]
+pub struct DeviceBuffer {
+    /// The device address of the state data.
+    pub ptr: *mut c_void,
+    /// The number of bytes Triton allocated for the state.
+    pub byte_size: u64,
+    /// The id of the device the address belongs to.
+    pub device_id: i64,
 }
 
 /// Where Triton keeps the buffer of a [`State`], see
@@ -331,7 +423,7 @@ pub struct StateBufferAttributes {
 fn state_byte_size(datatype: DataType, shape: &[i64]) -> Result<u64, String> {
     let element_size = datatype
         .element_size()
-        .ok_or_else(|| format!("of {datatype:?} has no size Triton can copy"))?;
+        .ok_or_else(|| format!("is of {datatype:?}, which has no size Triton can copy"))?;
     let mut count: u64 = 1;
     for dim in shape {
         let dim = u64::try_from(*dim)
@@ -347,26 +439,45 @@ fn state_byte_size(datatype: DataType, shape: &[i64]) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::state_byte_size;
+    use super::{StateConfig, state_byte_size};
     use crate::DataType;
 
+    fn counter() -> StateConfig {
+        StateConfig {
+            name: "counter_out".to_string(),
+            input_name: "counter_in".to_string(),
+            datatype: DataType::Fp32,
+            dims: vec![1],
+        }
+    }
+
     #[test]
-    fn a_state_holds_its_datatype_over_its_shape() {
-        assert_eq!(state_byte_size(DataType::Fp32, &[1]), Ok(4));
-        assert_eq!(state_byte_size(DataType::Fp32, &[3, 64]), Ok(768));
-        assert_eq!(state_byte_size(DataType::Int64, &[2, 2]), Ok(32));
-        assert_eq!(state_byte_size(DataType::Fp32, &[]), Ok(4));
+    fn a_shape_that_fits_the_configuration_holds_the_data() {
+        assert_eq!(counter().check_shape(&[1]), Ok(4));
+
+        let dynamic = StateConfig {
+            dims: vec![-1, 3],
+            ..counter()
+        };
+        assert_eq!(dynamic.check_shape(&[7, 3]), Ok(84));
+    }
+
+    #[test]
+    fn a_shape_the_configuration_does_not_declare_is_refused() {
+        assert!(counter().check_shape(&[2]).is_err());
+        assert!(counter().check_shape(&[1, 1]).is_err());
+        assert!(counter().check_shape(&[0]).is_err());
+        assert!(counter().check_shape(&[-1]).is_err());
     }
 
     #[test]
     fn a_state_of_a_type_without_a_size_is_refused() {
-        assert!(state_byte_size(DataType::Bytes, &[1]).is_err());
+        let bytes = StateConfig {
+            datatype: DataType::Bytes,
+            ..counter()
+        };
+        assert!(bytes.check_shape(&[1]).is_err());
         assert!(state_byte_size(DataType::Invalid, &[1]).is_err());
-    }
-
-    #[test]
-    fn a_state_of_a_negative_dimension_is_refused() {
-        assert!(state_byte_size(DataType::Fp32, &[1, -1]).is_err());
     }
 
     #[test]
