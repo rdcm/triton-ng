@@ -5,9 +5,8 @@ use crate::error::{Error, ErrorCode, TritonError};
 use crate::executor::RequestPolicy;
 use crate::final_response::{FinalResponse, Pending};
 use crate::request_release::RequestRelease;
+use crate::request_view::RequestView;
 use crate::types::{CorrelationId, Parameter, RequestFlags};
-use crate::utils::{cstr_to_string, cstring_from_str};
-use libc::{c_char, c_void};
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,11 +159,7 @@ impl Request {
     /// inference.set_id(&id)?;
     /// ```
     pub fn id(&self) -> Result<Option<String>, TritonError> {
-        let mut id: *const c_char = ptr::null();
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestId(self.ptr, &mut id))?;
-        // SAFETY: the string is owned by the request, which outlives the call.
-        let id = unsafe { cstr_to_string(id) };
-        Ok((!id.is_empty()).then_some(id))
+        self.view().id()
     }
 
     /// The correlation ID of the request, `None` when it is not part of a
@@ -179,26 +174,7 @@ impl Request {
     /// };
     /// ```
     pub fn correlation_id(&self) -> Result<Option<CorrelationId>, TritonError> {
-        // Triton tells the type of the ID only by failing the getter of the
-        // other type with INVALID_ARG.
-        let mut number = 0u64;
-        match triton_call!(triton_ng_sys::TRITONBACKEND_RequestCorrelationId(
-            self.ptr,
-            &mut number
-        )) {
-            Ok(()) => return Ok((number != 0).then_some(CorrelationId::Int(number))),
-            Err(e) if e.code() == ErrorCode::InvalidArg => {}
-            Err(e) => return Err(e),
-        }
-
-        let mut string: *const c_char = ptr::null();
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestCorrelationIdString(
-            self.ptr,
-            &mut string
-        ))?;
-        // SAFETY: the string is owned by the request, which outlives the call.
-        let string = unsafe { cstr_to_string(string) };
-        Ok((!string.is_empty()).then_some(CorrelationId::String(string)))
+        self.view().correlation_id()
     }
 
     /// Whether the request starts or ends its sequence, see [`RequestFlags`].
@@ -213,11 +189,7 @@ impl Request {
     /// }
     /// ```
     pub fn flags(&self) -> Result<RequestFlags, TritonError> {
-        let mut flags = 0u32;
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestFlags(
-            self.ptr, &mut flags
-        ))?;
-        RequestFlags::from_sys(flags).map_err(TritonError::from_message)
+        self.view().flags()
     }
 
     /// How long the client lets the request wait in the queue of the model,
@@ -232,15 +204,17 @@ impl Request {
     /// }
     /// ```
     pub fn timeout(&self) -> Result<Option<Duration>, TritonError> {
-        let mut micros = 0u64;
-        triton_call!(
-            triton_ng_sys::TRITONBACKEND_InferenceRequestTimeoutMicroseconds(self.ptr, &mut micros)
-        )?;
-        Ok((micros != 0).then(|| Duration::from_micros(micros)))
+        self.view().timeout()
     }
 
     pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONBACKEND_Request {
         self.ptr
+    }
+
+    /// The request as a [`RequestView`], which reads it without being able to
+    /// answer it.
+    pub(crate) fn view(&self) -> RequestView<'_> {
+        RequestView::from_ptr(self.ptr)
     }
 
     /// The batch size of the request, reported to Triton with the
@@ -280,36 +254,12 @@ impl Request {
 
     /// The names of the inputs of the request, in the order the client sent them.
     pub fn input_names(&self) -> Result<Vec<String>, TritonError> {
-        let mut count = 0u32;
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestInputCount(
-            self.ptr, &mut count
-        ))?;
-        (0..count)
-            .map(|i| {
-                let mut name: *const c_char = std::ptr::null();
-                triton_call!(triton_ng_sys::TRITONBACKEND_RequestInputName(
-                    self.ptr, i, &mut name,
-                ))?;
-                Ok(unsafe { cstr_to_string(name) })
-            })
-            .collect()
+        self.view().input_names()
     }
 
     /// The names of the outputs the client asked for; empty when it asked for all of them.
     pub fn output_names(&self) -> Result<Vec<String>, TritonError> {
-        let mut count = 0u32;
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestOutputCount(
-            self.ptr, &mut count
-        ))?;
-        (0..count)
-            .map(|i| {
-                let mut name: *const c_char = std::ptr::null();
-                triton_call!(triton_ng_sys::TRITONBACKEND_RequestOutputName(
-                    self.ptr, i, &mut name,
-                ))?;
-                Ok(unsafe { cstr_to_string(name) })
-            })
-            .collect()
+        self.view().output_names()
     }
 
     /// The input `name` of the request, borrowed from it.
@@ -321,13 +271,8 @@ impl Request {
     /// ```ignore
     /// let audio = request.get_input("AUDIO")?.as_fp32_vec()?;
     /// ```
-    pub fn get_input(&self, name: &str) -> Result<Input<'_>, TritonError> {
-        let name = cstring_from_str(name)?;
-        let ptr = triton_call!(triton_ng_sys::TRITONBACKEND_RequestInput(
-            self.ptr,
-            name.as_ptr(),
-            &mut _
-        ))?;
+    pub fn get_input(&self, name: &str) -> Result<Input<'_, Request>, TritonError> {
+        let ptr = self.view().input_ptr(name)?;
         Ok(Input::from_ptr(ptr, self))
     }
 
@@ -344,28 +289,7 @@ impl Request {
     /// let verbose = request.parameter("verbose")? == Some(Parameter::Bool(true));
     /// ```
     pub fn parameter(&self, key: &str) -> Result<Option<Parameter>, Error> {
-        let mut count = 0u32;
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestParameterCount(
-            self.ptr, &mut count
-        ))?;
-
-        for index in 0..count {
-            let mut name: *const c_char = ptr::null();
-            let mut kind: triton_ng_sys::TRITONSERVER_ParameterType = 0;
-            let mut value: *const c_void = ptr::null();
-            triton_call!(triton_ng_sys::TRITONBACKEND_RequestParameter(
-                self.ptr, index, &mut name, &mut kind, &mut value
-            ))?;
-
-            if unsafe { cstr_to_string(name) } == key {
-                // SAFETY: Triton returns `value` matching `kind`, owned by the request.
-                return unsafe { Parameter::from_sys(kind, value) }
-                    .map(Some)
-                    .map_err(|e| format!("request parameter '{key}': {e}").into());
-            }
-        }
-
-        Ok(None)
+        self.view().parameter(key)
     }
 
     /// Turns the request into a [`ResponseSender`], which answers it with any
@@ -458,12 +382,7 @@ impl Request {
     /// }
     /// ```
     pub fn is_cancelled(&self) -> Result<bool, TritonError> {
-        let mut cancelled = false;
-        triton_call!(triton_ng_sys::TRITONBACKEND_RequestIsCancelled(
-            self.ptr,
-            &mut cancelled
-        ))?;
-        Ok(cancelled)
+        self.view().is_cancelled()
     }
 
     /// Asks Triton to record the time of the error response Triton sends for

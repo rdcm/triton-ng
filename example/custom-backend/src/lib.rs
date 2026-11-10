@@ -18,6 +18,9 @@ use triton_ng::{
 const IMAGE: &str = "Input3";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
 const IMAGE_BYTES: usize = 28 * 28 * 4;
+/// The request parameter the batching strategy of the `batch_strategy` model
+/// groups by.
+const BATCH_KEY: &str = "batch_key";
 const LOGITS: &str = "Plus214_Output_0";
 const LOGITS_BYTES: usize = 10 * 4;
 const IDENTITY_INPUT: &str = "INPUT0";
@@ -129,7 +132,7 @@ impl Metrics {
             .counter(&labels)?,
             held: GaugeFamily::new(
                 "triton_ng_example_held_requests",
-                "Requests held until the client cancels them",
+                "Requests an instance holds until the client cancels them or hold_micros runs out",
             )?
             .gauge(&labels)?,
             bls_seconds: HistogramFamily::new(
@@ -378,6 +381,12 @@ impl CustomBackend for MnistBackend {
         let mut buffered = Vec::new();
         let mut pending = Vec::new();
 
+        if let Some(first) = requests.first()
+            && first.parameter("echo_batch_keys")? == Some(Parameter::Bool(true))
+        {
+            return echo_batch_keys(requests);
+        }
+
         for mut request in requests {
             if request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true)) {
                 held.push(request);
@@ -550,8 +559,11 @@ impl CustomBackend for MnistBackend {
             if let Some(Parameter::Int(micros)) = request.parameter("hold_micros")? {
                 let micros = u64::try_from(micros).map_err(|_| "hold_micros is negative")?;
                 // Holds the execution thread of the instance so that a test can
-                // observe how many of them run at once.
+                // observe how many of them run at once, or fill the queue of a
+                // single instance and see which batches Triton forms from it.
+                state.metrics.held.increment(1.0)?;
                 std::thread::park_timeout(Duration::from_micros(micros));
+                state.metrics.held.decrement(1.0)?;
             }
             if request.parameter("forward_metadata")? == Some(Parameter::Bool(true)) {
                 let image = request.get_input(IMAGE)?.as_bytes()?;
@@ -833,6 +845,31 @@ fn answer_done(request: Request) -> Result<(), Error> {
         .create_output("DIGIT", DataType::Int32, &[1, 1])?
         .write_i32_vec(&[0])?;
     response.send()?;
+    Ok(())
+}
+
+/// Answers every request of the batch with the `batch_key` of the whole batch
+/// and with how many requests it holds, so that a test can read back the
+/// batches the batching strategy of the model formed.
+fn echo_batch_keys(requests: Vec<Request>) -> Result<(), Error> {
+    let mut keys = Vec::with_capacity(requests.len());
+    for request in &requests {
+        match request.parameter(BATCH_KEY)? {
+            Some(Parameter::String(key)) => keys.push(key),
+            _ => keys.push("none".to_string()),
+        }
+    }
+    let keys = keys.join(",");
+    let size = i64::try_from(requests.len()).map_err(|_| "the batch is too large")?;
+    for request in requests {
+        let mut response = Response::new(request)?;
+        response
+            .create_output("DIGIT", DataType::Int32, &[1, 1])?
+            .write_i32_vec(&[0])?;
+        response.set_parameter("batch_keys", Parameter::String(keys.clone()))?;
+        response.set_parameter("batch_size", Parameter::Int(size))?;
+        response.send()?;
+    }
     Ok(())
 }
 

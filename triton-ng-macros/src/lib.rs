@@ -1,6 +1,7 @@
 //! Procedural macros of [triton-ng](https://docs.rs/triton-ng): [`macro@backend`] registers a
-//! `CustomBackend` implementation as the Triton backend of a crate, [`triton_call!`] wraps a
-//! call into the Triton C API.
+//! `CustomBackend` implementation as the Triton backend of a crate, [`macro@batch_strategy`]
+//! registers a `BatchStrategy` implementation as the batching strategy library of a model,
+//! [`triton_call!`] wraps a call into the Triton C API.
 #![deny(missing_docs)]
 
 use proc_macro::TokenStream;
@@ -181,6 +182,109 @@ pub fn backend(args: TokenStream, input: TokenStream) -> TokenStream {
                     request_count,
                 )
             }
+        }
+    }
+    .into()
+}
+
+/// Registers an `impl BatchStrategy for T` block as the batching strategy library of a model.
+///
+/// Keeps the impl as it is and exports the five `TRITONBACKEND_ModelBatch*` entry points Triton
+/// looks up in the library a model config names through `TRITON_BATCH_STRATEGY_PATH` or finds as
+/// `batchstrategy.so`, each one calling the matching method of `T`. A crate has one strategy, so
+/// the attribute is used once per `cdylib`.
+///
+/// Triton looks the five up as optional but refuses the library when only some of them are
+/// exported, so the attribute has to be used on the whole impl.
+///
+/// # Examples
+///
+/// ```ignore
+/// struct OnePerBatch;
+///
+/// #[triton_ng::batch_strategy]
+/// impl BatchStrategy for OnePerBatch {
+///     /// Whether the batch is still empty.
+///     type Batch = bool;
+///
+///     fn initialize(model: &Model) -> Result<Self, Error> {
+///         Ok(Self)
+///     }
+///
+///     fn batch(&self) -> bool {
+///         true
+///     }
+///
+///     fn include(&self, empty: &mut bool, request: &RequestView<'_>) -> Result<bool, Error> {
+///         // A batch of one request: the head of the queue joins it, the rest wait.
+///         Ok(std::mem::take(empty))
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn batch_strategy(args: TokenStream, input: TokenStream) -> TokenStream {
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[batch_strategy] takes no arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let item = parse_macro_input!(input as ItemImpl);
+    if item.trait_.is_none() {
+        return syn::Error::new_spanned(
+            &item.self_ty,
+            "#[batch_strategy] must be placed on `impl BatchStrategy for T`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let ty = &item.self_ty;
+
+    quote! {
+        #item
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelBatcherInitialize(
+            batcher: *mut *mut ::std::ffi::c_void,
+            model: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::batcher_initialize::<#ty>(batcher, model) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelBatcherFinalize(
+            batcher: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::batcher_finalize::<#ty>(batcher) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelBatchInitialize(
+            batcher: *const ::std::ffi::c_void,
+            userp: *mut *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::batch_initialize::<#ty>(batcher, userp) }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelBatchIncludeRequest(
+            request: *mut ::std::ffi::c_void,
+            userp: *mut ::std::ffi::c_void,
+            should_include: *mut bool,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe {
+                ::triton_ng::__macro_support::batch_include::<#ty>(request, userp, should_include)
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        extern "C" fn TRITONBACKEND_ModelBatchFinalize(
+            userp: *mut ::std::ffi::c_void,
+        ) -> ::triton_ng::__macro_support::ErrorPtr {
+            unsafe { ::triton_ng::__macro_support::batch_finalize::<#ty>(userp) }
         }
     }
     .into()
