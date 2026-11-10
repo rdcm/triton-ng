@@ -78,11 +78,17 @@ let image = request.get_input("IMAGE")?.as_bytes()?;
 trace.report_activity("preprocess_end")?;
 ```
 
-The trace borrows the request, so it cannot outlive it, and it reports the moment of the call.
-A request Triton does not sample, and a Triton built without tracing, give a trace whose
-`report_activity` succeeds without reporting anything, so there is nothing to check before
-reporting. The example backend reports the activity a request names in its `report_activity`
-parameter, and the integration test finds it in `target/traces`.
+The trace borrows the request, so it cannot outlive it, and it reports the moment of the call,
+stamped with the clock Triton uses for its own events (`steady_clock`, `CLOCK_MONOTONIC` on Linux),
+so the activity lands between `REQUEST_START` and `REQUEST_END` of the request. A request Triton does
+not sample, and a Triton built without tracing, give a trace whose `report_activity` succeeds
+without reporting anything, so there is nothing to check before reporting.
+
+The name reaches the trace file as a JSON string the collector writes without escaping it, so
+`report_activity` refuses a name with a double quote, a backslash, a NUL byte or any other control
+character, and reports `INVALID_ARG` without recording anything. The example backend reports the
+activity a request names in its `report_activity` parameter, and the integration test checks that
+the trace file holds JSON and places the activity between the two ends of the request.
 
 **Lifetimes.** Triton's frontend frees the trace data shared by a trace and its children with the
 parent, and a child that reports after that writes into freed memory. So a request with a traced
