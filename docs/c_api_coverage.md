@@ -29,7 +29,6 @@ Absent from the tree; the C functions are named so that they can be compared aga
 
 | Area | Functions | What a backend cannot do |
 |---|---|---|
-| Sequences and state | `TRITONBACKEND_StateNew`, `TRITONBACKEND_StateUpdate`, `TRITONBACKEND_StateBuffer*` | Serve `sequence_batching` models with state of their own |
 | Custom batching | `TRITONBACKEND_ModelBatcherInitialize`/`Finalize`, `TRITONBACKEND_ModelBatchInitialize`/`Finalize`/`IncludeRequest` | Decide itself which requests form a batch |
 | Host policy | `TRITONBACKEND_InputPropertiesForHostPolicy`, `TRITONBACKEND_InputBufferForHostPolicy` | Read the inputs Triton keeps for the host policy of an instance |
 | Buffers of a response and an input | `TRITONBACKEND_InputBufferAttributes`, `TRITONBACKEND_OutputBufferAttributes`, `TRITONBACKEND_InferenceResponseOutput`, `TRITONBACKEND_InferenceResponseOutputByName`, `TRITONBACKEND_RequestInputByIndex` | Read a buffer with its attributes of a response, or an input by index |

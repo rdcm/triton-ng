@@ -217,3 +217,62 @@ if step.last {
 
 The example model `mnist_steps` streams the number of every step of a request and reschedules it
 until it has made the `steps` the client asks for.
+
+## Sequence state
+
+A model with `sequence_batching` can keep state of its own per sequence, declared as an
+input/output pair:
+
+```protobuf
+sequence_batching {
+  state [
+    {
+      input_name: "counter_in"
+      output_name: "counter_out"
+      data_type: TYPE_FP32
+      dims: [ 1 ]
+      initial_state [
+        {
+          name: "counter"
+          data_type: TYPE_FP32
+          dims: [ 1 ]
+          zero_data: true
+        }
+      ]
+    }
+  ]
+}
+```
+
+Triton hands the input state of the sequence to every request as an input named `counter_in`, and
+the backend writes what the next request of the sequence should see through `State`, under
+`counter_out`:
+
+```rust ignore
+let previous = request.get_input("counter_in")?.as_fp32_vec()?;
+let mut state = State::new(&request, "counter_out", DataType::Fp32, &[1])?;
+state.write_bytes(&(previous[0] + 1.0).to_ne_bytes())?;
+state.update()?;
+```
+
+- **The state belongs to the request.** Triton frees it with the request, there is no delete call,
+  and `State` borrows the request for that reason: a state that is still held keeps the request
+  from being answered, rescheduled or dropped, so using a state after its request is gone does not
+  compile. `update` consumes the state because Triton declares it invalid after the update.
+- **`State::new` takes the `output_name`**, and the datatype and shape have to be the ones of the
+  configuration. A mismatch is not detected here: Triton takes both from the call and the next
+  request of the sequence would read the wrong number of bytes.
+- **The buffer** is the one Triton keeps for the state. `State::buffer` hands it out with its
+  memory type, its address and its size; `State::buffer_attributes` reads where Triton keeps it
+  without touching the data. Host memory can come back plain or pinned, since Triton allocates it
+  through its pinned pool. `write_bytes` copies into host memory and refuses a state in GPU memory
+  (`use_growable_memory`), whose device address goes to the CUDA API of the backend; Triton
+  allocates the buffer of a state on demand, so the attributes are readable after the first
+  `State::buffer` or `write_bytes`.
+- **Declare an `initial_state`.** Without one Triton allocates the memory of the state and does
+  not initialize it, so the first request of a sequence would read whatever is there.
+- **No update, no change.** A request that never calls `update` leaves the sequence where it was
+  and the next request sees the same input state.
+
+The example model `sequence_state` counts the requests of each sequence this way, and the
+integration test interleaves two sequences to show that each counts only its own.

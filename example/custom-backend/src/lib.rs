@@ -16,6 +16,13 @@ use triton_ng::{
 };
 
 const IMAGE: &str = "Input3";
+/// The two names of the sequence state of the `sequence_state` model, from the
+/// `state` section of its configuration: Triton hands the input state to the
+/// request under `COUNTER_IN`, and the backend writes the output state under
+/// `COUNTER_OUT`.
+const COUNTER_IN: &str = "counter_in";
+const COUNTER_OUT: &str = "counter_out";
+const COUNTER_OUTPUT: &str = "COUNTER";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
 const IMAGE_BYTES: usize = 28 * 28 * 4;
 const LOGITS: &str = "Plus214_Output_0";
@@ -76,6 +83,9 @@ struct State {
     stream_model: Option<String>,
     forward_model: Option<String>,
     forwards_input: bool,
+    /// Counts the requests of a sequence in the state of that sequence, see
+    /// `count_sequence`.
+    counts_state: bool,
     /// What every instance reported in its own hook, answered by
     /// `echo_instance_details`.
     instances: Mutex<Vec<String>>,
@@ -297,6 +307,7 @@ impl CustomBackend for MnistBackend {
             stream_model: model.config_parameter("stream_model")?,
             forward_model: model.config_parameter("forward_model")?,
             forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
+            counts_state: model.config_parameter("counts_state")?.as_deref() == Some("true"),
             instances: Mutex::new(Vec::new()),
             in_flight: AtomicI64::new(0),
             max_in_flight: AtomicI64::new(0),
@@ -373,6 +384,9 @@ impl CustomBackend for MnistBackend {
         }
         if state.forwards_input {
             return forward_to_identity(&ctx, state, requests).await;
+        }
+        if state.counts_state {
+            return count_sequence(requests);
         }
         let mut held = Vec::new();
         let mut buffered = Vec::new();
@@ -834,6 +848,62 @@ fn answer_done(request: Request) -> Result<(), Error> {
         .write_i32_vec(&[0])?;
     response.send()?;
     Ok(())
+}
+
+/// Counts every request of a sequence in the state of that sequence and answers
+/// the value it has just stored. The input state Triton hands to the request is
+/// the value the previous request of the same sequence stored, so the answer
+/// counts the requests of one sequence and ignores the others.
+fn count_sequence(requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        if request.parameter("missing_state")? == Some(Parameter::Bool(true)) {
+            // A state the model configuration does not declare: Triton refuses to
+            // create it, and the request is answered with what Triton says.
+            match triton_ng::State::new(&request, "no_such_state", DataType::Fp32, &[1]).err() {
+                Some(error) => request.respond_error(&error.to_string())?,
+                None => request
+                    .respond_error("Triton created a state its configuration does not declare")?,
+            }
+            continue;
+        }
+
+        // The state work borrows the request, so it is over before the answer.
+        match count_one(&request) {
+            Ok(next) => {
+                let mut response = Response::new(request)?;
+                response
+                    .create_output(COUNTER_OUTPUT, DataType::Fp32, &[1])?
+                    .write_fp32_vec(&[next])?;
+                response.send()?;
+            }
+            Err(error) => request.respond_error(&error.to_string())?,
+        }
+    }
+    Ok(())
+}
+
+/// The counter of the next request of the sequence: the input state plus one,
+/// written into the output state.
+fn count_one(request: &Request) -> Result<f32, Error> {
+    let previous = request.get_input(COUNTER_IN)?.as_fp32_vec()?;
+    let previous = previous.first().ok_or("the counter state is empty")?;
+    let next = previous + 1.0;
+
+    let mut state = triton_ng::State::new(request, COUNTER_OUT, DataType::Fp32, &[1])?;
+    // Triton allocates the buffer of a state on demand, so the attributes are
+    // read after the write that asks for it. Its allocator hands out pinned
+    // host memory where it has room, so the buffer is host memory either way.
+    state.write_bytes(&next.to_ne_bytes())?;
+    let attributes = state.buffer_attributes()?;
+    if attributes.byte_size != 4 || matches!(attributes.memory_type, MemoryType::Gpu { .. }) {
+        return Err(format!(
+            "the state buffer is {:?} with {} bytes",
+            attributes.memory_type, attributes.byte_size
+        )
+        .into());
+    }
+    state.update()?;
+    Ok(next)
 }
 
 /// The policy the backend asks Triton for, `device-blocking` when the model

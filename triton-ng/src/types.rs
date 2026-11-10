@@ -447,11 +447,32 @@ impl MemoryType {
             Self::Gpu { device_id } => (GPU, i64::from(device_id)),
         }
     }
+
+    /// The memory type Triton reported as `kind` with `memory_type_id`. `Err`
+    /// when the kind is one this version does not know.
+    pub(crate) fn from_sys(kind: SysMemoryType, memory_type_id: i64) -> Result<Self, String> {
+        use crate::memory_manager::{CPU, CPU_PINNED, GPU};
+        match kind {
+            CPU => Ok(Self::Cpu),
+            CPU_PINNED => Ok(Self::CpuPinned),
+            GPU => {
+                let device_id = i32::try_from(memory_type_id).map_err(|_| {
+                    format!("the GPU memory type id {memory_type_id} is not a device id")
+                })?;
+                Ok(Self::Gpu { device_id })
+            }
+            other => Err(format!(
+                "Triton reported the memory type {other}, which this version does not know"
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ArtifactType, ExecutionPolicy, InstanceGroupKind, Parameter, RequestFlags};
+    use super::{
+        ArtifactType, ExecutionPolicy, InstanceGroupKind, MemoryType, Parameter, RequestFlags,
+    };
     use std::ffi::{CString, c_void};
     use triton_ng_sys::*;
 
@@ -477,6 +498,27 @@ mod tests {
             Ok(ArtifactType::FileSystem)
         );
         assert!(ArtifactType::from_sys(42).is_err());
+    }
+
+    #[test]
+    fn memory_types_round_trip_and_unknown_ones_fail() {
+        for memory_type in [
+            MemoryType::Cpu,
+            MemoryType::CpuPinned,
+            MemoryType::Gpu { device_id: 3 },
+        ] {
+            let (kind, memory_type_id) = memory_type.to_sys();
+            assert_eq!(MemoryType::from_sys(kind, memory_type_id), Ok(memory_type));
+        }
+        // A kind Triton defines in a later release, and a device id that is not one.
+        assert!(MemoryType::from_sys(42, 0).is_err());
+        assert!(
+            MemoryType::from_sys(
+                TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU,
+                i64::MAX
+            )
+            .is_err()
+        );
     }
 
     #[test]

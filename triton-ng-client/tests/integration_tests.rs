@@ -2166,3 +2166,78 @@ async fn unary_inference_of_a_decoupled_model_is_rejected() -> Result<()> {
     assert!(format!("{error:#}").contains("decoupled"), "{error:#}");
     Ok(())
 }
+
+/// Sends one request of the sequence `id` to the model whose requests are
+/// counted in its sequence state, and answers the counter it returned.
+async fn count_request(sut: &Sut, config: &Config, id: i64, start: bool) -> Result<f32> {
+    let mut parameters = HashMap::from([("sequence_id".to_string(), Parameter::Int(id))]);
+    if start {
+        parameters.insert("sequence_start".to_string(), Parameter::Bool(true));
+    }
+    let counter = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            parameters,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|output| output.name == "COUNTER")
+        .context("COUNTER not found in response")?
+        .data_f32;
+    counter.first().copied().context("the counter is empty")
+}
+
+#[tokio::test]
+async fn sequence_state_counts_the_requests_of_one_sequence() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // The requests of the two sequences interleave, and each sequence counts
+    // only its own: the second starts at 1 while the first is already past it.
+    let first = [1.0, 2.0, 3.0];
+    let second = [1.0, 2.0, 3.0, 4.0];
+    for step in 0..first.len().max(second.len()) {
+        if let Some(expected) = first.get(step) {
+            assert_eq!(
+                count_request(&sut, &config, 41, step == 0).await?,
+                *expected
+            );
+        }
+        if let Some(expected) = second.get(step) {
+            assert_eq!(
+                count_request(&sut, &config, 42, step == 0).await?,
+                *expected
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(41)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("missing_state".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("the state was created")?;
+
+    let message = format!("{error:#}");
+    assert!(message.contains("no_such_state"), "{message}");
+    assert!(message.contains("not a valid state name"), "{message}");
+    Ok(())
+}
