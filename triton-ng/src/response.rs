@@ -255,7 +255,7 @@ impl ResponseBody {
             ptr::null_mut(),
         ));
         if let Some(statistics) = statistics
-            && let Err(e) = statistics.report()
+            && let Err(e) = statistics.report(None)
         {
             crate::log::error(&format!("failed to report response statistics: {e}"));
         }
@@ -319,9 +319,20 @@ unsafe impl Send for ResponseStatistics {}
 
 impl ResponseStatistics {
     fn new(request: &Request) -> Self {
+        Self::for_request(request.as_ptr(), request.statistics().instance())
+    }
+
+    /// Statistics of a response of the request at `request`, on `instance`.
+    ///
+    /// Built from the raw parts for an error response, which is created while it
+    /// is sent: there is no [`Request`] left to borrow the two from.
+    pub(crate) fn for_request(
+        request: *mut triton_ng_sys::TRITONBACKEND_Request,
+        instance: *mut triton_ng_sys::TRITONBACKEND_ModelInstance,
+    ) -> Self {
         Self {
-            request: request.as_ptr(),
-            instance: request.statistics().instance(),
+            request,
+            instance,
             start_ns: crate::batch_statistics::now_ns(),
             output_start_ns: None,
             enabled: false,
@@ -337,7 +348,14 @@ impl ResponseStatistics {
 
     /// Reports the response to Triton, with the factory of its request, which
     /// the report dereferences to number the response.
-    pub(crate) fn report(&self) -> Result<(), TritonError> {
+    ///
+    /// `error` is the error object the response was sent with, which Triton does
+    /// not own: it counts the response as failed, or as cancelled when the code
+    /// of the error says so, and reads the object while it records it.
+    pub(crate) fn report(
+        &self,
+        error: Option<*mut triton_ng_sys::TRITONSERVER_Error>,
+    ) -> Result<(), TritonError> {
         let factory = crate::response_factory::ResponseFactory::new(self.request)?;
         let statistics =
             triton_call!(triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsNew(&mut _))?;
@@ -380,6 +398,13 @@ impl ResponseStatistics {
                     crate::batch_statistics::now_ns()
                 )
             )?;
+            if let Some(error) = error {
+                triton_call!(
+                    triton_ng_sys::TRITONBACKEND_ModelInstanceResponseStatisticsSetError(
+                        statistics, error
+                    )
+                )?;
+            }
             triton_call!(
                 triton_ng_sys::TRITONBACKEND_ModelInstanceReportResponseStatistics(statistics)
             )

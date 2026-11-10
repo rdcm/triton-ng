@@ -279,6 +279,39 @@ async fn custom_backend_reports_the_response_statistics_it_enables() -> Result<(
 }
 
 #[tokio::test]
+async fn response_statistics_count_a_failed_response() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let (failed_before, _) = sut
+        .failed_and_cancelled_responses(&config.backend_model)
+        .await?;
+    let error = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            HashMap::from([("error_code".to_string(), string("INVALID_ARG"))]),
+        )
+        .await
+        .err()
+        .context("the inference succeeded")?;
+    anyhow::ensure!(
+        format!("{error:#}").contains("error requested by the client"),
+        "{error:#}"
+    );
+
+    let (failed_after, _) = sut
+        .failed_and_cancelled_responses(&config.backend_model)
+        .await?;
+    anyhow::ensure!(
+        failed_after == failed_before + 1,
+        "{failed_after} != {failed_before} + 1"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_returns_the_digit_with_the_highest_target_model_score() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
@@ -409,6 +442,9 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
     let (_, cancelled_before) = backend_counters(&sut, &config).await?;
+    let (_, statistics_before) = sut
+        .failed_and_cancelled_responses(&config.backend_model)
+        .await?;
 
     let held = tokio::spawn(hold_request_until_cancelled());
 
@@ -417,7 +453,18 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
     wait_for_backend_counters(&sut, &config, |held, cancelled| {
         held == 0 && cancelled == cancelled_before + 1
     })
-    .await
+    .await?;
+
+    // The cancelled request is answered with an error the statistics record as a
+    // cancellation, see `FinalResponse::send_error`.
+    let (_, statistics_after) = sut
+        .failed_and_cancelled_responses(&config.backend_model)
+        .await?;
+    anyhow::ensure!(
+        statistics_after == statistics_before + 1,
+        "{statistics_after} != {statistics_before} + 1"
+    );
+    Ok(())
 }
 
 async fn hold_request_until_cancelled() -> Result<()> {

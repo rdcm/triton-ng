@@ -110,7 +110,7 @@ impl FinalResponse {
                     ptr::null_mut(),
                 ));
                 if let Some(statistics) = statistics
-                    && let Err(e) = statistics.report()
+                    && let Err(e) = statistics.report(None)
                 {
                     crate::log::error(&format!("failed to report response statistics: {e}"));
                 }
@@ -140,6 +140,14 @@ impl FinalResponse {
         if error.as_ptr().is_null() {
             return Err(TritonError::from_message("failed to create error object"));
         }
+        // An error response is created here, so it has no response object the
+        // backend could have enabled the statistics on: they are reported
+        // anyway, with the error, which is what puts the response into the
+        // `fail` or `cancel` count of `response_stats`.
+        let statistics = crate::response::ResponseStatistics::for_request(
+            self.request,
+            self.release.statistics().instance(),
+        );
 
         let response = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseNew(
             &mut _,
@@ -147,11 +155,17 @@ impl FinalResponse {
         ))?;
 
         // ResponseSend takes ownership of the response whatever it returns.
-        triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
+        let sent = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
             response,
             FINAL,
             error.as_ptr(),
-        ))
+        ));
+        // Reported before the error object is dropped: Triton reads it while it
+        // records the response.
+        if let Err(e) = statistics.report(Some(error.as_ptr())) {
+            crate::log::error(&format!("failed to report response statistics: {e}"));
+        }
+        sent
     }
 }
 
