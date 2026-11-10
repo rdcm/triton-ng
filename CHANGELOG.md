@@ -7,6 +7,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+A backend can decide which requests form a batch. `BatchStrategy` and the `batch_strategy`
+attribute export the five `TRITONBACKEND_ModelBatch*` entry points Triton looks up in the
+batching strategy library of a model, and `RequestView` reads the requests Triton is queueing.
+`Input` gained an owner type parameter, so the inputs of a queued request can be read the same
+way as those of a request a backend owns.
+
+### Added ([#24])
+
+- `BatchStrategy` and `#[triton_ng::batch_strategy]`: the strategy library of a model that sets
+  `TRITON_BATCH_STRATEGY_PATH` in its config, or has a `batchstrategy.so` next to its config.
+- `RequestView`: the read-only view of a request a batch strategy is asked about. It reads the
+  ID, correlation ID, flags, timeout, input and output names, parameters, cancellation state and
+  inputs of the request, and cannot answer it.
+- `Input<'a, P = Request>`: the owner of an input is a type parameter, and only an input of a
+  `Request` can be shared into a BLS request; `RequestView::get_input` returns the same `Input`
+  without `share`.
+- `example/batch-strategy`, the `batch_strategy` fixture model and an integration test that
+  reads back the batches the strategy formed.
+
 ## [0.3.1] - 2026-11-05
 
 Benchmarks against python_backend and a comparison of the supported API; no code changes in the
@@ -239,4 +258,5 @@ Fixed before the first release; the bugs affected backends that depended on the 
 [#10]: https://github.com/rdcm/triton-ng/pull/10
 [#11]: https://github.com/rdcm/triton-ng/pull/11
 [#13]: https://github.com/rdcm/triton-ng/pull/13
+[#24]: https://github.com/rdcm/triton-ng/issues/24
 [#15]: https://github.com/rdcm/triton-ng/pull/15
