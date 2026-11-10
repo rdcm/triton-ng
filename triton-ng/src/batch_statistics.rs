@@ -64,6 +64,11 @@ impl BatchStatistics {
             )
         )
     }
+
+    /// The instance that runs the batch, for the statistics of a response.
+    pub(crate) fn instance(&self) -> *mut triton_ng_sys::TRITONBACKEND_ModelInstance {
+        self.instance
+    }
 }
 
 /// Nanoseconds of the clock Triton stamps its requests with:

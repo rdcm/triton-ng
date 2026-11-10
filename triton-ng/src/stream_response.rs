@@ -39,6 +39,24 @@ impl StreamResponse<'_> {
         })
     }
 
+    /// Asks Triton to record the time this response took, see
+    /// [`crate::Response::enable_statistics`]. The clock starts when the
+    /// response was created by [`crate::ResponseSender::response`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut response = sender.response()?;
+    /// response
+    ///     .create_output("DIGIT", DataType::Int32, &[1])?
+    ///     .write_i32_vec(&[digit])?;
+    /// response.enable_statistics();
+    /// response.send()?;
+    /// ```
+    pub fn enable_statistics(&mut self) {
+        self.body.enable_statistics();
+    }
+
     /// Creates an output tensor. It must be written exactly once before
     /// [`StreamResponse::send`].
     pub fn create_output(

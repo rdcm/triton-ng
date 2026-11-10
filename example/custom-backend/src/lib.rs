@@ -436,6 +436,15 @@ impl CustomBackend for MnistBackend {
                 }
                 continue;
             }
+            if request.parameter("enable_statistics")? == Some(Parameter::Bool(true)) {
+                let mut response = Response::new(request)?;
+                response
+                    .create_output("DIGIT", DataType::Int32, &[1, 1])?
+                    .write_i32_vec(&[0])?;
+                response.enable_statistics();
+                response.send()?;
+                continue;
+            }
             if let Some(Parameter::String(model)) = request.parameter("load_model")? {
                 let file = match request.parameter("load_file")? {
                     Some(Parameter::String(file)) => file,
@@ -645,6 +654,7 @@ async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> 
             .collect::<Result<Vec<_>, Error>>()?;
         let hold = request.parameter("hold_until_cancelled")? == Some(Parameter::Bool(true));
         let unfinished = request.parameter("unfinished")? == Some(Parameter::Bool(true));
+        let statistics = request.parameter("enable_statistics")? == Some(Parameter::Bool(true));
 
         let mut sender = request.into_sender()?;
         for inference in inferences {
@@ -655,6 +665,9 @@ async fn stream_digits(ctx: &Context, state: &State, requests: Vec<Request>) -> 
                 .write_i32_vec(&[digit])?;
             response.set_parameter("held_requests", state.held.load(Ordering::SeqCst))?;
             response.set_parameter("cancelled_requests", state.cancelled.load(Ordering::SeqCst))?;
+            if statistics {
+                response.enable_statistics();
+            }
             response.send()?;
         }
 

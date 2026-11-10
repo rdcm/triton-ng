@@ -37,6 +37,11 @@ impl ResponseFactory {
             self.ptr, flags
         ))
     }
+
+    /// The factory, for the statistics of a response.
+    pub(crate) fn as_ptr(&self) -> *mut triton_ng_sys::TRITONBACKEND_ResponseFactory {
+        self.ptr
+    }
 }
 
 impl Drop for ResponseFactory {

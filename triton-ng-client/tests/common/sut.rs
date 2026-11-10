@@ -125,6 +125,33 @@ impl Sut {
         Ok(stats.memory_usage())
     }
 
+    /// The number of responses the model reported per-response statistics for,
+    /// the sum over every bucket Triton keeps for a response.
+    pub async fn response_statistics(&self, model: &str) -> Result<u64> {
+        let stats = self.inner.model_statistics(Some(model), None, None).await?;
+        let stats = stats
+            .into_iter()
+            .find(|stats| stats.name() == model)
+            .with_context(|| format!("{model} is missing from the statistics"))?;
+        Ok(stats
+            .into_proto()
+            .response_stats
+            .values()
+            .map(|statistics| {
+                [
+                    statistics.success.as_ref(),
+                    statistics.fail.as_ref(),
+                    statistics.empty_response.as_ref(),
+                    statistics.cancel.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|bucket| bucket.count)
+                .sum::<u64>()
+            })
+            .sum())
+    }
+
     pub async fn infer(
         &self,
         model: &str,

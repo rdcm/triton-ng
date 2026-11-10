@@ -252,6 +252,33 @@ async fn mnist_onnx_inference_returns_ten_class_scores() -> Result<()> {
 }
 
 #[tokio::test]
+async fn custom_backend_reports_the_response_statistics_it_enables() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let before = sut.response_statistics(&config.backend_model).await?;
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        HashMap::from([("enable_statistics".to_string(), Parameter::Bool(true))]),
+    )
+    .await?;
+    let after = sut.response_statistics(&config.backend_model).await?;
+    anyhow::ensure!(after > before, "{after} <= {before}");
+
+    // The same opt-in on a response of a stream: the decoupled model reports
+    // one entry per response it sends.
+    let before = sut.response_statistics(&config.stream_model).await?;
+    let (digits, error) = streamed_digits(&sut, &config, 2, Some("enable_statistics")).await?;
+    anyhow::ensure!(error.is_none(), "{error:?}");
+    anyhow::ensure!(digits.len() == 2, "two responses: {digits:?}");
+    let after = sut.response_statistics(&config.stream_model).await?;
+    anyhow::ensure!(after >= before + 2, "{after} < {before} + 2");
+    Ok(())
+}
+
+#[tokio::test]
 async fn custom_backend_returns_the_digit_with_the_highest_target_model_score() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

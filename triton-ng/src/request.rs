@@ -99,6 +99,11 @@ impl Request {
         Arc::clone(&self.release)
     }
 
+    /// The statistics of the batch this request belongs to.
+    pub(crate) fn statistics(&self) -> &crate::batch_statistics::BatchStatistics {
+        self.release.statistics()
+    }
+
     /// The trace of the request, null when it is not traced. Triton owns it,
     /// it stays valid until the request is released.
     pub(crate) fn trace(

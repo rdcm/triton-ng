@@ -51,6 +51,11 @@ impl RequestRelease {
         self.succeeded.store(true, Ordering::Release);
     }
 
+    /// The statistics of the batch the request belongs to.
+    pub(crate) fn statistics(&self) -> &BatchStatistics {
+        &self.statistics
+    }
+
     /// Releases the request with `TRITONSERVER_REQUEST_RELEASE_RESCHEDULE`
     /// instead. Only for models with `iterative_sequence`: the core ignores
     /// the flag otherwise and the request never gets a final response, see

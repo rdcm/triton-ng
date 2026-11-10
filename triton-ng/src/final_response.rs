@@ -36,8 +36,12 @@ unsafe impl Sync for FinalResponse {}
 /// A final response waiting for the last shared input.
 pub(crate) enum Pending {
     /// A response ready to be sent, owned until it is handed to
-    /// `TRITONBACKEND_ResponseSend`.
-    Response(*mut triton_ng_sys::TRITONBACKEND_Response),
+    /// `TRITONBACKEND_ResponseSend`, with the statistics the backend enabled
+    /// for it.
+    Response(
+        *mut triton_ng_sys::TRITONBACKEND_Response,
+        Option<crate::response::ResponseStatistics>,
+    ),
     /// An error response, created when it is sent.
     Error(ErrorCode, String),
     /// The final flag of a stream without one more response.
@@ -99,12 +103,18 @@ impl FinalResponse {
     fn send_now(&self, pending: Pending) -> Result<(), TritonError> {
         let sent = match pending {
             // ResponseSend takes ownership of the response whatever it returns.
-            Pending::Response(response) => {
-                triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
+            Pending::Response(response, statistics) => {
+                let sent = triton_call!(triton_ng_sys::TRITONBACKEND_ResponseSend(
                     response,
                     FINAL,
                     ptr::null_mut(),
-                ))
+                ));
+                if let Some(statistics) = statistics
+                    && let Err(e) = statistics.report()
+                {
+                    crate::log::error(&format!("failed to report response statistics: {e}"));
+                }
+                sent
             }
             Pending::Flags => {
                 ResponseFactory::new(self.request).and_then(|factory| factory.send_flags(FINAL))
