@@ -1021,6 +1021,56 @@ async fn trace_settings_are_readable() -> Result<()> {
 }
 
 #[tokio::test]
+async fn custom_backend_writes_its_activity_into_the_trace_of_a_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let activity = format!(
+        "triton_ng_activity_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let parameters = HashMap::from([(
+        "report_activity".to_string(),
+        Parameter::String(activity.clone()),
+    )]);
+
+    // With tracing off the report is a no-op and the request still succeeds.
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        parameters.clone(),
+    )
+    .await
+    .context("reporting an activity of an untraced request")?;
+
+    set_mnist_tracing(&sut, "TIMESTAMPS").await?;
+    let inferred = sut
+        .infer_with_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            parameters,
+        )
+        .await;
+    set_mnist_tracing(&sut, "OFF").await?;
+    inferred?;
+
+    // The trace collector writes the file after the request, so poll it.
+    for _ in 0..100 {
+        let named = trace_entries(&config)?
+            .iter()
+            .any(|entry| entry.to_string().contains(&activity));
+        if named {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("no trace entry names the activity {activity}")
+}
+
+#[tokio::test]
 async fn log_settings_are_readable() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
