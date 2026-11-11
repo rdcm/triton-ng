@@ -1021,6 +1021,138 @@ async fn trace_settings_are_readable() -> Result<()> {
 }
 
 #[tokio::test]
+async fn custom_backend_writes_its_activity_into_the_trace_of_a_request() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let request_id = format!(
+        "activity-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    let activity = format!("triton_ng_activity_{request_id}");
+    let parameters = HashMap::from([(
+        "report_activity".to_string(),
+        Parameter::String(activity.clone()),
+    )]);
+
+    // With tracing off the report is a no-op and the request still succeeds.
+    sut.infer_with_id_and_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        &request_id,
+        parameters.clone(),
+    )
+    .await
+    .context("reporting an activity of an untraced request")?;
+
+    // A name the collector cannot write is refused, before anything is recorded.
+    // Triton answers a request whose model reports an error without a final
+    // response of its own, so the error of the report does not reach the client.
+    sut.infer_with_id_and_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        &request_id,
+        HashMap::from([(
+            "report_activity".to_string(),
+            Parameter::String("decode \"first\"".to_string()),
+        )]),
+    )
+    .await
+    .err()
+    .context("an activity name with a double quote was accepted")?;
+
+    set_mnist_tracing(&sut, "TIMESTAMPS").await?;
+    let inferred = sut
+        .infer_with_id_and_parameters(
+            &config.backend_model,
+            vec![config.mnist_blank_input()],
+            &[&config.backend_output_name],
+            &request_id,
+            parameters,
+        )
+        .await;
+    set_mnist_tracing(&sut, "OFF").await?;
+    inferred?;
+
+    // The trace collector writes the file after the request, so poll it.
+    for _ in 0..100 {
+        if activity_is_inside_its_request(&config, &request_id, &activity)? {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("no trace of {request_id} places the activity {activity} inside the request")
+}
+
+/// Whether the trace of `request_id` places `activity` between its
+/// `REQUEST_START` and its `REQUEST_END`.
+///
+/// Fails when a trace file that holds the activity is not JSON: the collector
+/// writes the name into the file without escaping it, so a name it cannot
+/// write breaks the file rather than the entry.
+fn activity_is_inside_its_request(
+    config: &Config,
+    request_id: &str,
+    activity: &str,
+) -> Result<bool> {
+    let Ok(dir) = std::fs::read_dir(config.trace_dir()) else {
+        return Ok(false);
+    };
+    for file in dir {
+        let path = file?.path();
+        let content = std::fs::read_to_string(&path)?;
+        if !content.contains(activity) {
+            continue;
+        }
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&content)
+            .with_context(|| format!("{} does not hold JSON", path.display()))?;
+        let Some(trace_id) = entries
+            .iter()
+            .find(|entry| entry["request_id"] == request_id)
+            .and_then(|entry| entry["id"].as_u64())
+        else {
+            continue;
+        };
+
+        let mut start = None;
+        let mut end = None;
+        let mut reported = None;
+        for entry in entries
+            .iter()
+            .filter(|entry| entry["id"].as_u64() == Some(trace_id))
+        {
+            let timestamps = entry["timestamps"].as_array().into_iter().flatten();
+            for timestamp in timestamps {
+                let Some(name) = timestamp["name"].as_str() else {
+                    continue;
+                };
+                let Some(ns) = timestamp["ns"].as_u64() else {
+                    continue;
+                };
+                if name == activity {
+                    reported = Some(ns);
+                } else if name == "REQUEST_START" {
+                    start = Some(ns);
+                } else if name == "REQUEST_END" {
+                    end = Some(ns);
+                }
+            }
+        }
+        if let (Some(start), Some(reported), Some(end)) = (start, reported, end) {
+            anyhow::ensure!(
+                start <= reported && reported <= end,
+                "the activity {activity} is at {reported}, outside {start}..{end} of request {request_id}"
+            );
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[tokio::test]
 async fn log_settings_are_readable() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;

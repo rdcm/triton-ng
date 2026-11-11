@@ -106,7 +106,7 @@ impl Request {
 
     /// The trace of the request, null when it is not traced. Triton owns it,
     /// it stays valid until the request is released.
-    pub(crate) fn trace(
+    pub(crate) fn trace_ptr(
         &self,
     ) -> Result<*mut triton_ng_sys::TRITONSERVER_InferenceTrace, TritonError> {
         let mut trace = ptr::null_mut();
@@ -118,6 +118,33 @@ impl Request {
             Err(e) if e.code() == ErrorCode::Unsupported => Ok(ptr::null_mut()),
             Err(e) => Err(e),
         }
+    }
+
+    /// The trace of this request, for activities of the backend.
+    ///
+    /// The trace borrows the request. A request Triton does not sample, and a
+    /// server built without tracing, give a [`crate::Trace`] whose
+    /// [`crate::Trace::report_activity`] succeeds without reporting anything,
+    /// so there is nothing to check before reporting.
+    ///
+    /// Fails when Triton cannot answer for another reason.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+    ///     for request in requests {
+    ///         let trace = request.trace()?;
+    ///         trace.report_activity("preprocess_start")?;
+    ///         let bytes = request.get_input("IMAGE")?.as_bytes()?;
+    ///         trace.report_activity("preprocess_end")?;
+    ///         respond(ctx, request, bytes)?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn trace(&self) -> Result<crate::Trace<'_>, TritonError> {
+        Ok(crate::Trace::from_ptr(self.trace_ptr()?))
     }
 
     /// The ID the client gave the request (`id` of the gRPC

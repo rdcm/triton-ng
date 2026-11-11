@@ -439,6 +439,11 @@ impl CustomBackend for MnistBackend {
                 }
                 continue;
             }
+            if let Some(Parameter::String(activity)) = request.parameter("report_activity")? {
+                request.trace()?.report_activity(&activity)?;
+                answer_done(request)?;
+                continue;
+            }
             if let Some(Parameter::Bool(keep)) = request.parameter("shared_input")? {
                 let (image, copy) = {
                     let input = request.get_input(IMAGE)?;

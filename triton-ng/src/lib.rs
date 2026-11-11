@@ -93,6 +93,8 @@ mod server;
 mod shared_input;
 #[path = "stream_response.rs"]
 mod stream_response;
+#[path = "trace.rs"]
+mod trace;
 #[path = "triton_parameter.rs"]
 pub(crate) mod triton_parameter;
 #[path = "types.rs"]
@@ -128,6 +130,7 @@ pub use response_sender::*;
 pub use server::*;
 pub use shared_input::*;
 pub use stream_response::*;
+pub use trace::*;
 pub use types::*;
 
 pub use triton_ng_macros::backend;
@@ -671,6 +674,7 @@ mod tests {
             ResponseFactory,
             Input<'static>,
             Output<'static>,
+            Trace<'static>,
             RawBuffer
         );
     }

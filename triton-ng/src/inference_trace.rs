@@ -32,7 +32,7 @@ impl InferenceTrace {
     /// Spawns a child of the trace of `request`, `None` when the request is
     /// not traced.
     pub(crate) fn spawn(request: &Request) -> Result<Option<Self>, TritonError> {
-        let parent = request.trace()?;
+        let parent = request.trace_ptr()?;
         if parent.is_null() {
             return Ok(None);
         }
