@@ -1,6 +1,7 @@
 //! State a backend keeps between the requests of a sequence.
 
 use crate::memory_manager::CPU;
+use crate::model::{ModelAddress, ModelIdentity};
 use crate::types::MemoryType;
 use crate::utils::cstring_from_str;
 use crate::{DataType, Request, TritonError};
@@ -14,7 +15,10 @@ use triton_ng_macros::triton_call;
 ///
 /// Holds the `state` entry of the `sequence_batching` configuration: the name a
 /// [`State`] is created under, its datatype, and its dimensions without the
-/// batch dimension, -1 for a dimension the configuration leaves dynamic.
+/// batch dimension, -1 for a dimension the configuration leaves dynamic. It
+/// also holds the model the entry was read from, which is what makes a state of
+/// one model with the request of another a failure instead of a state whose
+/// metadata disagrees with the configuration the request runs under.
 ///
 /// A state is only created from one of these, which is what makes the datatype
 /// and the fixed dimensions of the configured state the ones Triton keeps.
@@ -24,11 +28,16 @@ pub struct StateConfig {
     input_name: String,
     datatype: DataType,
     dims: Vec<i64>,
+    /// The model the entry was read from, see [`StateConfig::from_json`].
+    model: ModelIdentity,
 }
 
 impl StateConfig {
-    /// Reads one entry of `sequence_batching.state`.
-    pub(crate) fn from_json(entry: &serde_json::Value) -> Result<Self, TritonError> {
+    /// Reads one entry of `sequence_batching.state` of `model`.
+    pub(crate) fn from_json(
+        entry: &serde_json::Value,
+        model: ModelIdentity,
+    ) -> Result<Self, TritonError> {
         let string = |key: &str| {
             entry[key]
                 .as_str()
@@ -52,7 +61,19 @@ impl StateConfig {
             input_name,
             datatype,
             dims,
+            model,
         })
+    }
+
+    /// The model the configuration entry was read from.
+    pub(crate) fn model(&self) -> ModelAddress {
+        self.model.address
+    }
+
+    /// The name of the model the entry was read from, for the message that
+    /// refuses its use with a request of another model.
+    fn model_name(&self) -> &str {
+        &self.model.name
     }
 
     /// The `output_name` of the entry: the name the state is created under, and
@@ -109,8 +130,9 @@ impl StateConfig {
 /// one state per name for the whole sequence, so a second state of the same
 /// configuration would be the same memory, and two slices of it would be
 /// aliasing pointers. The mutable borrow is what makes that a compile error,
-/// and it also keeps the inputs of the request, shared or not, out of reach
-/// while the state is written.
+/// and it takes the inputs of the request with it, so no input can be shared
+/// while the state is written; an input shared before the state was created is
+/// refused, see [`State::new`].
 ///
 /// [`State::update`] consumes the state, because Triton documents the state as
 /// valid only until the update: the data written into it belongs to the
@@ -143,6 +165,12 @@ impl<'a> State<'a> {
     /// The state `config` of `request`, whose data has `shape` without the
     /// batch dimension.
     ///
+    /// `config` has to come from the model of `request`, see
+    /// [`crate::Model::sequence_states`]. Triton keeps one state per name for a
+    /// model and takes the datatype and the shape the caller gives it, so a
+    /// configuration of another model would write a state that the
+    /// configuration of this one does not declare; it is refused here.
+    ///
     /// `shape` has to fit the configuration: the same number of dimensions, the
     /// dimensions it declares fixed, and a positive value for every dimension
     /// it declares dynamic as -1. Triton changes the metadata of the state to
@@ -150,11 +178,19 @@ impl<'a> State<'a> {
     /// shape that does not fit would hand the wrong state to the next request
     /// of the sequence; it is refused here, before Triton touches the state.
     ///
+    /// The input of the state may not be shared when the state is created, see
+    /// [`crate::Input::share`]: Triton keeps the input state of the sequence in
+    /// the memory of the paired input of the request, and a configuration with
+    /// `use_same_buffer_for_input_output` makes the output state the very same
+    /// memory, so writing the state would change the bytes a
+    /// [`crate::SharedInput`] handed to another request of the server.
+    ///
     /// Fails when the model has no sequence batching or no state of that name,
-    /// Triton has nothing to create the state on, or `shape` does not fit the
-    /// configuration. The configuration also has to declare an `initial_state`:
-    /// without one Triton allocates the memory of the state and leaves it
-    /// uninitialized.
+    /// `config` belongs to another model, `shape` does not fit the
+    /// configuration, an input of the request is still shared, or Triton has
+    /// nothing to create the state on. The configuration also has to declare an
+    /// `initial_state`: without one Triton allocates the memory of the state and
+    /// leaves it uninitialized.
     ///
     /// # Examples
     ///
@@ -168,6 +204,19 @@ impl<'a> State<'a> {
         config: &StateConfig,
         shape: &[i64],
     ) -> Result<Self, TritonError> {
+        if config.model() != request.model_address() {
+            return Err(TritonError::from_message(format!(
+                "state '{}' is declared by the model '{}', and the request runs on another model",
+                config.name,
+                config.model_name()
+            )));
+        }
+        if request.is_input_shared(&config.input_name) {
+            return Err(TritonError::from_message(format!(
+                "input '{}' of the state '{}' is shared, and writing the state may write the bytes it reads",
+                config.input_name, config.name
+            )));
+        }
         let byte_size = config
             .check_shape(shape)
             .map_err(|e| TritonError::from_message(format!("state '{}' {e}", config.name)))?;
@@ -247,10 +296,13 @@ impl<'a> State<'a> {
     /// The address Triton keeps a state in GPU memory at, with its device and
     /// its size, for the CUDA code of the backend to fill.
     ///
-    /// The state counts as written once this returns, and the backend has to
-    /// finish the writes on the device, for instance by synchronizing its
-    /// stream, before it calls [`State::update`]: Triton swaps the buffer of the
-    /// state then, and reads the device memory afterwards.
+    /// Returning the address initializes nothing: Triton allocates the buffer
+    /// without clearing it, so the data reaches the state only when the backend
+    /// writes it. The state counts as written once the backend says so with
+    /// [`State::update_after_device_write`], which is `unsafe` for that reason:
+    /// by calling it the backend promises that the device writes are complete
+    /// and visible, for instance that its stream is synchronized. Triton swaps
+    /// the buffer of the state then and reads the device memory afterwards.
     ///
     /// Fails when Triton cannot allocate the buffer or hands it out in host
     /// memory, which [`State::write_bytes`] fills.
@@ -262,7 +314,8 @@ impl<'a> State<'a> {
     /// let buffer = state.device_buffer(MemoryType::Gpu { id: 0 })?;
     /// copy_to_device(buffer.ptr, &next, stream)?;
     /// stream.synchronize()?;
-    /// state.update()?;
+    /// // SAFETY: the stream that copied `next` into the state is synchronized.
+    /// unsafe { state.update_after_device_write() }?;
     /// ```
     pub fn device_buffer(&mut self, memory_type: MemoryType) -> Result<DeviceBuffer, TritonError> {
         if !matches!(memory_type, MemoryType::Gpu { .. }) {
@@ -276,7 +329,6 @@ impl<'a> State<'a> {
                 "Triton handed the state out in host memory, which State::write_bytes fills",
             ));
         };
-        self.written = true;
         Ok(DeviceBuffer {
             ptr: buffer,
             byte_size: self.byte_size,
@@ -350,7 +402,8 @@ impl<'a> State<'a> {
     /// written, since Triton would hand the buffer Triton allocated, which holds
     /// whatever the allocator left in it, to the next request of the sequence;
     /// and when Triton refuses the update, which leaves the sequence on its
-    /// previous state.
+    /// previous state. A state a device wrote is published with
+    /// [`State::update_after_device_write`] instead.
     ///
     /// # Examples
     ///
@@ -365,6 +418,38 @@ impl<'a> State<'a> {
                 "the state was never written, so Triton would hand its uninitialized buffer to the next request",
             ));
         }
+        self.publish()
+    }
+
+    /// Hands a state the device wrote to the sequence, see
+    /// [`State::device_buffer`].
+    ///
+    /// # Safety
+    ///
+    /// The caller promises that every byte of the state buffer was written by
+    /// the device, and that the writes are complete and visible to the server,
+    /// for instance because the stream that made them was synchronized. Triton
+    /// publishes the buffer as the state of the sequence without reading or
+    /// checking it, so a call that breaks the promise hands the next request of
+    /// the sequence memory the device has not written.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut state = State::new(&mut request, &counter, &[1])?;
+    /// let buffer = state.device_buffer(MemoryType::Gpu { id: 0 })?;
+    /// copy_to_device(buffer.ptr, &next, stream)?;
+    /// stream.synchronize()?;
+    /// // SAFETY: the stream that copied `next` into the state is synchronized.
+    /// unsafe { state.update_after_device_write() }?;
+    /// ```
+    pub unsafe fn update_after_device_write(self) -> Result<(), TritonError> {
+        self.publish()
+    }
+
+    /// `TRITONBACKEND_StateUpdate`: hands the buffer to the sequence, whatever
+    /// wrote it.
+    fn publish(self) -> Result<(), TritonError> {
         triton_call!(triton_ng_sys::TRITONBACKEND_StateUpdate(self.ptr))
     }
 
@@ -397,7 +482,8 @@ impl<'a> State<'a> {
 /// The device memory Triton keeps a [`State`] in, see
 /// [`State::device_buffer`].
 ///
-/// The address belongs to Triton and is valid until [`State::update`].
+/// The address belongs to Triton and is valid until the state is published,
+/// with [`State::update`] or [`State::update_after_device_write`].
 #[derive(Debug)]
 pub struct DeviceBuffer {
     /// The device address of the state data.
@@ -441,6 +527,17 @@ fn state_byte_size(datatype: DataType, shape: &[i64]) -> Result<u64, String> {
 mod tests {
     use super::{StateConfig, state_byte_size};
     use crate::DataType;
+    use crate::model::{ModelAddress, ModelIdentity};
+
+    fn model() -> ModelIdentity {
+        ModelIdentity {
+            address: ModelAddress {
+                address: 1,
+                version: 1,
+            },
+            name: "sequence_state".to_string(),
+        }
+    }
 
     fn counter() -> StateConfig {
         StateConfig {
@@ -448,6 +545,7 @@ mod tests {
             input_name: "counter_in".to_string(),
             datatype: DataType::Fp32,
             dims: vec![1],
+            model: model(),
         }
     }
 

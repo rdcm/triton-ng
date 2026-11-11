@@ -60,6 +60,7 @@ download-model:
 	mkdir -p models/mnist_auto/1
 	mkdir -p models/mnist_steps/1
 	mkdir -p models/sequence_state/1
+	mkdir -p models/sequence_state_other/1
 	mkdir -p models/identity_gpu/1
 	mkdir -p models/identity_forward/1
 	mkdir -p models/memory_usage/1

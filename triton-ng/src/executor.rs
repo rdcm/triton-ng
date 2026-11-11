@@ -1,7 +1,7 @@
 use crate::backend_state::SharedState;
 use crate::error::Error;
 use crate::memory_manager::MemoryManager;
-use crate::model::Model;
+use crate::model::{Model, ModelAddress};
 use crate::server::Server;
 use std::any::Any;
 use std::future::Future;
@@ -135,6 +135,9 @@ pub(crate) struct RequestPolicy {
     /// A batch dimension in every input (`max_batch_size` above 0), which
     /// gives the batch size reported to Triton's statistics.
     pub(crate) batching: bool,
+    /// The model the request belongs to, which is what a [`crate::StateConfig`]
+    /// of another model is refused against.
+    pub(crate) model: ModelAddress,
 }
 
 impl InstanceExecutor {
@@ -146,6 +149,7 @@ impl InstanceExecutor {
                 decoupled: model.is_decoupled()?,
                 iterative_sequence: model.is_iterative_sequence()?,
                 batching: model.max_batch_size()? > 0,
+                model: model.address()?,
             },
         })
     }

@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use triton_ng::{
     ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
@@ -34,6 +34,11 @@ const IDENTITY_OUTPUT: &str = "OUTPUT0";
 const CHECK_MODEL_BYTES: [u64; 2] = [111, 222];
 /// The pinned buffer the memory usage fixture keeps per instance.
 const CHECK_PINNED_BYTES: usize = 4096;
+
+/// The states every model of the fixture declares, by model name, so that a test
+/// can ask one model to write the state of another.
+static DECLARED_STATES: LazyLock<Mutex<HashMap<String, Vec<triton_ng::StateConfig>>>> =
+    LazyLock::new(Default::default);
 
 #[derive(Clone, Copy)]
 enum OutputMemory {
@@ -289,6 +294,11 @@ impl CustomBackend for MnistBackend {
 
     fn model_initialize(model: &Model) -> Result<(), Error> {
         let name = model.name()?;
+        let states = model.sequence_states()?;
+        DECLARED_STATES
+            .lock()
+            .map_err(|_| "the declared states are poisoned")?
+            .insert(name.clone(), states.clone());
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
@@ -310,7 +320,7 @@ impl CustomBackend for MnistBackend {
             forward_model: model.config_parameter("forward_model")?,
             forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
             counts_state: model.config_parameter("counts_state")?.as_deref() == Some("true"),
-            states: model.sequence_states()?,
+            states,
             instances: Mutex::new(Vec::new()),
             in_flight: AtomicI64::new(0),
             max_in_flight: AtomicI64::new(0),
@@ -883,6 +893,48 @@ fn count_sequence(state: &State, requests: Vec<Request>) -> Result<(), Error> {
                     "the model configuration declares no state '{name}'"
                 ))?,
             }
+            continue;
+        }
+
+        if let Some(Parameter::String(model)) = request.parameter("foreign_state_model")? {
+            // The configuration of another model: the datatype and the dimensions it
+            // declares are not the ones this model keeps the state with, so the
+            // library refuses it before Triton changes the metadata of the state.
+            let foreign = DECLARED_STATES
+                .lock()
+                .map_err(|_| "the declared states are poisoned")?
+                .get(&model)
+                .cloned()
+                .ok_or_else(|| format!("the model '{model}' declared no state"))?;
+            let counter = foreign
+                .iter()
+                .find(|declared| declared.name() == COUNTER_OUT)
+                .ok_or("the other model declares no counter_out state")?;
+            let message = match triton_ng::State::new(&mut request, counter, &[2]) {
+                Ok(_) => "a state of another model was created".to_string(),
+                Err(error) => error.to_string(),
+            };
+            request.respond_error(&message)?;
+            continue;
+        }
+        if request.parameter("shared_state_input")? == Some(Parameter::Bool(true)) {
+            // The input the state is paired with, handed to another request before
+            // the state is created: writing the state may write the bytes the
+            // shared input reads.
+            let shared = request.get_input(COUNTER_IN)?.share()?;
+            let counter = state
+                .states
+                .iter()
+                .find(|declared| declared.name() == COUNTER_OUT)
+                .ok_or("the model configuration declares no counter_out state")?;
+            let message = match triton_ng::State::new(&mut request, counter, &[1]) {
+                Ok(_) => "a state of a shared input was created".to_string(),
+                Err(error) => error.to_string(),
+            };
+            // The final response is held back until the last shared input is
+            // dropped, so the shared input goes before the error is answered.
+            drop(shared);
+            request.respond_error(&message)?;
             continue;
         }
 

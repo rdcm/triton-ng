@@ -32,6 +32,7 @@ services:
       --load-model=mnist_auto
       --load-model=mnist_steps
       --load-model=sequence_state
+      --load-model=sequence_state_other
       --load-model=instance_details
       --load-model=device_blocking
       --load-model=cpu_parallel

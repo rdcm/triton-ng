@@ -17,6 +17,26 @@ use triton_ng_macros::triton_call;
 /// Model state stored behind `TRITONBACKEND_ModelSetState`.
 type BoxedState = SharedState;
 
+/// The `TRITONBACKEND_Model` a value came from, as the address Triton keeps it
+/// at and the version it is served as.
+///
+/// `Copy` so that it travels with everything a backend reads from a model; the
+/// address is only ever compared, never read from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ModelAddress {
+    pub(crate) address: usize,
+    pub(crate) version: u64,
+}
+
+/// The model a value came from: its [`ModelAddress`] and the name it is served
+/// under, which is what an error says when the value is used with a request of
+/// another model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelIdentity {
+    pub(crate) address: ModelAddress,
+    pub(crate) name: String,
+}
+
 /// A model that uses the backend, given to the model and instance hooks.
 ///
 /// Borrows the `TRITONBACKEND_Model`: Triton owns it and keeps it alive for
@@ -167,6 +187,24 @@ impl Model {
             &mut version
         ))?;
         Ok(version)
+    }
+
+    /// Where Triton keeps this model and which version it serves, see
+    /// [`ModelAddress`].
+    pub(crate) fn address(&self) -> Result<ModelAddress, TritonError> {
+        Ok(ModelAddress {
+            address: self.ptr as usize,
+            version: self.version()?,
+        })
+    }
+
+    /// This model as the value a [`crate::StateConfig`] remembers, see
+    /// [`ModelIdentity`].
+    pub(crate) fn identity(&self) -> Result<ModelIdentity, TritonError> {
+        Ok(ModelIdentity {
+            address: self.address()?,
+            name: self.name()?,
+        })
     }
 
     /// Directory of the model in the model repository, the one that holds its
@@ -450,7 +488,11 @@ impl Model {
         let Some(states) = value["sequence_batching"]["state"].as_array() else {
             return Ok(Vec::new());
         };
-        states.iter().map(crate::StateConfig::from_json).collect()
+        let model = self.identity()?;
+        states
+            .iter()
+            .map(|entry| crate::StateConfig::from_json(entry, model.clone()))
+            .collect()
     }
 
     /// Reads a string parameter from the model configuration `parameters` map.

@@ -266,18 +266,30 @@ state.update()?;
   -1. Triton writes whatever datatype and shape it is given into the metadata of the state without
   comparing them with the configuration, so a shape that does not fit is refused before Triton
   sees it.
+- **The entry belongs to the model of the request.** Each entry remembers the model it was read
+  from, and `State::new` compares it with the model of the request. Two models can declare the
+  same state name with different dimensions, and Triton would keep whatever the caller passes, so
+  a configuration of one model handed a request of another is refused.
 - **One state per name and sequence.** Triton keeps one state object per configured name, so a
   second `State` for the same entry would be the same memory: the mutable borrow of the request is
-  what makes that impossible, since a request has one `State` at a time. The borrow covers the
-  inputs of the request too, shared or not, so a slice of an input cannot be alive while the state
-  is written.
+  what makes that impossible, since a request has one `State` at a time. The borrow takes the
+  inputs of the request with it, so no input can be shared while the state is alive.
+- **No shared input of the state.** An input shared before the state is created, with
+  `Input::share`, reads the memory of the request input, and Triton keeps the input state of the
+  sequence in exactly that memory. With `use_same_buffer_for_input_output` the output state is
+  the same memory as well, so writing it would change the bytes another request of the server
+  reads; without it, `update` hands the written memory over as the input state of the sequence
+  for the requests after it. `State::new` refuses the state while an input of that name is
+  shared, which the order of the calls makes enough: sharing more inputs needs a shared borrow of
+  the request, and the state holds it mutably.
 - **Writing the state.** `write_bytes` copies host memory into the buffer, which can be plain or
   pinned, since Triton allocates through its pinned pool; it refuses a state Triton keeps in GPU
   memory, see `use_growable_memory`. For those, `device_buffer` hands out the device address with
-  the device id and the size to fill from CUDA code, and the backend has to finish those writes,
-  for instance by synchronizing its stream, before it updates. `buffer_attributes` reads where
-  Triton keeps the state without touching the data; Triton allocates the buffer on demand, so the
-  attributes are readable after the first write.
+  the device id and the size to fill from CUDA code, and `update_after_device_write` publishes
+  it. That call is `unsafe`: Triton does not check what the device wrote, so the backend promises
+  that every byte was written and that the writes are visible, for instance because its stream is
+  synchronized. `buffer_attributes` reads where Triton keeps the state without touching the data;
+  Triton allocates the buffer on demand, so the attributes are readable after the first write.
 - **No write, no update.** `update` fails when nothing was written, since Triton would hand the
   buffer it allocated, holding whatever the allocator left in it, to the next request of the
   sequence.
@@ -287,4 +299,7 @@ state.update()?;
   and the next request sees the same input state.
 
 The example model `sequence_state` counts the requests of each sequence this way, and the
-integration test interleaves two sequences to show that each counts only its own.
+integration test interleaves two sequences to show that each counts only its own. The model
+`sequence_state_other` declares the same state name with two dimensions, and the tests ask a
+request of one model for the state of the other and for the state of a shared input, both
+refused.

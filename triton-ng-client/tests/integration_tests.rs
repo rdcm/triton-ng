@@ -2245,6 +2245,75 @@ async fn state_of_a_shape_the_configuration_does_not_declare_is_refused() -> Res
 }
 
 #[tokio::test]
+async fn state_of_another_model_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // `sequence_state_other` declares `counter_out` as FP32[2] and
+    // `sequence_state` as FP32[1]: the state of the first one is asked for on a
+    // request of the second, and cannot be created there.
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_other_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(41)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                (
+                    "foreign_state_model".to_string(),
+                    Parameter::String(config.sequence_state_model.clone()),
+                ),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of another model was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("is declared by the model 'sequence_state'"),
+        "{message}"
+    );
+    assert!(
+        message.contains("the request runs on another model"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_of_a_shared_input_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // The input state of the sequence is the memory of `counter_in`, and the
+    // shared input hands that memory to another request: the state cannot be
+    // written while it is out there.
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(43)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("shared_state_input".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of a shared input was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("input 'counter_in' of the state 'counter_out' is shared"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Result<()> {
     let config = Config::load()?;
     let sut = Sut::new(&config.triton_url).await?;
