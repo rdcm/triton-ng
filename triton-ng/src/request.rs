@@ -93,6 +93,23 @@ impl Request {
         Arc::clone(&self.final_response)
     }
 
+    /// The model this request belongs to, which is the model of the instance
+    /// that runs the batch.
+    pub(crate) fn model_address(&self) -> crate::model::ModelAddress {
+        self.policy.model
+    }
+
+    /// Whether input `name` is shared, and read somewhere else, until the
+    /// [`crate::SharedInput`] holding it is dropped.
+    ///
+    /// A state is refused while it is, see [`crate::State::new`]: writing the
+    /// output state writes the memory the sequence keeps the input state in,
+    /// and a configuration with `use_same_buffer_for_input_output` makes that
+    /// the very memory of the input.
+    pub(crate) fn is_input_shared(&self, name: &str) -> bool {
+        self.final_response.is_input_shared(name)
+    }
+
     /// Keeps the request from being released while the returned value is
     /// alive, even after the `Request` is dropped.
     pub(crate) fn release_guard(&self) -> Arc<RequestRelease> {
@@ -581,6 +598,7 @@ mod tests {
             decoupled: true,
             iterative_sequence: true,
             batching: false,
+            model: Default::default(),
         };
         assert_eq!(reschedule_refusal(iterative, flags(true)), None);
         assert!(reschedule_refusal(iterative, flags(false)).is_some());

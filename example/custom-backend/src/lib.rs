@@ -4,7 +4,7 @@ use std::mem::size_of;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use triton_ng::{
     ArtifactType, AutoCompleteConfig, Backend, BackendAttributes, BackendConfig, BufferAttributes,
@@ -16,6 +16,13 @@ use triton_ng::{
 };
 
 const IMAGE: &str = "Input3";
+/// The two names of the sequence state of the `sequence_state` model, from the
+/// `state` section of its configuration: Triton hands the input state to the
+/// request under `COUNTER_IN`, and the backend writes the output state under
+/// `COUNTER_OUT`.
+const COUNTER_IN: &str = "counter_in";
+const COUNTER_OUT: &str = "counter_out";
+const COUNTER_OUTPUT: &str = "COUNTER";
 const IMAGE_SHAPE: [i64; 4] = [1, 1, 28, 28];
 const IMAGE_BYTES: usize = 28 * 28 * 4;
 const LOGITS: &str = "Plus214_Output_0";
@@ -27,6 +34,11 @@ const IDENTITY_OUTPUT: &str = "OUTPUT0";
 const CHECK_MODEL_BYTES: [u64; 2] = [111, 222];
 /// The pinned buffer the memory usage fixture keeps per instance.
 const CHECK_PINNED_BYTES: usize = 4096;
+
+/// The states every model of the fixture declares, by model name, so that a test
+/// can ask one model to write the state of another.
+static DECLARED_STATES: LazyLock<Mutex<HashMap<String, Vec<triton_ng::StateConfig>>>> =
+    LazyLock::new(Default::default);
 
 #[derive(Clone, Copy)]
 enum OutputMemory {
@@ -76,6 +88,11 @@ struct State {
     stream_model: Option<String>,
     forward_model: Option<String>,
     forwards_input: bool,
+    /// Counts the requests of a sequence in the state of that sequence, see
+    /// `count_sequence`.
+    counts_state: bool,
+    /// The states the model configuration declares, from the configuration.
+    states: Vec<triton_ng::StateConfig>,
     /// What every instance reported in its own hook, answered by
     /// `echo_instance_details`.
     instances: Mutex<Vec<String>>,
@@ -277,6 +294,11 @@ impl CustomBackend for MnistBackend {
 
     fn model_initialize(model: &Model) -> Result<(), Error> {
         let name = model.name()?;
+        let states = model.sequence_states()?;
+        DECLARED_STATES
+            .lock()
+            .map_err(|_| "the declared states are poisoned")?
+            .insert(name.clone(), states.clone());
         model.set_state(State {
             metrics: Metrics::new(&name)?,
             model: name,
@@ -297,6 +319,8 @@ impl CustomBackend for MnistBackend {
             stream_model: model.config_parameter("stream_model")?,
             forward_model: model.config_parameter("forward_model")?,
             forwards_input: model.config_parameter("forwards_input")?.as_deref() == Some("true"),
+            counts_state: model.config_parameter("counts_state")?.as_deref() == Some("true"),
+            states,
             instances: Mutex::new(Vec::new()),
             in_flight: AtomicI64::new(0),
             max_in_flight: AtomicI64::new(0),
@@ -373,6 +397,9 @@ impl CustomBackend for MnistBackend {
         }
         if state.forwards_input {
             return forward_to_identity(&ctx, state, requests).await;
+        }
+        if state.counts_state {
+            return count_sequence(state, requests);
         }
         let mut held = Vec::new();
         let mut buffered = Vec::new();
@@ -834,6 +861,125 @@ fn answer_done(request: Request) -> Result<(), Error> {
         .write_i32_vec(&[0])?;
     response.send()?;
     Ok(())
+}
+
+/// Counts every request of a sequence in the state of that sequence and answers
+/// the value it has just stored. The input state Triton hands to the request is
+/// the value the previous request of the same sequence stored, so the answer
+/// counts the requests of one sequence and ignores the others.
+fn count_sequence(state: &State, requests: Vec<Request>) -> Result<(), Error> {
+    for mut request in requests {
+        if request.parameter("bad_state_shape")? == Some(Parameter::Bool(true)) {
+            // A shape the configuration does not declare: the library refuses it
+            // before Triton is asked for the state.
+            let counter = state
+                .states
+                .iter()
+                .find(|declared| declared.name() == COUNTER_OUT)
+                .ok_or("the model configuration declares no counter_out state")?;
+            match triton_ng::State::new(&mut request, counter, &[2]) {
+                Ok(_) => request.respond_error("a state of the wrong shape was created")?,
+                Err(error) => request.respond_error(&error.to_string())?,
+            }
+            continue;
+        }
+        if request.parameter("missing_state")? == Some(Parameter::Bool(true)) {
+            // A state the model configuration does not declare: the library finds no
+            // configuration for it, before Triton is asked for a state at all.
+            let name = "no_such_state";
+            match state.states.iter().find(|declared| declared.name() == name) {
+                Some(_) => request.respond_error("the configuration declares no_such_state")?,
+                None => request.respond_error(&format!(
+                    "the model configuration declares no state '{name}'"
+                ))?,
+            }
+            continue;
+        }
+
+        if let Some(Parameter::String(model)) = request.parameter("foreign_state_model")? {
+            // The configuration of another model: the datatype and the dimensions it
+            // declares are not the ones this model keeps the state with, so the
+            // library refuses it before Triton changes the metadata of the state.
+            let foreign = DECLARED_STATES
+                .lock()
+                .map_err(|_| "the declared states are poisoned")?
+                .get(&model)
+                .cloned()
+                .ok_or_else(|| format!("the model '{model}' declared no state"))?;
+            let counter = foreign
+                .iter()
+                .find(|declared| declared.name() == COUNTER_OUT)
+                .ok_or("the other model declares no counter_out state")?;
+            let message = match triton_ng::State::new(&mut request, counter, &[2]) {
+                Ok(_) => "a state of another model was created".to_string(),
+                Err(error) => error.to_string(),
+            };
+            request.respond_error(&message)?;
+            continue;
+        }
+        if request.parameter("shared_state_input")? == Some(Parameter::Bool(true)) {
+            // The input the state is paired with, handed to another request before
+            // the state is created: writing the state may write the bytes the
+            // shared input reads.
+            let shared = request.get_input(COUNTER_IN)?.share()?;
+            let counter = state
+                .states
+                .iter()
+                .find(|declared| declared.name() == COUNTER_OUT)
+                .ok_or("the model configuration declares no counter_out state")?;
+            let message = match triton_ng::State::new(&mut request, counter, &[1]) {
+                Ok(_) => "a state of a shared input was created".to_string(),
+                Err(error) => error.to_string(),
+            };
+            // The final response is held back until the last shared input is
+            // dropped, so the shared input goes before the error is answered.
+            drop(shared);
+            request.respond_error(&message)?;
+            continue;
+        }
+
+        // The state work borrows the request mutably, so it is over before the answer.
+        let counted = count_one(&mut request, &state.states);
+        match counted {
+            Ok(next) => {
+                let mut response = Response::new(request)?;
+                response
+                    .create_output(COUNTER_OUTPUT, DataType::Fp32, &[1])?
+                    .write_fp32_vec(&[next])?;
+                response.send()?;
+            }
+            Err(error) => request.respond_error(&error.to_string())?,
+        }
+    }
+    Ok(())
+}
+
+/// The counter of the next request of the sequence: the input state plus one,
+/// written into the output state.
+fn count_one(request: &mut Request, states: &[triton_ng::StateConfig]) -> Result<f32, Error> {
+    let counter = states
+        .iter()
+        .find(|declared| declared.name() == COUNTER_OUT)
+        .ok_or("the model configuration declares no counter_out state")?;
+    let previous = request.get_input(COUNTER_IN)?.as_fp32_vec()?;
+    let previous = previous.first().ok_or("the counter state is empty")?;
+    let next = previous + 1.0;
+
+    let mut state = triton_ng::State::new(request, counter, &[1])?;
+    // Triton allocates the buffer of a state on demand, so the attributes are
+    // read after the write that asks for it. Its allocator hands out pinned
+    // host memory where it has room, so the buffer is host memory either way.
+    state.write_bytes(&next.to_ne_bytes())?;
+    let attributes = state.buffer_attributes()?;
+    if attributes.byte_size != 4 || matches!(attributes.memory_type, MemoryType::Gpu { .. }) {
+        return Err(format!(
+            "the state buffer is {:?} with {} bytes",
+            attributes.memory_type, attributes.byte_size
+        )
+        .into());
+    }
+    state.update()?;
+    Ok(next)
 }
 
 /// The policy the backend asks Triton for, `device-blocking` when the model

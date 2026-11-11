@@ -5,6 +5,8 @@
   "mnist_model": "mnist_onnx",
   "backend_model": "mnist",
   "stream_model": "mnist_stream",
+  "sequence_state_model": "sequence_state",
+  "sequence_state_other_model": "sequence_state_other",
   "input_name": "Input3",
   "output_name": "Plus214_Output_0",
   "backend_output_name": "DIGIT"

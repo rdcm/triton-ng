@@ -217,3 +217,89 @@ if step.last {
 
 The example model `mnist_steps` streams the number of every step of a request and reschedules it
 until it has made the `steps` the client asks for.
+
+## Sequence state
+
+A model with `sequence_batching` can keep state of its own per sequence, declared as an
+input/output pair:
+
+```protobuf
+sequence_batching {
+  state [
+    {
+      input_name: "counter_in"
+      output_name: "counter_out"
+      data_type: TYPE_FP32
+      dims: [ 1 ]
+      initial_state [
+        {
+          name: "counter"
+          data_type: TYPE_FP32
+          dims: [ 1 ]
+          zero_data: true
+        }
+      ]
+    }
+  ]
+}
+```
+
+Triton hands the input state of the sequence to every request as an input named `counter_in`, and
+the backend writes what the next request of the sequence should see through `State`, under
+`counter_out`:
+
+```rust ignore
+let previous = request.get_input("counter_in")?.as_fp32_vec()?;
+let mut state = State::new(&mut request, &counter, &[1])?;
+state.write_bytes(&(previous[0] + 1.0).to_ne_bytes())?;
+state.update()?;
+```
+
+- **The state belongs to the request.** Triton frees it with the request, there is no delete call,
+  and `State` borrows the request mutably for that reason: a state that is still held keeps the
+  request and its inputs out of reach, so using a state after its request is gone does not
+  compile. `update` consumes the state because Triton declares it invalid after the update.
+- **The state comes from the configuration.** `Model::sequence_states` reads the `state` entries
+  once, at model initialization, and `State::new` takes one of them plus the shape the request
+  needs: the datatype comes from the entry, and the shape has to have its dimensions, with the
+  ones the configuration declares fixed, and a positive value for the ones it declares dynamic as
+  -1. Triton writes whatever datatype and shape it is given into the metadata of the state without
+  comparing them with the configuration, so a shape that does not fit is refused before Triton
+  sees it.
+- **The entry belongs to the model of the request.** Each entry remembers the model it was read
+  from, and `State::new` compares it with the model of the request. Two models can declare the
+  same state name with different dimensions, and Triton would keep whatever the caller passes, so
+  a configuration of one model handed a request of another is refused.
+- **One state per name and sequence.** Triton keeps one state object per configured name, so a
+  second `State` for the same entry would be the same memory: the mutable borrow of the request is
+  what makes that impossible, since a request has one `State` at a time. The borrow takes the
+  inputs of the request with it, so no input can be shared while the state is alive.
+- **No shared input of the state.** An input shared before the state is created, with
+  `Input::share`, reads the memory of the request input, and Triton keeps the input state of the
+  sequence in exactly that memory. With `use_same_buffer_for_input_output` the output state is
+  the same memory as well, so writing it would change the bytes another request of the server
+  reads; without it, `update` hands the written memory over as the input state of the sequence
+  for the requests after it. `State::new` refuses the state while an input of that name is
+  shared, which the order of the calls makes enough: sharing more inputs needs a shared borrow of
+  the request, and the state holds it mutably.
+- **Writing the state.** `write_bytes` copies host memory into the buffer, which can be plain or
+  pinned, since Triton allocates through its pinned pool; it refuses a state Triton keeps in GPU
+  memory, see `use_growable_memory`. For those, `device_buffer` hands out the device address with
+  the device id and the size to fill from CUDA code, and `update_after_device_write` publishes
+  it. That call is `unsafe`: Triton does not check what the device wrote, so the backend promises
+  that every byte was written and that the writes are visible, for instance because its stream is
+  synchronized. `buffer_attributes` reads where Triton keeps the state without touching the data;
+  Triton allocates the buffer on demand, so the attributes are readable after the first write.
+- **No write, no update.** `update` fails when nothing was written, since Triton would hand the
+  buffer it allocated, holding whatever the allocator left in it, to the next request of the
+  sequence.
+- **Declare an `initial_state`.** Without one Triton allocates the memory of the state and does
+  not initialize it, so the first request of a sequence would read whatever is there.
+- **No update, no change.** A request that never calls `update` leaves the sequence where it was
+  and the next request sees the same input state.
+
+The example model `sequence_state` counts the requests of each sequence this way, and the
+integration test interleaves two sequences to show that each counts only its own. The model
+`sequence_state_other` declares the same state name with two dimensions, and the tests ask a
+request of one model for the state of the other and for the state of a shared input, both
+refused.
