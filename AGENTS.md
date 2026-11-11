@@ -72,6 +72,9 @@ Exceptions, where the name is taken by a more important public type:
 - `ResponseBody` holds the `TRITONBACKEND_Response` of both `Response` (the final one) and
   `StreamResponse` (one of a stream of a decoupled model): they build the response the same way
   and differ only in who owns them, a `Request` or a borrowed `ResponseSender`.
+- `RequestView` holds a `TRITONBACKEND_Request` a second time, read-only: `Request` owns the
+  request and answers it, the view is what a `BatchStrategy` reads while Triton still owns the
+  request and has not formed the batch.
 
 ## Tests
 

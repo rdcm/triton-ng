@@ -36,6 +36,7 @@ services:
       --load-model=cpu_parallel
       --load-model=host_policy_pinned
       --load-model=host_policy_unknown
+      --load-model=batch_strategy
       --trace-config=triton,file=/traces/trace.json
       --backend-config=custom_backend,greeting=hello
       --backend-config=custom_backend_device_blocking,greeting=hello
@@ -47,6 +48,12 @@ services:
       - ./target/traces:/traces
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend_device_blocking/libtriton_custom_backend_device_blocking.so
+      # The batching strategy of the `batch_strategy` model, which names it
+      # through `TRITON_BATCH_STRATEGY_PATH`. It is mounted outside the model
+      # repository so that nothing of the build lands in `models/`. `make
+      # build` has to run first: Docker creates a directory at a mount source
+      # that does not exist yet.
+      - ./target/release/libtriton_batch_strategy.so:/strategies/batchstrategy.so
     ports:
       - "8000:8000" # HTTP
       - "8001:8001" # gRPC

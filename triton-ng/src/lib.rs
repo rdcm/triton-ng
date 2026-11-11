@@ -17,6 +17,8 @@ mod backend_config;
 pub(crate) mod backend_state;
 #[path = "batch_statistics.rs"]
 pub(crate) mod batch_statistics;
+#[path = "batch_strategy.rs"]
+mod batch_strategy;
 #[path = "buffer_attributes.rs"]
 mod buffer_attributes;
 #[path = "buffers.rs"]
@@ -79,6 +81,8 @@ mod request;
 mod request_cancel;
 #[path = "request_release.rs"]
 pub(crate) mod request_release;
+#[path = "request_view.rs"]
+mod request_view;
 #[path = "response.rs"]
 mod response;
 #[path = "response_allocator.rs"]
@@ -106,6 +110,7 @@ pub use auto_complete_config::*;
 pub use backend::*;
 pub use backend_attributes::*;
 pub use backend_config::*;
+pub use batch_strategy::*;
 pub use buffer_attributes::*;
 pub use buffers::*;
 pub use custom_backend::*;
@@ -125,6 +130,7 @@ pub use output::*;
 pub use output_buffer::*;
 pub(crate) use raw_buffer::{RawBuffer, Sealed};
 pub use request::*;
+pub use request_view::*;
 pub use response::*;
 pub use response_sender::*;
 pub use server::*;
@@ -133,7 +139,7 @@ pub use stream_response::*;
 pub use trace::*;
 pub use types::*;
 
-pub use triton_ng_macros::backend;
+pub use triton_ng_macros::{backend, batch_strategy};
 
 /// The guides of the repository's `docs/` directory, one module per guide, as on GitHub.
 ///
@@ -197,6 +203,7 @@ pub mod __macro_support {
     use crate::auto_complete_config::AutoCompleteConfig;
     use crate::backend::Backend;
     use crate::backend_attribute::BackendAttribute;
+    use crate::batch_strategy::{BatchState, BatchStrategy};
     use crate::custom_backend::CustomBackend;
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
@@ -204,6 +211,7 @@ pub mod __macro_support {
     use crate::model_control::forbid_model_control;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
+    use crate::request_view::RequestView;
     use crate::response_allocator::ResponseAllocator;
     use std::ffi::c_void;
     use triton_ng_macros::triton_call;
@@ -423,6 +431,111 @@ pub mod __macro_support {
         }
 
         NULL_ERROR
+    }
+
+    /// TRITONBACKEND_ModelBatcherInitialize. Creates the strategy of the
+    /// model and leaves it where Triton hands it back to the batch calls.
+    pub unsafe fn batcher_initialize<S: BatchStrategy>(
+        batcher: *mut *mut c_void,
+        model: *mut c_void,
+    ) -> ErrorPtr {
+        if batcher.is_null() {
+            return make_internal_error("Triton passed no slot for the batcher");
+        }
+        let model = unsafe { self::model(model) };
+        into_error_ptr(catch(|| {
+            let strategy = std::sync::Arc::new(S::initialize(&model)?);
+            // SAFETY: the slot belongs to Triton and stays empty until it
+            // hands the batcher back to `batcher_finalize`.
+            unsafe { *batcher = Box::into_raw(Box::new(strategy)).cast() };
+            Ok(())
+        }))
+    }
+
+    /// TRITONBACKEND_ModelBatcherFinalize. Drops the strategy of the model;
+    /// the empty pointer of a strategy whose initialization failed is
+    /// nothing to drop.
+    pub unsafe fn batcher_finalize<S: BatchStrategy>(batcher: *mut c_void) -> ErrorPtr {
+        if batcher.is_null() {
+            return NULL_ERROR;
+        }
+        into_error_ptr(catch(|| {
+            // SAFETY: Triton owns the pointer and hands it back exactly once.
+            unsafe { drop(Box::from_raw(batcher as *mut std::sync::Arc<S>)) };
+            Ok(())
+        }))
+    }
+
+    /// TRITONBACKEND_ModelBatchInitialize. Starts the batch state of the
+    /// batch Triton is forming.
+    pub unsafe fn batch_initialize<S: BatchStrategy>(
+        batcher: *const c_void,
+        userp: *mut *mut c_void,
+    ) -> ErrorPtr {
+        if batcher.is_null() || userp.is_null() {
+            return make_internal_error("Triton passed no batcher or no slot for the batch state");
+        }
+        into_error_ptr(catch(|| {
+            // SAFETY: the batcher stays alive until `batcher_finalize`, which
+            // Triton calls after the last batch of the model is finalized.
+            let strategy = unsafe { &*(batcher as *const std::sync::Arc<S>) };
+            let state = BatchState {
+                strategy: std::sync::Arc::clone(strategy),
+                batch: strategy.batch(),
+            };
+            // SAFETY: the slot belongs to the payload Triton is forming and
+            // is handed back to `batch_finalize`.
+            unsafe { *userp = Box::into_raw(Box::new(state)).cast() };
+            Ok(())
+        }))
+    }
+
+    /// TRITONBACKEND_ModelBatchIncludeRequest. Asks the strategy whether the
+    /// request joins the batch. A batch without state, which is what a failed
+    /// `batch_initialize` leaves behind, takes no request.
+    pub unsafe fn batch_include<S: BatchStrategy>(
+        request: *mut c_void,
+        userp: *mut c_void,
+        should_include: *mut bool,
+    ) -> ErrorPtr {
+        if should_include.is_null() {
+            return make_internal_error("Triton passed no slot for should_include");
+        }
+        // SAFETY: Triton passes a valid pointer.
+        unsafe { *should_include = false };
+        if request.is_null() {
+            return make_internal_error("Triton passed no request to include");
+        }
+        if userp.is_null() {
+            // `batch_initialize` failed and logged why: the batch takes no
+            // request, without a line per request of the queue.
+            return NULL_ERROR;
+        }
+        into_error_ptr(catch(|| {
+            // SAFETY: the state is the one `batch_initialize` stored for this
+            // batch, and no one else uses it while Triton asks.
+            let state = unsafe { &mut *(userp as *mut BatchState<S>) };
+            let request =
+                RequestView::from_ptr(request as *mut triton_ng_sys::TRITONBACKEND_Request);
+            let include = state.strategy.include(&mut state.batch, &request)?;
+            // SAFETY: Triton passes a valid pointer.
+            unsafe { *should_include = include };
+            Ok(())
+        }))
+    }
+
+    /// TRITONBACKEND_ModelBatchFinalize. Drops the batch state; the empty
+    /// pointer of a batch whose initialization failed is nothing to drop.
+    pub unsafe fn batch_finalize<S: BatchStrategy>(userp: *mut c_void) -> ErrorPtr {
+        if userp.is_null() {
+            return NULL_ERROR;
+        }
+        into_error_ptr(catch(|| {
+            // SAFETY: the state comes from `batch_initialize` and is finalized
+            // once, before Triton hands the batch to a model instance.
+            unsafe { drop(Box::from_raw(userp as *mut BatchState<S>)) };
+            Ok(())
+        }))
     }
 
     /// Runs backend code, turning a panic into an error: unwinding across the
@@ -673,9 +786,11 @@ mod tests {
             BackendAttribute,
             ResponseFactory,
             Input<'static>,
+            Input<'static, RequestView<'static>>,
             Output<'static>,
             Trace<'static>,
-            RawBuffer
+            RawBuffer,
+            RequestView<'static>
         );
     }
 }

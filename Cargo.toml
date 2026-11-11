@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "benches",
     "example/app",
+    "example/batch-strategy",
     "example/custom-backend",
     "tools/gen-grpc-client",
     "triton-ng",

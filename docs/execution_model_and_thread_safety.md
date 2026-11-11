@@ -84,7 +84,8 @@ bounded by what Triton guarantees. Backend code only sees these types, never raw
 | `Response` | owns the response | deletes it unless sent; the request gets an error response | yes | no | |
 | `ResponseSender` | owns the request of a decoupled model | sends a final error response if no final flag was sent, releases the request | yes | no | |
 | `StreamResponse<'_>` | owns a not final response, borrows its `ResponseSender` mutably | deletes it unless sent; the stream goes on | yes | no | the stream cannot be finished while it lives |
-| `Input<'_>` | borrows from its `Request` | nothing | no | no | cannot outlive the request |
+| `Input<'a, P = Request>` | borrows from its `Request`, or from the `RequestView` of a batch strategy | nothing | no | no | cannot outlive the request; only `Input<'_, Request>` has `share` |
+| `RequestView<'_>` | borrows the request Triton is batching | nothing | no | no | read-only, answers nothing; never outlives the batch Triton is forming |
 | `SharedInput` | shares the right to answer and release its request | sends the final response held back for it, lets the request be released | yes | yes | a BLS input, see [Memory buffers](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md) |
 | `Output<'_>` | borrows from its `Response` | nothing | no | no | cannot be used after the response is sent |
 | `InferenceRequest` | owns the BLS request, its input buffers and its child trace | deletes them if it was never submitted | yes | no | Triton deletes it after a submit |
