@@ -75,10 +75,34 @@ that ends up on the default `cpu` name. A name Triton does not know gives an emp
 failure. The owned copy exposes its name with `HostPolicy::name`, one value with
 `HostPolicy::setting`, and every value with `HostPolicy::settings`.
 
-This reads the configured policy. It does not report or change the affinity of the thread, and it
-does not give access to the inputs Triton keeps per policy, which needs
-`TRITONBACKEND_InputPropertiesForHostPolicy` and `TRITONBACKEND_InputBufferForHostPolicy`, neither
-of them wrapped. `models/host_policy_pinned` and `models/host_policy_unknown` are the fixtures of
+The policy reports configuration, not actual thread affinity. To read the input storage selected
+for its name, use `Input::properties_for_host_policy`, `Input::buffer_for_host_policy` (one
+buffer by index), or `Input::as_bytes_for_host_policy` (the whole tensor). The same methods work
+on inputs borrowed from a batching strategy's `RequestView`.
+
+```rust ignore
+let state = ctx.instance_state::<Buffers>()?;
+let policy = state.host_policy.as_ref().ok_or("missing host policy")?;
+let input = request.get_input("Input3")?;
+let properties = input.properties_for_host_policy(policy.name())?;
+let bytes = input.as_bytes_for_host_policy(policy.name())?;
+```
+
+Properties own their name and shape, and both data methods return an owned `Vec<u8>`. The C
+pointers belong to the request and are copied while it is borrowed; no Triton-owned memory
+escapes. CPU and pinned CPU memory are supported; GPU data is rejected rather than dereferenced
+on the host. A buffer index is checked against the selected policy's buffer count before the
+C call. Invalid policy names containing NUL, invalid metadata, null nonempty buffers, size
+mismatches and unsupported memory types are rejected.
+
+In r25.09, `Input::Data`, `DataBufferForHostPolicy` and `DataBufferCountForHostPolicy` fall back
+to ordinary input storage if the requested policy has no data. An unknown or empty policy name
+therefore need not fail. These methods select existing data; they neither allocate a policy
+copy nor guarantee pinned memory or NUMA locality. The gRPC fixture tests this fallback,
+metadata, complete and per-buffer copies, invalid names and invalid indices. It does not
+prove allocation on a particular NUMA node or supply a distinct per-policy input copy.
+
+`models/host_policy_pinned` and `models/host_policy_unknown` are the fixtures of
 the integration test: the first selects the `pinned` policy `make docker-env-up` gives Triton as
 `--host-policy=pinned,cpu-cores=0-7`, the second names a policy Triton was not started with. Both
 need `SYS_NICE` and `IPC_LOCK` in the container: without them the core fails to reset the NUMA

@@ -1,7 +1,8 @@
-use crate::utils::{cstr_to_string, decode_le, decode_string};
+use crate::utils::{cstr_to_string, cstring_from_str, decode_le, decode_string};
 use crate::{CPU, CPU_PINNED, DataType, Error, RawBuffer, Request, SharedInput};
 use libc::c_void;
 use std::borrow::Cow;
+use std::ffi::CStr;
 use std::ptr;
 use std::slice;
 use triton_ng_macros::triton_call;
@@ -138,6 +139,8 @@ impl<'a, P> Input<'a, P> {
     }
 
     /// Name, datatype, shape and size of the input, see [`InputProperties`].
+    /// The result owns its name and shape. Fails on a Triton error or malformed
+    /// metadata, including a shape inconsistent with the fixed-size datatype.
     ///
     /// # Examples
     ///
@@ -145,34 +148,191 @@ impl<'a, P> Input<'a, P> {
     /// let shape = request.get_input("AUDIO")?.properties()?.shape;
     /// ```
     pub fn properties(&self) -> Result<InputProperties, Error> {
-        let mut name = std::ptr::null();
+        self.read_properties(None)
+    }
+
+    /// Metadata for the input data Triton selects for `host_policy_name`.
+    ///
+    /// Copies the name and shape out of the request; the result owns its data.
+    /// r25.09 falls back to the ordinary input when no data was supplied for
+    /// that policy, including an unknown name. This does not allocate a NUMA
+    /// copy or guarantee that the selected buffers are pinned host memory.
+    ///
+    /// Fails for a name containing NUL, a Triton error, or invalid metadata
+    /// (null name/shape, unknown datatype, negative dimensions or a byte size
+    /// inconsistent with a fixed-size datatype and shape).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let state = ctx.instance_state::<Buffers>()?;
+    /// let policy = state.host_policy.as_ref().ok_or("missing host policy")?.name();
+    /// let properties = request.get_input("AUDIO")?.properties_for_host_policy(policy)?;
+    /// ```
+    pub fn properties_for_host_policy(
+        &self,
+        host_policy_name: &str,
+    ) -> Result<InputProperties, Error> {
+        let policy = cstring_from_str(host_policy_name)?;
+        self.read_properties(Some(&policy))
+    }
+
+    /// Copies one buffer selected for `host_policy_name` into owned host bytes.
+    ///
+    /// `index` addresses a buffer, not a tensor element. CPU and pinned CPU
+    /// buffers are copied; GPU and unknown memory types are rejected. Triton
+    /// falls back to the ordinary input if this policy has no data. The result
+    /// holds no Triton pointer and can outlive the request.
+    ///
+    /// Fails for invalid metadata or policy names, an out-of-range index,
+    /// Triton errors, a null nonempty buffer, invalid sizes or non-host memory.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let first = request.get_input("AUDIO")?.buffer_for_host_policy("pinned", 0)?;
+    /// ```
+    pub fn buffer_for_host_policy(
+        &self,
+        host_policy_name: &str,
+        index: u32,
+    ) -> Result<Vec<u8>, Error> {
+        let policy = cstring_from_str(host_policy_name)?;
+        let properties = self.read_properties(Some(&policy))?;
+        let buffer = self.policy_buffer(&policy, &properties, index)?;
+        // SAFETY: Input::DataBufferForHostPolicy returns request-owned memory
+        // (r25.09 infer_request.cc). `self` keeps the request alive during the
+        // copy; no pointer or borrowed slice escapes this call.
+        Ok(unsafe { copy_host_buffers(&properties.name, buffer.len as u64, &[buffer]) }?)
+    }
+
+    /// Copies all buffers selected for `host_policy_name`, in order, into
+    /// owned host bytes. The result can outlive the request.
+    ///
+    /// CPU and pinned CPU buffers are supported. GPU memory is not copied to
+    /// the host. A policy without its own data uses the ordinary input; the
+    /// policy name alone does not guarantee pinned or NUMA-local allocation.
+    ///
+    /// Fails for invalid metadata or names, Triton errors, non-host buffers,
+    /// null nonempty buffers, invalid sizes or buffers whose total size does
+    /// not match the selected input's metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let state = ctx.instance_state::<Buffers>()?;
+    /// let policy = state.host_policy.as_ref().ok_or("missing host policy")?.name();
+    /// let bytes = request.get_input("AUDIO")?.as_bytes_for_host_policy(policy)?;
+    /// ```
+    pub fn as_bytes_for_host_policy(&self, host_policy_name: &str) -> Result<Vec<u8>, Error> {
+        let policy = cstring_from_str(host_policy_name)?;
+        let properties = self.read_properties(Some(&policy))?;
+        let buffers = (0..properties.buffer_count)
+            .map(|index| self.policy_buffer(&policy, &properties, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        // SAFETY: same request-owned buffers as buffer_for_host_policy; copy
+        // them while the input is borrowed, before the request can be released.
+        Ok(unsafe { copy_host_buffers(&properties.name, properties.byte_size, &buffers) }?)
+    }
+
+    /// Reads a policy buffer without exposing its pointer to backend code.
+    fn policy_buffer(
+        &self,
+        policy: &CStr,
+        properties: &InputProperties,
+        index: u32,
+    ) -> Result<RawBuffer, Error> {
+        if index >= properties.buffer_count {
+            return Err(format!(
+                "input '{}' has {} buffers, index {index} is out of range",
+                properties.name, properties.buffer_count
+            )
+            .into());
+        }
+        let mut buffer = ptr::null();
+        let mut byte_size = 0;
+        let mut memory_type = CPU;
+        let mut memory_type_id = 0;
+        triton_call!(triton_ng_sys::TRITONBACKEND_InputBufferForHostPolicy(
+            self.ptr,
+            policy.as_ptr(),
+            index,
+            &mut buffer,
+            &mut byte_size,
+            &mut memory_type,
+            &mut memory_type_id,
+        ))?;
+        if byte_size > properties.byte_size {
+            return Err(format!(
+                "input '{}' buffer {index} exceeds the input byte size",
+                properties.name
+            )
+            .into());
+        }
+        let len = usize::try_from(byte_size).map_err(|_| "input buffer size does not fit usize")?;
+        Ok(RawBuffer {
+            ptr: buffer.cast_mut(),
+            len,
+            memory_type,
+            memory_type_id,
+        })
+    }
+
+    /// Both C calls return pointers borrowed from the input, never allocations
+    /// owned by this wrapper (backend_model.cc, InputPropertiesForHostPolicy).
+    fn read_properties(&self, policy: Option<&CStr>) -> Result<InputProperties, Error> {
+        let mut name = ptr::null();
         let mut datatype = 0u32;
-        let mut shape_ptr: *const i64 = std::ptr::null();
+        let mut shape_ptr: *const i64 = ptr::null();
         let mut dims_count = 0u32;
         let mut byte_size = 0u64;
         let mut buffer_count = 0u32;
-
-        triton_call!(triton_ng_sys::TRITONBACKEND_InputProperties(
-            self.ptr,
-            &mut name,
-            &mut datatype,
-            &mut shape_ptr,
-            &mut dims_count,
-            &mut byte_size,
-            &mut buffer_count,
-        ))?;
-
+        if let Some(policy) = policy {
+            triton_call!(triton_ng_sys::TRITONBACKEND_InputPropertiesForHostPolicy(
+                self.ptr,
+                policy.as_ptr(),
+                &mut name,
+                &mut datatype,
+                &mut shape_ptr,
+                &mut dims_count,
+                &mut byte_size,
+                &mut buffer_count,
+            ))?;
+        } else {
+            triton_call!(triton_ng_sys::TRITONBACKEND_InputProperties(
+                self.ptr,
+                &mut name,
+                &mut datatype,
+                &mut shape_ptr,
+                &mut dims_count,
+                &mut byte_size,
+                &mut buffer_count,
+            ))?;
+        }
+        if name.is_null() {
+            return Err("Triton returned a null input name".into());
+        }
+        let rank = usize::try_from(dims_count).map_err(|_| "input rank does not fit usize")?;
+        if rank > (isize::MAX as usize) / size_of::<i64>() {
+            return Err("input shape exceeds Rust slice limits".into());
+        }
+        if rank != 0 && (shape_ptr.is_null() || !shape_ptr.is_aligned()) {
+            return Err("Triton returned a null or unaligned input shape".into());
+        }
+        // SAFETY: the C API borrows a name and `dims_count` dimensions from the
+        // request. Copy both while self keeps it alive, after checking null and
+        // slice layout. A rank-zero shape needs no pointer dereference.
         let name = unsafe { cstr_to_string(name) };
-
-        let shape = if shape_ptr.is_null() || dims_count == 0 {
+        let shape = if rank == 0 {
             Vec::new()
         } else {
-            unsafe { std::slice::from_raw_parts(shape_ptr, dims_count as usize).to_vec() }
+            unsafe { slice::from_raw_parts(shape_ptr, rank).to_vec() }
         };
-
+        let datatype = DataType::from_sys(datatype);
+        check_metadata(datatype, &shape, byte_size)?;
         Ok(InputProperties {
             name,
-            datatype: DataType::from_sys(datatype),
+            datatype,
             shape,
             dims_count,
             byte_size,
@@ -217,7 +377,8 @@ impl<'a> Input<'a, Request> {
 }
 
 #[derive(Debug)]
-/// What Triton knows about an input, from [`Input::properties`].
+/// Owned metadata from [`Input::properties`] or
+/// [`Input::properties_for_host_policy`].
 pub struct InputProperties {
     /// Name of the input.
     pub name: String,
@@ -233,6 +394,43 @@ pub struct InputProperties {
     pub buffer_count: u32,
 }
 
+/// Validates fixed-size tensor metadata without reaching any Triton symbols.
+fn check_metadata(datatype: DataType, shape: &[i64], byte_size: u64) -> Result<(), String> {
+    if datatype == DataType::Invalid {
+        return Err("Triton returned an unknown input datatype".into());
+    }
+    let mut elements = 1u64;
+    for &dim in shape {
+        let dim = u64::try_from(dim).map_err(|_| "input shape contains a negative dimension")?;
+        elements = elements
+            .checked_mul(dim)
+            .ok_or("input shape overflows u64")?;
+    }
+    if let Some(size) = datatype.element_size() {
+        let expected = elements
+            .checked_mul(size as u64)
+            .ok_or("input byte size overflows u64")?;
+        if expected != byte_size {
+            return Err(format!(
+                "input shape and datatype require {expected} bytes, got {byte_size}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Copies request-owned host buffers, including the single-buffer case.
+///
+/// # Safety
+/// Every nonempty nonnull host buffer must be readable for this call.
+unsafe fn copy_host_buffers(
+    name: &str,
+    byte_size: u64,
+    buffers: &[RawBuffer],
+) -> Result<Vec<u8>, String> {
+    Ok(unsafe { contiguous(name, byte_size, buffers) }?.into_owned())
+}
+
 /// The bytes of input `name` of `byte_size` bytes kept in `buffers`, borrowed
 /// when one buffer holds all of them. Empty buffers are skipped.
 ///
@@ -244,6 +442,15 @@ unsafe fn contiguous<'a>(
     byte_size: u64,
     buffers: &[RawBuffer],
 ) -> Result<Cow<'a, [u8]>, String> {
+    let total: u128 = buffers.iter().map(|buffer| buffer.len as u128).sum();
+    if total != u128::from(byte_size) {
+        return Err(format!(
+            "input '{name}' has {total} bytes in its buffers, expected {byte_size}"
+        ));
+    }
+    if total > isize::MAX as u128 {
+        return Err(format!("input '{name}' exceeds Rust slice limits"));
+    }
     let mut parts: Vec<&'a [u8]> = Vec::with_capacity(buffers.len());
     for (index, buffer) in buffers.iter().enumerate() {
         if buffer.len == 0 {
@@ -261,13 +468,6 @@ unsafe fn contiguous<'a>(
         parts.push(unsafe { slice::from_raw_parts(buffer.ptr.cast::<u8>(), buffer.len) });
     }
 
-    let total: u128 = parts.iter().map(|part| part.len() as u128).sum();
-    if total != u128::from(byte_size) {
-        return Err(format!(
-            "input '{name}' has {total} bytes in its buffers, expected {byte_size}"
-        ));
-    }
-
     Ok(match parts.as_slice() {
         [] => Cow::Borrowed(&[]),
         [part] => Cow::Borrowed(part),
@@ -277,7 +477,8 @@ unsafe fn contiguous<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::contiguous;
+    use super::{check_metadata, contiguous, copy_host_buffers};
+    use crate::DataType;
     use crate::{CPU, CPU_PINNED, GPU, RawBuffer};
     use std::borrow::Cow;
 
@@ -362,6 +563,15 @@ mod tests {
             ..cpu(&data)
         };
 
+        let unknown = RawBuffer {
+            memory_type: 42,
+            ..cpu(&data)
+        };
+        assert!(
+            unsafe { copy_host_buffers("x", 4, &[unknown]) }
+                .unwrap_err()
+                .contains("host memory")
+        );
         assert!(
             unsafe { contiguous("x", 4, &[gpu]) }
                 .unwrap_err()
@@ -371,6 +581,56 @@ mod tests {
             unsafe { contiguous("x", 4, &[null]) }
                 .unwrap_err()
                 .contains("null")
+        );
+    }
+    #[test]
+    fn policy_copies_are_owned_for_single_and_split_host_buffers() {
+        let mut first = [1, 2];
+        let second = [3, 4];
+        let single = unsafe { copy_host_buffers("x", 2, &[cpu(&first)]) }.unwrap();
+        let split = unsafe {
+            copy_host_buffers(
+                "x",
+                4,
+                &[
+                    cpu(&first),
+                    RawBuffer {
+                        memory_type: CPU_PINNED,
+                        ..cpu(&second)
+                    },
+                ],
+            )
+        }
+        .unwrap();
+        first.fill(9);
+        assert_eq!(single, [1, 2]);
+        assert_eq!(split, [1, 2, 3, 4]);
+        assert!(
+            unsafe { copy_host_buffers("x", 0, &[]) }
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn invalid_policy_metadata_and_overflow_are_refused() {
+        assert!(check_metadata(DataType::Fp32, &[1, 2], 8).is_ok());
+        assert!(check_metadata(DataType::Fp32, &[], 4).is_ok());
+        assert!(check_metadata(DataType::Fp32, &[0], 0).is_ok());
+        assert!(check_metadata(DataType::Bytes, &[2], 19).is_ok());
+        assert!(check_metadata(DataType::Invalid, &[1], 4).is_err());
+        assert!(check_metadata(DataType::Fp32, &[-1], 4).is_err());
+        assert!(check_metadata(DataType::Fp32, &[1], 8).is_err());
+        assert!(check_metadata(DataType::Fp64, &[i64::MAX, i64::MAX], 0).is_err());
+        assert!(check_metadata(DataType::Fp64, &[i64::MAX], 0).is_err());
+        let oversized = RawBuffer {
+            len: (isize::MAX as usize) + 1,
+            ..empty()
+        };
+        assert!(
+            unsafe { copy_host_buffers("x", oversized.len as u64, &[oversized]) }
+                .unwrap_err()
+                .contains("slice limits")
         );
     }
 }
