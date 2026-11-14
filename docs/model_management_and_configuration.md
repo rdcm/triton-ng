@@ -100,7 +100,9 @@ to ordinary input storage if the requested policy has no data. An unknown or emp
 therefore need not fail. These methods select existing data; they neither allocate a policy
 copy nor guarantee pinned memory or NUMA locality. The gRPC fixture tests this fallback,
 metadata, complete and per-buffer copies, invalid names and invalid indices. It does not
-prove allocation on a particular NUMA node or supply a distinct per-policy input copy.
+prove allocation on a particular NUMA node. The BLS mutation tests additionally supply a distinct,
+split per-policy input through `InferenceRequest::append_input_buffer_with_host_policy` and
+`append_input_data_with_host_policy` and verify policy selection separately from fallback.
 
 `models/host_policy_pinned` and `models/host_policy_unknown` are the fixtures of
 the integration test: the first selects the `pinned` policy `make docker-env-up` gives Triton as
