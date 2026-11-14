@@ -70,5 +70,6 @@ download-model:
 	mkdir -p models/cpu_parallel/1
 	mkdir -p models/host_policy_pinned/1
 	mkdir -p models/host_policy_unknown/1
+	mkdir -p $(addsuffix /1,$(wildcard models/batch_strategy*))
 	wget https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx
 	mv mnist-12.onnx models/mnist_onnx/1/model.onnx

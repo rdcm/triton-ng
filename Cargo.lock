@@ -1767,6 +1767,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "triton-batch-strategy"
+version = "0.1.0"
+dependencies = [
+ "triton-ng",
+]
+
+[[package]]
 name = "triton-custom-backend"
 version = "0.1.0"
 dependencies = [

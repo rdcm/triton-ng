@@ -2393,3 +2393,238 @@ async fn batched_sequence_state_preserves_its_batch_dimension() -> Result<()> {
     }
     Ok(())
 }
+
+/// The value Triton reports for the metric `name` of `model`, summed over its
+/// versions, `None` when the endpoint has no such series.
+fn model_metric(metrics: &str, name: &str, model: &str) -> Result<Option<f64>> {
+    let label = format!("model=\"{model}\"");
+    let mut total: Option<f64> = None;
+    for line in metrics.lines() {
+        let Some((series, value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let Some(rest) = series.strip_prefix(name) else {
+            continue;
+        };
+        if !rest.starts_with('{') || !rest.contains(&label) {
+            continue;
+        }
+        let value: f64 = value.trim().parse().context(format!("{name} is {value}"))?;
+        *total.get_or_insert(0.0) += value;
+    }
+    Ok(total)
+}
+
+/// Waits until the metric `name` of `model` reports a value `done` accepts.
+async fn wait_for_metric(
+    config: &Config,
+    name: &str,
+    model: &str,
+    done: impl Fn(f64) -> bool,
+) -> Result<f64> {
+    for _ in 0..500 {
+        let metrics = scrape_metrics(&config.metrics_address)?;
+        if let Some(value) = model_metric(&metrics, name, model)?
+            && done(value)
+        {
+            return Ok(value);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("{name} of {model} never reached the value the test waits for")
+}
+
+/// The batching strategy of the `batch_strategy` fixture groups the requests of
+/// a batch by their `batch_key`, and Triton lets it look no further than the
+/// request that ended the batch.
+#[tokio::test]
+async fn custom_batching_strategy_groups_the_requests_of_a_batch() -> Result<()> {
+    let config = Config::load()?;
+    let model = config.batch_strategy_model.clone();
+    let output = config.backend_output_name.clone();
+
+    // Holds the only instance of the model, so that the four requests below
+    // queue up behind it and the batches that form afterwards are the ones the
+    // strategy decided on.
+    let mut holder = tokio::task::JoinSet::new();
+    {
+        let url = config.triton_url.clone();
+        let model = model.clone();
+        let output = output.clone();
+        let input = config.mnist_blank_input();
+        holder.spawn(async move {
+            Sut::new(&url)
+                .await?
+                .infer_with_parameters(
+                    &model,
+                    vec![input],
+                    &[&output],
+                    HashMap::from([("hold_micros".to_string(), Parameter::Int(1_500_000))]),
+                )
+                .await
+        });
+    }
+    wait_for_metric(&config, "triton_ng_example_held_requests", &model, |held| {
+        held >= 1.0
+    })
+    .await?;
+
+    let mut clients = tokio::task::JoinSet::new();
+    for (index, key) in ["A", "A", "B", "A"].into_iter().enumerate() {
+        let url = config.triton_url.clone();
+        let request_model = model.clone();
+        let output = output.clone();
+        let input = config.mnist_blank_input();
+        let request_id = (index + 1).to_string();
+        clients.spawn({
+            let request_id = request_id.clone();
+            async move {
+                let parameters = HashMap::from([
+                    ("batch_key".to_string(), Parameter::String(key.to_string())),
+                    ("echo_batch_keys".to_string(), Parameter::Bool(true)),
+                ]);
+                let response = Sut::new(&url)
+                    .await?
+                    .infer_with_id_and_parameters(
+                        &request_model,
+                        vec![input],
+                        &[&output],
+                        &request_id,
+                        parameters,
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>((request_id, response))
+            }
+        });
+        // The next request is sent only once this one is in the queue, so
+        // Triton queues them in the order of this loop.
+        let queued = f64::from(u32::try_from(index + 1)?);
+        wait_for_metric(
+            &config,
+            "nv_inference_pending_request_count",
+            &model,
+            |pending| pending >= queued,
+        )
+        .await?;
+    }
+
+    let mut batches = HashMap::new();
+    while let Some(result) = clients.join_next().await {
+        let (request_id, result) = result??;
+        match result.parameters.get("batch_keys") {
+            Some(Parameter::String(keys)) => {
+                batches.insert(request_id, keys.clone());
+            }
+            other => anyhow::bail!("request {request_id} answered without batch keys: {other:?}"),
+        }
+    }
+    while let Some(result) = holder.join_next().await {
+        result??;
+    }
+
+    // The first batch holds the two A requests and stops at the B, which then
+    // heads the second batch: a strategy that could look past the B would have
+    // put all three A requests into the first batch.
+    for (request_id, keys) in [("1", "A,A"), ("2", "A,A"), ("3", "B"), ("4", "A")] {
+        assert_eq!(
+            batches.get(request_id).map(String::as_str),
+            Some(keys),
+            "request {request_id}"
+        );
+    }
+    Ok(())
+}
+
+/// Waits for asynchronous model destruction and checks both values' drop counts.
+async fn wait_for_strategy_cleanup(config: &Config, model: &str) -> Result<()> {
+    for _ in 0..100 {
+        let events =
+            std::fs::read_to_string(config.trace_dir().join("batch_strategy_lifecycle.log"))?;
+        let count = |kind: &str| {
+            events
+                .lines()
+                .filter(|line| *line == format!("{model} {kind}"))
+                .count()
+        };
+        if count("strategy_created") > 0
+            && count("strategy_created") == count("strategy_dropped")
+            && count("batch_created") == count("batch_dropped")
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("batch or strategy of {model} was not released")
+}
+
+#[tokio::test]
+async fn custom_batching_releases_unfinished_batches_on_repeated_unload() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let model = "batch_strategy_lifecycle";
+    // Loading starts an empty batch. Unload without sending a request: the core
+    // omits ModelBatchFinalize for precisely this abandoned payload.
+    for _ in 0..3 {
+        sut.repository_model_load(model).await?;
+        sut.repository_model_unload(model).await?;
+        wait_for_strategy_cleanup(&config, model).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_batching_contains_failures_and_bounds_head_of_queue_stalls() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for mode in ["init_error", "init_panic"] {
+        let model = format!("batch_strategy_{mode}");
+        assert!(
+            sut.repository_model_load(&model).await.is_err(),
+            "{mode} unexpectedly loaded"
+        );
+        // r25.09 retains the failed version's reason even after an unload.
+        // These fixtures succeed on the next initialization, so recover that
+        // version before unloading it and restoring strict server readiness.
+        sut.repository_model_load(&model).await?;
+        sut.repository_model_unload(&model).await?;
+        wait_for_strategy_cleanup(&config, &model).await?;
+        assert!(sut.server_live().await?);
+    }
+    for mode in [
+        "batch_panic",
+        "include_error",
+        "include_panic",
+        "refuse",
+        "drop_panic",
+    ] {
+        let model = format!("batch_strategy_{mode}");
+        sut.repository_model_load(&model).await?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sut.infer_with_parameters(
+                &model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([("echo_batch_keys".to_string(), Parameter::Bool(true))]),
+            ),
+        )
+        .await
+        .context("strategy stalled past its queue timeout")?;
+        if mode == "drop_panic" {
+            result?;
+        } else {
+            let error = result
+                .err()
+                .context("a refusing strategy answered successfully")?;
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("timeout") || message.contains("expired"),
+                "{mode}: {message}"
+            );
+        }
+        sut.repository_model_unload(&model).await?;
+        wait_for_strategy_cleanup(&config, &model).await?;
+        assert!(sut.server_live().await?);
+    }
+    Ok(())
+}

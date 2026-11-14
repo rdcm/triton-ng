@@ -17,6 +17,8 @@ mod backend_config;
 pub(crate) mod backend_state;
 #[path = "batch_statistics.rs"]
 pub(crate) mod batch_statistics;
+#[path = "batch_strategy.rs"]
+mod batch_strategy;
 #[path = "buffer_attributes.rs"]
 mod buffer_attributes;
 #[path = "buffers.rs"]
@@ -79,6 +81,8 @@ mod request;
 mod request_cancel;
 #[path = "request_release.rs"]
 pub(crate) mod request_release;
+#[path = "request_view.rs"]
+mod request_view;
 #[path = "response.rs"]
 mod response;
 #[path = "response_allocator.rs"]
@@ -108,6 +112,7 @@ pub use auto_complete_config::*;
 pub use backend::*;
 pub use backend_attributes::*;
 pub use backend_config::*;
+pub use batch_strategy::*;
 pub use buffer_attributes::*;
 pub use buffers::*;
 pub use custom_backend::*;
@@ -127,6 +132,7 @@ pub use output::*;
 pub use output_buffer::*;
 pub(crate) use raw_buffer::{RawBuffer, Sealed};
 pub use request::*;
+pub use request_view::*;
 pub use response::*;
 pub use response_sender::*;
 pub use server::*;
@@ -136,7 +142,7 @@ pub use stream_response::*;
 pub use trace::*;
 pub use types::*;
 
-pub use triton_ng_macros::backend;
+pub use triton_ng_macros::{backend, batch_strategy};
 
 /// The guides of the repository's `docs/` directory, one module per guide, as on GitHub.
 ///
@@ -200,6 +206,7 @@ pub mod __macro_support {
     use crate::auto_complete_config::AutoCompleteConfig;
     use crate::backend::Backend;
     use crate::backend_attribute::BackendAttribute;
+    use crate::batch_strategy::{BatchState, BatchStrategy, Protected, REGISTRY};
     use crate::custom_backend::CustomBackend;
     use crate::error::{Error, ErrorCode, TritonError};
     use crate::executor::InstanceExecutor;
@@ -207,6 +214,7 @@ pub mod __macro_support {
     use crate::model_control::forbid_model_control;
     use crate::model_instance::ModelInstance;
     use crate::request::Request;
+    use crate::request_view::RequestView;
     use crate::response_allocator::ResponseAllocator;
     use std::ffi::c_void;
     use triton_ng_macros::triton_call;
@@ -426,6 +434,121 @@ pub mod __macro_support {
         }
 
         NULL_ERROR
+    }
+
+    /// TRITONBACKEND_ModelBatcherInitialize. Creates the strategy of the
+    /// model and leaves it where Triton hands it back to the batch calls.
+    pub unsafe fn batcher_initialize<S: BatchStrategy>(
+        batcher: *mut *mut c_void,
+        model: *mut c_void,
+    ) -> ErrorPtr {
+        if batcher.is_null() {
+            return make_internal_error("Triton passed no slot for the batcher");
+        }
+        // SAFETY: Triton owns the output slot. Clear it before fallible work,
+        // including a panic in the user initializer.
+        unsafe { *batcher = std::ptr::null_mut() };
+        if model.is_null() {
+            return make_internal_error("Triton passed no model");
+        }
+        let model = unsafe { self::model(model) };
+        into_error_ptr(catch(|| {
+            let strategy = std::sync::Arc::new(Protected::new(S::initialize(&model)?));
+            let token = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(0, strategy.clone())?;
+            // Tokens are opaque C void* values, never dereferenced by Rust.
+            unsafe { *batcher = token as *mut c_void };
+            Ok(())
+        }))
+    }
+
+    /// Retires the batcher and every unfinished batch. In-flight callbacks
+    /// retain their Arc; values are destroyed outside the registry lock.
+    pub unsafe fn batcher_finalize<S: BatchStrategy>(batcher: *mut c_void) -> ErrorPtr {
+        into_error_ptr(catch(|| {
+            let retired = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(batcher as usize);
+            drop(retired);
+            Ok(())
+        }))
+    }
+
+    /// Starts a batch. The batcher token may already be retired: r25.09 calls
+    /// batcher finalize before joining the scheduler (backend_model.cc). No
+    /// callback dereferences that token or a freed Box.
+    pub unsafe fn batch_initialize<S: BatchStrategy>(
+        batcher: *const c_void,
+        userp: *mut *mut c_void,
+    ) -> ErrorPtr {
+        if userp.is_null() {
+            return make_internal_error("Triton passed no batch-state slot");
+        }
+        // SAFETY: Triton owns this output slot; a failed callback leaves it empty.
+        unsafe { *userp = std::ptr::null_mut() };
+        into_error_ptr(catch(|| {
+            let strategy = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get::<Protected<S>>(batcher as usize)
+                .ok_or("batcher has been finalized")?;
+            let batch = Protected::new(strategy.get()?.batch());
+            let state = std::sync::Arc::new(std::sync::Mutex::new(BatchState { strategy, batch }));
+            // Recheck under the same lock as removal: batch() may have raced
+            // finalization, in which case the new state is dropped locally.
+            let token = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(batcher as usize, state.clone())?;
+            unsafe { *userp = token as *mut c_void };
+            Ok(())
+        }))
+    }
+
+    /// Asks whether a request joins the batch. Failure leaves the decision
+    /// false and retains mutations already made by the strategy.
+    pub unsafe fn batch_include<S: BatchStrategy>(
+        request: *mut c_void,
+        userp: *mut c_void,
+        should_include: *mut bool,
+    ) -> ErrorPtr {
+        if should_include.is_null() {
+            return make_internal_error("Triton passed no decision slot");
+        }
+        unsafe { *should_include = false };
+        if request.is_null() {
+            return make_internal_error("Triton passed no request to include");
+        }
+        into_error_ptr(catch(|| {
+            let state = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get::<std::sync::Mutex<BatchState<S>>>(userp as usize);
+            let Some(state) = state else {
+                return Ok(());
+            };
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let request =
+                RequestView::from_ptr(request as *mut triton_ng_sys::TRITONBACKEND_Request);
+            let include = state.include(&request)?;
+            unsafe { *should_include = include };
+            Ok(())
+        }))
+    }
+
+    /// Drops a batch, or does nothing if batcher finalization already retired it.
+    pub unsafe fn batch_finalize<S: BatchStrategy>(userp: *mut c_void) -> ErrorPtr {
+        into_error_ptr(catch(|| {
+            let retired = REGISTRY
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(userp as usize);
+            drop(retired);
+            Ok(())
+        }))
     }
 
     /// Runs backend code, turning a panic into an error: unwinding across the
@@ -676,9 +799,11 @@ mod tests {
             BackendAttribute,
             ResponseFactory,
             Input<'static>,
+            Input<'static, RequestView<'static>>,
             Output<'static>,
             Trace<'static>,
-            RawBuffer
+            RawBuffer,
+            RequestView<'static>
         );
     }
 }

@@ -59,6 +59,94 @@ triton-ng 0.1 and 0.2 ran every batch on a tokio runtime per instance and return
 at once. The model parameters `worker_threads` and `max_batches_in_flight` of those versions are
 gone; a model that still sets them fails to load with an error that says so.
 
+## Custom batching
+
+A model that sets `dynamic_batching` can leave the choice of what forms a batch to a library of
+its own. Triton loads the library at model load, then asks it about each queued request in turn,
+oldest first. It may start a batch, abandon it and start the same one again before a batch is
+handed to a model instance. The model names the library with the `TRITON_BATCH_STRATEGY_PATH`
+config parameter, or Triton finds a `batchstrategy.so` next to the version directory, next to the
+config, or next to the backend library; a model with `sequence_batching` cannot use one.
+
+A strategy in triton-ng is an `impl BatchStrategy` with the `#[triton_ng::batch_strategy]`
+attribute in a `cdylib` of its own: the attribute exports the five `TRITONBACKEND_ModelBatch*`
+entry points Triton looks up, and the crate name decides the name of the shared library.
+
+```rust ignore
+struct ByKey;
+
+struct Batch {
+    started: bool,
+    key: Option<String>,
+}
+
+#[triton_ng::batch_strategy]
+impl BatchStrategy for ByKey {
+    type Batch = Batch;
+
+    fn initialize(model: &Model) -> Result<Self, Error> {
+        Ok(Self)
+    }
+
+    fn batch(&self) -> Batch {
+        Batch { started: false, key: None }
+    }
+
+    fn include(&self, batch: &mut Batch, request: &RequestView<'_>) -> Result<bool, Error> {
+        let key = match request.parameter("batch_key")? {
+            Some(Parameter::String(key)) => Some(key),
+            _ => None,
+        };
+        if !batch.started {
+            // The request at the head of the queue joins the batch whatever
+            // its key: a batch needs its head.
+            batch.started = true;
+            batch.key = key;
+            return Ok(true);
+        }
+        Ok(key == batch.key)
+    }
+}
+```
+
+What the callbacks get is what matters for a strategy that works:
+
+- `include` reads the queued request through `RequestView`: ID, correlation ID, flags, timeout,
+  input and output names, parameters and inputs. It cannot answer the request, and an `Input`
+  taken from it has no `share`: Triton hands the request to `model_instance_execute` after the
+  batch is formed.
+- Answering `false` ends the batch before that request. The request stays in the queue and can
+  head the next batch, and every request behind it waits with it: a strategy never looks past
+  the request that ended a batch.
+- The request at the head of the queue has to join the batch. Answering `false` for it forms a
+  batch of no requests, Triton asks again, and nothing moves. An `include` that fails counts as
+  `false`. Only a timeout takes a request out of the queue, the one the client set or the
+  `default_queue_policy` of the model, so a model that configures neither stays stalled.
+- The batch state a strategy keeps is dropped when the batch is handed to a model instance, so
+  a strategy never sees how a batch turned out. What it needs to remember across batches is in
+  the strategy itself, behind the `&self` of `include`.
+- An error or panic from `include` excludes that request but does not roll back mutations
+  already made to the batch. Subsequent callbacks see the partially modified state. Validate
+  fallible inputs before committing changes when rollback is needed.
+- On r25.09, `TritonModel::~TritonModel` calls batcher finalize before stopping the scheduler,
+  and an abandoned payload can miss batch finalize (`backend_model.cc`, `payload.cc`). The
+  wrapper uses opaque, never-reused tokens in a synchronized registry. Batcher finalize
+  atomically retires the strategy and all its batches, including unfinished ones; late
+  callbacks find no value, and callbacks already running keep an `Arc` until they return.
+  User destructors run outside the registry lock. Each destructor panic is contained and
+  logged independently, so it cannot prevent cleanup of the other values.
+- The registry protects Rust values, not the core's function pointers or library mapping.
+  r25.09 also calls `ClearHandles`/`dlclose` before joining the scheduler. Do not unload a
+  strategy library concurrently with an active scheduler callback: stop producers and drain
+  requests first. Fully concurrent library unload requires a core fix that joins the
+  scheduler before clearing its callback pointers and closing the library. The unload tests
+  exercise idle models, not arbitrary concurrent library unmapping.
+
+The `example/batch-strategy` crate is the strategy of the `batch_strategy` fixture model, and
+its integration test reads back the batches it formed from the response parameters of the
+backend. `make build` builds the library and `docker-compose.yml` mounts it into the container,
+where the config of the fixture names it through `TRITON_BATCH_STRATEGY_PATH`.
+
 ## Tuning: `instance_group` count
 
 By default the number of batches a model works on at once is the number of its instances;
