@@ -59,3 +59,6 @@ parameters: {
 }
 
 parameters: { key: "strategy_failure" value: { string_value: "lifecycle" } }
+
+# The test fixture is selected once at model initialization.
+parameters: { key: "fixture" value: { string_value: "batching" } }

@@ -25,6 +25,28 @@ services:
       --log-verbose=1
       --model-control-mode=explicit
       --load-model=mnist
+      --load-model=fixture_errors
+      --load-model=fixture_cancellation
+      --load-model=fixture_tracing
+      --load-model=fixture_bls_streaming
+      --load-model=fixture_sender_refusal
+      --load-model=fixture_shared_inputs
+      --load-model=fixture_response_statistics
+      --load-model=fixture_model_control
+      --load-model=fixture_reschedule_refusal
+      --load-model=fixture_backend_config
+      --load-model=fixture_bls_mutation
+      --load-model=fixture_policy_append
+      --load-model=fixture_metadata
+      --load-model=fixture_backend_state
+      --load-model=fixture_memory_buffers
+      --load-model=fixture_backend_state_other
+      --load-model=host_policy_default
+      --load-model=host_policy_batching
+      --load-model=minimal_backend
+      --load-model=minimal_batching
+      --load-model=batch_strategy_example
+      --load-model=minimal_backend_target
       --load-model=mnist_onnx
       --load-model=identity_gpu
       --load-model=identity_forward
@@ -47,6 +69,8 @@ services:
       --host-policy=pinned,cpu-cores=0-7
       --host-policy=cpu,cpu-cores=0-7
     volumes:
+      - ./target/release/libtriton_example_batch_strategy.so:/strategies/example-batchstrategy.so
+      - ./target/release/libtriton_minimal_backend.so:/opt/tritonserver/backends/minimal_backend/libtriton_minimal_backend.so
       - ./models:/models
       - ./target/traces:/traces
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so

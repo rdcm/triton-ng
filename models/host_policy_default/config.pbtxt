@@ -1,0 +1,15 @@
+name: "host_policy_default"
+backend: "custom_backend"
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
+
+# The test fixture is selected once at model initialization.
+parameters: { key: "fixture" value: { string_value: "host_policy" } }

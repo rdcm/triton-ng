@@ -143,7 +143,7 @@ without reporting anything, so there is nothing to check before reporting.
 
 The name reaches the trace file as a JSON string the collector writes without escaping it, so
 `report_activity` refuses a name with a double quote, a backslash, a NUL byte or any other control
-character, and reports `INVALID_ARG` without recording anything. The example backend reports the
+character, and reports `INVALID_ARG` without recording anything. The test backend reports the
 activity a request names in its `report_activity` parameter, and the integration test checks that
 the trace file holds JSON and places the activity between the two ends of the request.
 
@@ -180,8 +180,9 @@ unknown model fails `InferenceRequest::new` before there is a trace; a model tha
 unloading, a full queue, a missing correlation ID of a sequence model, a timeout in the queue, a
 failed execution and a cancellation all fail after Triton took the trace, and Triton releases it.
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) makes every BLS call to
-`mnist_onnx` a child of its request. With the `echo_metadata` parameter it answers with the
-metadata of the request in response parameters, and with `forward_metadata` it calls itself over
-BLS with metadata derived from the request and passes the echo on. The integration tests trace
-`mnist` into `target/traces` (see `docker-compose.yml`) and look for the child traces there.
+The [`tracing` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/tracing.rs)
+exercises custom activities and a parent answered before its traced BLS call is released. The
+[`metadata` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/metadata.rs)
+reads client metadata and forwards derived metadata through a BLS call to its own model.
+Tests explicitly select `fixture_tracing` or `fixture_metadata`; trace files are written to
+`target/traces` by the root Compose service.

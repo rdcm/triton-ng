@@ -28,6 +28,13 @@ impl Config {
         serde_json::from_str(&content).context("Failed to parse test config")
     }
 
+    /// Explicit feature fixture for a test or group; no parameter-based routing.
+    pub fn fixture(name: &str) -> Result<Self> {
+        let mut config = Self::load()?;
+        config.backend_model = format!("fixture_{name}");
+        Ok(config)
+    }
+
     pub fn trace_dir(&self) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&self.trace_dir)
     }

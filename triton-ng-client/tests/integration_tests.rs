@@ -120,7 +120,16 @@ async fn custom_backend_reports_its_requests_and_batches_to_the_statistics() -> 
 
     infer_digit(&sut, &config).await?;
 
-    let (requests, batches) = backend_statistics(&sut, &config).await?;
+    // Sending the response can wake the client before execute returns and
+    // reports its batch statistics. Wait for the report, not another inference.
+    let (mut requests, mut batches) = backend_statistics(&sut, &config).await?;
+    for _ in 0..100 {
+        if requests > requests_before && batches > batches_before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        (requests, batches) = backend_statistics(&sut, &config).await?;
+    }
     assert!(
         requests > requests_before,
         "{requests} <= {requests_before}"
@@ -253,7 +262,7 @@ async fn mnist_onnx_inference_returns_ten_class_scores() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_reports_the_response_statistics_it_enables() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("response_statistics")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     // A response the backend does not opt in for is not recorded.
@@ -291,7 +300,7 @@ async fn custom_backend_reports_the_response_statistics_it_enables() -> Result<(
 
 #[tokio::test]
 async fn response_statistics_count_a_response_enabled_twice_once() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("response_statistics")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let before = sut.response_statistics(&config.backend_model).await?;
@@ -322,7 +331,7 @@ async fn response_statistics_count_a_response_enabled_twice_once() -> Result<()>
 
 #[tokio::test]
 async fn response_statistics_count_a_failed_response() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("response_statistics")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let (failed_before, _) = sut
@@ -486,7 +495,7 @@ async fn wait_for_backend_counters(
 
 #[tokio::test]
 async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("cancellation")?;
     let sut = Sut::new(&config.triton_url).await?;
     let (_, cancelled_before) = backend_counters(&sut, &config).await?;
     let (_, statistics_before) = sut
@@ -515,7 +524,7 @@ async fn custom_backend_answers_cancelled_request_as_cancelled() -> Result<()> {
 }
 
 async fn hold_request_until_cancelled() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("cancellation")?;
     let sut = Sut::new(&config.triton_url).await?;
     sut.infer_with_parameters(
         &config.backend_model,
@@ -576,7 +585,7 @@ async fn infer_digit(sut: &Sut, config: &Config) -> Result<i32> {
 
 #[tokio::test]
 async fn custom_backend_answers_from_cached_ram_buffers() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -593,7 +602,7 @@ async fn custom_backend_answers_from_cached_ram_buffers() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_answers_from_cached_pinned_buffers() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -610,7 +619,7 @@ async fn custom_backend_answers_from_cached_pinned_buffers() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_reuses_cached_gpu_output_buffers() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -627,7 +636,7 @@ async fn custom_backend_reuses_cached_gpu_output_buffers() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_passes_a_gpu_output_as_the_input_of_two_requests() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -654,7 +663,7 @@ async fn custom_backend_passes_a_gpu_output_as_the_input_of_two_requests() -> Re
 
 #[tokio::test]
 async fn custom_backend_passes_a_gpu_input_of_its_request_on_without_a_copy() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -686,7 +695,7 @@ async fn infer_digit_with_shared_input(sut: &Sut, config: &Config, keep: bool) -
 }
 
 async fn infer_digit_keeping_shared_input() -> Result<i32> {
-    let config = Config::load()?;
+    let config = Config::fixture("shared_inputs")?;
     let sut = Sut::new(&config.triton_url).await?;
     infer_digit_with_shared_input(&sut, &config, true).await
 }
@@ -712,7 +721,7 @@ async fn wait_for_kept_inputs(sut: &Sut, config: &Config) -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_passes_an_input_of_its_request_on_without_a_copy() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("shared_inputs")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -724,7 +733,7 @@ async fn custom_backend_passes_an_input_of_its_request_on_without_a_copy() -> Re
 
 #[tokio::test]
 async fn response_is_held_back_until_the_shared_input_of_its_request_is_dropped() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("shared_inputs")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -744,7 +753,7 @@ async fn response_is_held_back_until_the_shared_input_of_its_request_is_dropped(
 }
 
 async fn infer_digit_keeping_shared_input_with_statistics() -> Result<i32> {
-    let config = Config::load()?;
+    let config = Config::fixture("shared_inputs")?;
     let sut = Sut::new(&config.triton_url).await?;
     let result = infer_backend(
         &sut,
@@ -766,7 +775,7 @@ async fn infer_digit_keeping_shared_input_with_statistics() -> Result<i32> {
 
 #[tokio::test]
 async fn response_statistics_count_a_held_back_response_when_it_is_sent() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("shared_inputs")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let before = sut.response_statistics(&config.backend_model).await?;
@@ -793,7 +802,7 @@ async fn response_statistics_count_a_held_back_response_when_it_is_sent() -> Res
 
 #[tokio::test]
 async fn custom_backend_fails_output_into_buffer_of_wrong_size() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("memory_buffers")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let error = infer_digit_with_memory(&sut, &config, "wrong_size")
@@ -832,7 +841,7 @@ async fn grpc_code_of_failed_inference(
 
 #[tokio::test]
 async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("errors")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     for (code, expected) in [
@@ -852,7 +861,7 @@ async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_passes_on_the_code_of_a_failed_bls_call() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("errors")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let code = grpc_code_of_failed_inference(&sut, &config, "infer_model", "missing_model").await?;
@@ -873,7 +882,7 @@ async fn wait_for_model_state(sut: &Sut, model: &str, state: &str) -> Result<()>
 
 #[tokio::test]
 async fn custom_backend_model_unloads_only_after_its_held_request_is_answered() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("cancellation")?;
     let sut = Sut::new(&config.triton_url).await?;
     let held = tokio::spawn(hold_request_until_cancelled());
     wait_for_backend_counters(&sut, &config, |held, _| held == 1).await?;
@@ -1022,7 +1031,7 @@ async fn trace_settings_are_readable() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_writes_its_activity_into_the_trace_of_a_request() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("tracing")?;
     let sut = Sut::new(&config.triton_url).await?;
     let request_id = format!(
         "activity-{}",
@@ -1189,7 +1198,7 @@ fn string(value: &str) -> Parameter {
 
 #[tokio::test]
 async fn custom_backend_reads_the_metadata_of_a_request() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("metadata")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let echoed = echoed_metadata(
@@ -1216,7 +1225,7 @@ async fn custom_backend_reads_the_metadata_of_a_request() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("metadata")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let echoed = echoed_metadata(
@@ -1249,7 +1258,7 @@ async fn custom_backend_reads_a_string_correlation_id_and_no_metadata() -> Resul
 
 #[tokio::test]
 async fn custom_backend_shares_its_state_and_reads_its_artifacts() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("backend_config")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let echoed = sut
@@ -1285,7 +1294,7 @@ async fn custom_backend_shares_its_state_between_models() -> Result<()> {
     // One state counts both models: a state per model or per instance would
     // start over for the second one.
     let mut counted = Vec::new();
-    for model in ["mnist", "mnist_auto"] {
+    for model in ["fixture_backend_state", "fixture_backend_state_other"] {
         let echoed = sut
             .infer_with_parameters(
                 model,
@@ -1371,7 +1380,10 @@ async fn custom_backend_serializes_the_gpu_instances_of_a_device() -> Result<()>
 
     // The policy the backend asked for is the one Triton holds, read back with
     // `TRITONBACKEND_BackendExecutionPolicy`.
-    for (model, policy) in [("mnist", "Blocking"), ("device_blocking", "DeviceBlocking")] {
+    for (model, policy) in [
+        ("fixture_backend_config", "Blocking"),
+        ("device_blocking", "DeviceBlocking"),
+    ] {
         let echoed = sut
             .infer_with_parameters(
                 model,
@@ -1439,7 +1451,7 @@ async fn custom_backend_reports_the_host_policy_of_its_instances() -> Result<()>
     for (model, name, settings) in [
         ("host_policy_pinned", "pinned", "cpu-cores=0-7"),
         ("host_policy_unknown", "unset_policy", ""),
-        ("mnist_auto", "cpu", "cpu-cores=0-7"),
+        ("host_policy_default", "cpu", "cpu-cores=0-7"),
     ] {
         let echoed = sut
             .infer_with_parameters(
@@ -1508,7 +1520,7 @@ async fn model_control(
 
 #[tokio::test]
 async fn custom_backend_loads_a_model_from_files_and_unloads_it() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("model_control")?;
     let sut = Sut::new(&config.triton_url).await?;
     let model = "mnist_from_files";
 
@@ -1547,7 +1559,7 @@ async fn custom_backend_loads_a_model_from_files_and_unloads_it() -> Result<()> 
 
 #[tokio::test]
 async fn custom_backend_cannot_load_a_file_outside_the_model_directory() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("model_control")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let code = model_control(
@@ -1565,7 +1577,7 @@ async fn custom_backend_cannot_load_a_file_outside_the_model_directory() -> Resu
 
 #[tokio::test]
 async fn custom_backend_reports_a_model_missing_from_the_repository() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("model_control")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let code = model_control(
@@ -1580,7 +1592,7 @@ async fn custom_backend_reports_a_model_missing_from_the_repository() -> Result<
 
 #[tokio::test]
 async fn custom_backend_passes_metadata_and_parameters_to_a_bls_request() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("metadata")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let echoed = echoed_metadata(
@@ -1664,7 +1676,7 @@ async fn set_mnist_tracing(sut: &Sut, level: &str) -> Result<()> {
             .into_iter()
             .map(|(name, value)| (name.to_string(), vec![value.to_string()]))
             .collect(),
-        Some("mnist"),
+        Some("fixture_tracing"),
     )
     .await?;
     Ok(())
@@ -1689,7 +1701,9 @@ fn trace_entries(config: &Config) -> Result<Vec<serde_json::Value>> {
 fn has_traced_child(entries: &[serde_json::Value], request_id: &str) -> bool {
     let parents: Vec<_> = entries
         .iter()
-        .filter(|entry| entry["request_id"] == request_id && entry["model_name"] == "mnist")
+        .filter(|entry| {
+            entry["request_id"] == request_id && entry["model_name"] == "fixture_tracing"
+        })
         .filter_map(|entry| entry["id"].as_u64())
         .collect();
     entries.iter().any(|entry| {
@@ -1702,7 +1716,7 @@ fn has_traced_child(entries: &[serde_json::Value], request_id: &str) -> bool {
 
 #[tokio::test]
 async fn bls_call_is_traced_as_a_child_of_its_client_request() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("tracing")?;
     let sut = Sut::new(&config.triton_url).await?;
     let request_id = format!(
         "traced-{}",
@@ -1735,7 +1749,7 @@ async fn bls_call_is_traced_as_a_child_of_its_client_request() -> Result<()> {
 
 #[tokio::test]
 async fn request_answered_before_its_traced_bls_call_is_released_after_it() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("tracing")?;
     let sut = Sut::new(&config.triton_url).await?;
     let request_id = format!(
         "answered-first-{}",
@@ -1749,7 +1763,7 @@ async fn request_answered_before_its_traced_bls_call_is_released_after_it() -> R
     for index in 0..50 {
         let request_id = format!("{request_id}-{index}");
         tasks.spawn(async move {
-            let config = Config::load()?;
+            let config = Config::fixture("tracing")?;
             let sut = Sut::new(&config.triton_url).await?;
             sut.infer_with_id_and_parameters(
                 &config.backend_model,
@@ -1874,7 +1888,7 @@ async fn request_is_rescheduled_only_once() -> Result<()> {
 
 #[tokio::test]
 async fn request_of_a_model_without_iterative_sequence_is_not_rescheduled() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("reschedule_refusal")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let error = sut
@@ -1939,7 +1953,7 @@ async fn stream_whose_sender_is_dropped_ends_with_an_error() -> Result<()> {
 
 #[tokio::test]
 async fn request_of_a_model_that_is_not_decoupled_gets_no_sender() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("sender_refusal")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let error = sut
@@ -2036,7 +2050,7 @@ fn response_parameter(result: &common::dto::InferResult, name: &str) -> Result<P
 
 #[tokio::test]
 async fn bls_stream_returns_every_response_of_a_decoupled_model() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
     let expected = infer_digit(&sut, &config).await?;
 
@@ -2057,7 +2071,7 @@ async fn bls_stream_returns_every_response_of_a_decoupled_model() -> Result<()> 
 
 #[tokio::test]
 async fn bls_stream_of_a_decoupled_model_without_responses_is_empty() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let result = infer_backend(&sut, &config, &[("stream_images", Parameter::Int(0))]).await?;
@@ -2086,7 +2100,7 @@ async fn infer_async_error(sut: &Sut, config: &Config, images: i64) -> Result<St
 
 #[tokio::test]
 async fn infer_async_fails_when_a_decoupled_model_sends_several_responses() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let error = infer_async_error(&sut, &config, 2).await?;
@@ -2097,7 +2111,7 @@ async fn infer_async_fails_when_a_decoupled_model_sends_several_responses() -> R
 
 #[tokio::test]
 async fn infer_async_fails_when_a_decoupled_model_sends_no_response() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
 
     let error = infer_async_error(&sut, &config, 0).await?;
@@ -2118,7 +2132,7 @@ async fn wait_for_stream_cancellation(sut: &Sut, config: &Config, before: i64) -
 
 #[tokio::test]
 async fn cancelled_bls_stream_ends_with_the_cancellation_of_the_model() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
     let (_, before) = stream_counters(&sut, &config).await?;
 
@@ -2133,7 +2147,7 @@ async fn cancelled_bls_stream_ends_with_the_cancellation_of_the_model() -> Resul
 
 #[tokio::test]
 async fn dropped_bls_stream_cancels_its_request() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_streaming")?;
     let sut = Sut::new(&config.triton_url).await?;
     let (_, before) = stream_counters(&sut, &config).await?;
 
@@ -2440,7 +2454,17 @@ async fn wait_for_metric(
 #[tokio::test]
 async fn custom_batching_strategy_groups_the_requests_of_a_batch() -> Result<()> {
     let config = Config::load()?;
-    let model = config.batch_strategy_model.clone();
+    check_batch_composition(&config.batch_strategy_model).await
+}
+
+#[tokio::test]
+async fn minimal_batch_strategy_groups_adjacent_requests_by_key() -> Result<()> {
+    check_batch_composition("batch_strategy_example").await
+}
+
+async fn check_batch_composition(model: &str) -> Result<()> {
+    let config = Config::load()?;
+    let model = model.to_string();
     let output = config.backend_output_name.clone();
 
     // Holds the only instance of the model, so that the four requests below
@@ -2638,7 +2662,7 @@ async fn host_policy_input_metadata_and_owned_copies_match_the_client_data() -> 
     for (model, policy) in [
         ("host_policy_pinned", None),
         ("host_policy_unknown", None),
-        ("batch_strategy", None),
+        ("host_policy_batching", None),
         ("host_policy_pinned", Some("missing-policy")),
         ("host_policy_pinned", Some("")),
     ] {
@@ -2713,7 +2737,7 @@ async fn host_policy_input_rejects_nul_names_and_out_of_range_buffers() -> Resul
 
 #[tokio::test]
 async fn bls_request_can_remove_and_rebuild_inputs_and_outputs() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("bls_mutation")?;
     let sut = Sut::new(&config.triton_url).await?;
     sut.infer_with_parameters(
         &config.backend_model,
@@ -2727,7 +2751,7 @@ async fn bls_request_can_remove_and_rebuild_inputs_and_outputs() -> Result<()> {
 
 #[tokio::test]
 async fn bls_request_can_append_distinct_host_policy_buffers() -> Result<()> {
-    let config = Config::load()?;
+    let config = Config::fixture("policy_append")?;
     let sut = Sut::new(&config.triton_url).await?;
     sut.infer_with_parameters(
         &config.backend_model,
@@ -2736,5 +2760,35 @@ async fn bls_request_can_append_distinct_host_policy_buffers() -> Result<()> {
         HashMap::from([("check_bls_policy_append".to_string(), Parameter::Bool(true))]),
     )
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn minimal_readme_backend_forwards_its_input_over_bls() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for model in ["minimal_backend", "minimal_batching"] {
+        let expected: Vec<f32> = (0..10).map(|value| value as f32 - 3.0).collect();
+        let result = sut
+            .infer(
+                model,
+                None,
+                vec![common::dto::InferInput {
+                    name: "INPUT".to_string(),
+                    shape: vec![1, 10],
+                    data: expected.clone(),
+                }],
+                &["OUTPUT"],
+                None,
+            )
+            .await?;
+        let output = result
+            .outputs
+            .into_iter()
+            .find(|output| output.name == "OUTPUT")
+            .context("OUTPUT not found")?;
+        assert_eq!(output.shape, vec![1, 10]);
+        assert_eq!(output.data_f32, expected);
+    }
     Ok(())
 }

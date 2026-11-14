@@ -243,7 +243,7 @@ fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
 
 The numbers are what the backend reports, not what Triton measures: report the total of each
 memory type and device, and keep it up to date when it changes. Triton copies the entries while
-the call runs, so the slices can be dropped afterwards. The example backend reports the size of
+the call runs, so the slices can be dropped afterwards. The test backend reports the size of
 its Rust state, which is ordinary RAM, and the `memory_usage` fixture of `models/memory_usage`
 reports two CPU entries that add up to one and a pinned buffer that its instance really allocates:
 
@@ -257,14 +257,14 @@ an instance reports as `cpu_pinned` should be the page-locked buffers it holds.
 
 ## Example
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) answers a request with the
+[`memory_buffers` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/memory_buffers.rs) answers a request with the
 parameter `memory` set to `ram`, `pinned` or `gpu` from a buffer of that kind: the image goes in
 a RAM or pinned buffer, the logits are written into a buffer cached in the instance state, and
 the response reports how many buffers the instance has allocated. `gpu_input` writes the logits
 into a GPU buffer and passes it, through an `Arc`, as the input of two concurrent requests to
 `identity_gpu` (Triton's `identity` backend on a GPU instance); the backend drops its own `Arc`
 before the requests finish and checks that both copies equal the logits. `gpu_forward` passes the
-GPU logits to `identity_forward`, a model of the example backend that shares its GPU input with a
+GPU logits to `identity_forward`, a model of the test backend that shares its GPU input with a
 request to `identity_gpu` and answers with what comes back; the caller checks that the input was
 in GPU memory and equals the logits. `wrong_size` writes the logits into a buffer of the wrong
 size and gets an error.

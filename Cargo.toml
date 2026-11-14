@@ -2,12 +2,14 @@
 resolver = "2"
 members = [
     "benches",
-    "example/app",
-    "example/batch-strategy",
-    "example/custom-backend",
+    "examples/batch-strategy",
+    "examples/minimal-backend",
     "tools/gen-grpc-client",
     "triton-ng",
     "triton-ng-client",
+    "triton-ng-client/tests/fixtures/backend",
+    "triton-ng-client/tests/fixtures/batch-strategy",
+    "triton-ng-client/tests/fixtures/readme-checks",
     "triton-ng-macros",
     "triton-ng-sys",
 ]
@@ -35,12 +37,8 @@ disallowed_macros = "deny"
 
 [workspace.dependencies]
 anyhow = { version = "1.0.100" }
-app = { path = "example/app", version = "0.1.0" }
 bindgen = { version = "0.72.1" }
 byteorder = { version = "1.5.0" }
-config = { version = "0.15" }
-custom-backend = { path = "example/custom-backend", version = "0.1.0" }
-dotenvy = { version = "0.15" }
 futures = { version = "0.3.31" }
 futures-core = { version = "0.3.31" }
 libc = { version = "0.2.177" }
@@ -52,8 +50,6 @@ tokio = { version = "1.48.0" }
 tonic = { version = "0.14.2", features = ["gzip", "tls-ring", "tls-native-roots"] }
 tonic-prost = { version = "0.14.2" }
 tonic-prost-build = { version = "0.14.2" }
-tracing = { version = "0.1" }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 triton-ng = { path = "triton-ng", version = "0.3.1" }
 triton-ng-client = { path = "triton-ng-client", version = "0.3.1" }
 triton-ng-macros = { path = "triton-ng-macros", version = "0.3.1" }

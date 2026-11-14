@@ -1,0 +1,16 @@
+[package]
+name = "readme-checks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+triton-ng = { workspace = true }
+triton-ng-client = { workspace = true }
+
+[lints]
+workspace = true

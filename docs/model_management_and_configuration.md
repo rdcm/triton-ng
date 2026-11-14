@@ -29,7 +29,7 @@ for this backend wins over it.
 
 `BackendConfig` is a copy: Triton keeps the config it was started with, and triton-ng reads it
 without taking it. Keep what every model needs with `Backend::set_state`: later backend hooks read
-it with `Backend::state`, and batches with `Context::backend_state`. The example backend stores its
+it with `Backend::state`, and batches with `Context::backend_state`. The test backend stores its
 configuration this way. `Backend::artifacts` also returns the artifact type and the directory that
 contains the backend shared library and the files next to it.
 
@@ -61,7 +61,7 @@ Triton calls the hook right after `initialize` and may call it again later. It i
 from the hook and keeps the attributes it had, so triton-ng writes the error to the log. Without
 the hook the backend sets nothing and Triton uses its defaults.
 
-The example backend prefers two CPU instances: `mnist_stream`, `mnist_auto` and `mnist_steps` have
+The test backend prefers two CPU instances: `mnist_stream`, `mnist_auto` and `mnist_steps` have
 no `instance_group` and get them, `mnist` names its group in its config and keeps it.
 
 ## Instance host policy
@@ -148,7 +148,7 @@ fn auto_complete_config(_model: &Model, config: &mut AutoCompleteConfig) -> Resu
 - **Off switch.** `tritonserver --disable-auto-complete-config` turns completion off for every
   backend: the hook is not called and the config must be complete.
 
-The example backend completes `mnist_auto`, which has only its backend and parameters; the other
+The test backend completes `mnist_auto`, which has only its backend and parameters; the other
 example models have complete configs and the hook leaves them alone.
 
 ## Loading and unloading models
@@ -196,7 +196,7 @@ the whole server is then not ready (`/v2/health/ready`), and unloading the model
 it. A name that is not in the repository and comes without files fails before that and leaves
 no state. Check what you load before you load it.
 
-The example backend loads a copy of `mnist_onnx` from its file under the name given in the request
+The test backend loads a copy of `mnist_onnx` from its file under the name given in the request
 parameter `load_model` (from the repository with `load_from: repository`), and unloads the model
 named in `unload_model`.
 

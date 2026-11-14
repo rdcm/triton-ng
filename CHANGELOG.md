@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed (#37)
+
+- Rewrite the README with progressively introduced, compile-checked API examples and a
+  guide catalogue. Both documentation landing pages include python_backend comparison and
+  recorded benchmark summaries; the full comparison has its own guide.
+- Keep `examples/minimal-backend` and the contributor's minimal by-key strategy in
+  `examples/batch-strategy` as user examples. Test backend scenarios and batching
+  strategy move under `triton-ng-client/tests/fixtures`; feature models
+  and tests select fixtures explicitly. Root models and Compose remain in place.
+- Remove the unused configurable client demo; the small client in README is compile-checked.
+
+
 ### Added (#25)
 
 - `InferenceRequest::remove_input`, `remove_all_inputs`, `remove_requested_output`, and
@@ -43,7 +55,7 @@ way as those of a request a backend owns.
   batches at model unload. In-flight callbacks retain their state, late callbacks cannot
   dereference retired values, and destructor panics are contained independently.
 - Lifecycle, callback-failure and queue-timeout regression coverage for custom batching.
-- `example/batch-strategy`, the `batch_strategy` fixture model and an integration test that
+- `triton-ng-client/tests/fixtures/batch-strategy`, the `batch_strategy` fixture model and an integration test that
   reads back the batches the strategy formed.
 
 ## [0.3.1] - 2026-11-05

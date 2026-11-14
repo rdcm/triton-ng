@@ -70,7 +70,7 @@ The family is deleted with its last metric and family value. Every type is `Send
 removed from the endpoint when its last metric is dropped, so the metrics of an unloaded model
 disappear and start from zero when it is loaded again.
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) counts answered requests, the
+The [common fixture response helper](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/common.rs) counts answered requests, the
 requests it holds and the duration of its BLS calls, labelled with the model; the integration
 tests read them from `:8002/metrics`.
 
@@ -130,7 +130,7 @@ error response, and that one is counted. Triton counts the error response in `fa
 when the request was cancelled. Without the opt-in a failed or cancelled response stays out of
 `response_stats`.
 
-The example backend enables it for a request that asks with its `enable_statistics` parameter, on
+The test backend enables it for a request that asks with its `enable_statistics` parameter, on
 a plain response, on every response of a stream, and on the error or cancelled response it answers
 with, and `custom_backend_reports_the_response_statistics_it_enables` checks them in
 `response_stats`.

@@ -54,22 +54,6 @@ benchmarks-env-down:
 	docker compose -f benches/docker-compose.yml down
 
 download-model:
-	mkdir -p models/mnist/1
-	mkdir -p models/mnist_onnx/1
-	mkdir -p models/mnist_stream/1
-	mkdir -p models/mnist_auto/1
-	mkdir -p models/mnist_steps/1
-	mkdir -p models/sequence_state_batched/1
-	mkdir -p models/sequence_state/1
-	mkdir -p models/sequence_state_other/1
-	mkdir -p models/identity_gpu/1
-	mkdir -p models/identity_forward/1
-	mkdir -p models/memory_usage/1
-	mkdir -p models/instance_details/1
-	mkdir -p models/device_blocking/1
-	mkdir -p models/cpu_parallel/1
-	mkdir -p models/host_policy_pinned/1
-	mkdir -p models/host_policy_unknown/1
-	mkdir -p $(addsuffix /1,$(wildcard models/batch_strategy*))
+	mkdir -p $(addsuffix /1,$(wildcard models/*))
 	wget https://github.com/onnx/models/raw/main/validated/vision/classification/mnist/model/mnist-12.onnx
 	mv mnist-12.onnx models/mnist_onnx/1/model.onnx

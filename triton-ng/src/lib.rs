@@ -193,6 +193,11 @@ pub mod docs {
     #[doc = include_str!("../docs/c_api_coverage.md")]
     pub mod c_api_coverage {}
 
+    #[doc = "Comparison with python_backend r25.09: runtime, feature coverage, isolation, and tradeoffs."]
+    #[doc = ""]
+    #[doc = include_str!("../docs/python_backend.md")]
+    pub mod python_backend {}
+
     #[doc = "Benchmarks: python_backend and triton-ng on the same BLS workloads with `perf_analyzer`, the method, the models, the environment and the results."]
     #[doc = ""]
     #[doc = include_str!("../docs/benchmarks.md")]
