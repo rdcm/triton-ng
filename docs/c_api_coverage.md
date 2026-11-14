@@ -30,7 +30,6 @@ Absent from the tree; the C functions are named so that they can be compared aga
 | Area | Functions | What a backend cannot do |
 |---|---|---|
 | Buffers of a response and an input | `TRITONBACKEND_InputBufferAttributes`, `TRITONBACKEND_OutputBufferAttributes`, `TRITONBACKEND_InferenceResponseOutput`, `TRITONBACKEND_InferenceResponseOutputByName`, `TRITONBACKEND_RequestInputByIndex` | Read a buffer with its attributes of a response, or an input by index |
-| BLS request mutation | `TRITONSERVER_InferenceRequestRemoveInput`, `TRITONSERVER_InferenceRequestRemoveRequestedOutput`, `TRITONSERVER_InferenceRequestAppendInputDataWithHostPolicy` | Take an input or an output back from a BLS request, or append host-policy data |
 
 The decoupled path of Triton (`TRITONBACKEND_ResponseFactoryNew`, `...SendFlags`) is wrapped;
 `TRITONBACKEND_ResponseNewFromFactory` and `TRITONBACKEND_ResponseFactoryIsCancelled` are not

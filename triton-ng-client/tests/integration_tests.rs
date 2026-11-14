@@ -2710,3 +2710,31 @@ async fn host_policy_input_rejects_nul_names_and_out_of_range_buffers() -> Resul
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn bls_request_can_remove_and_rebuild_inputs_and_outputs() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        HashMap::from([("check_bls_mutation".to_string(), Parameter::Bool(true))]),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn bls_request_can_append_distinct_host_policy_buffers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    sut.infer_with_parameters(
+        &config.backend_model,
+        vec![config.mnist_blank_input()],
+        &[&config.backend_output_name],
+        HashMap::from([("check_bls_policy_append".to_string(), Parameter::Bool(true))]),
+    )
+    .await?;
+    Ok(())
+}

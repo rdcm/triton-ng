@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (#25)
+
+- `InferenceRequest::remove_input`, `remove_all_inputs`, `remove_requested_output`, and
+  `remove_all_requested_outputs` preserve Triton's removal semantics. Input owners remain
+  retained until request drop/release; removed output buffers are dropped immediately.
+- `append_input_data_with_host_policy` and `append_input_buffer_with_host_policy` append
+  independent policy-specific input data with owned-copy and zero-copy ownership paths.
+
+
 ### Added (#30)
 
 - `Input::properties_for_host_policy`, `buffer_for_host_policy` and

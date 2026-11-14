@@ -563,6 +563,32 @@ impl CustomBackend for MnistBackend {
                 echo_backend_config(&ctx, request)?;
                 continue;
             }
+            if request.parameter("check_bls_mutation")? == Some(Parameter::Bool(true)) {
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                let checked = check_bls_mutation(&ctx, state, image).await;
+                match checked {
+                    Ok(()) => answer_done(request)?,
+                    Err(error) => request.respond_error(&error.to_string())?,
+                }
+                continue;
+            }
+            if request.parameter("check_bls_policy_append")? == Some(Parameter::Bool(true)) {
+                let image = request.get_input(IMAGE)?.as_bytes()?;
+                let checked = check_bls_policy_append(&ctx, image).await;
+                match checked {
+                    Ok(()) => answer_done(request)?,
+                    Err(error) => request.respond_error(&error.to_string())?,
+                }
+                continue;
+            }
+            if request.parameter("check_specific_policy")? == Some(Parameter::Bool(true)) {
+                let checked = check_specific_policy(&request);
+                match checked {
+                    Ok(()) => answer_done(request)?,
+                    Err(error) => request.respond_error(&error.to_string())?,
+                }
+                continue;
+            }
             if request.parameter("echo_policy_input")? == Some(Parameter::Bool(true)) {
                 echo_policy_input(&ctx, request)?;
                 continue;
@@ -1070,6 +1096,127 @@ fn execution_policy(backend: &Backend) -> Result<ExecutionPolicy, Error> {
         Some("device-blocking") => Ok(ExecutionPolicy::DeviceBlocking),
         Some(other) => Err(format!("unknown execution-policy '{other}'").into()),
     }
+}
+
+/// Checks the C API's missing-input and invalid-name error semantics.
+fn invalid_argument(result: Result<(), TritonError>) -> Result<(), Error> {
+    match result {
+        Err(error) if error.code() == ErrorCode::InvalidArg => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(()) => Err("an invalid request mutation unexpectedly succeeded".into()),
+    }
+}
+
+/// Buffers must be retained on removal and released with the unsubmitted owner.
+async fn check_bls_mutation(ctx: &Context, state: &State, image: Vec<u8>) -> Result<(), Error> {
+    let ordinary = Arc::new(image.clone());
+    let policy = Arc::new(image.clone());
+    let failed = Arc::new(image.clone());
+    let mut inference = InferenceRequest::new(ctx.server(), &state.target_model, -1)?;
+    inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, ordinary.clone())?;
+    inference.append_input_buffer_with_host_policy(IMAGE, policy.clone(), "pinned")?;
+    invalid_argument(inference.remove_input("missing"))?;
+    invalid_argument(inference.remove_input("Input3\0bad"))?;
+    invalid_argument(inference.remove_requested_output("bad\0name"))?;
+    invalid_argument(inference.append_input_buffer_with_host_policy(
+        IMAGE,
+        policy.clone(),
+        "bad\0policy",
+    ))?;
+    invalid_argument(inference.append_input_data_with_host_policy("bad\0input", &image, "pinned"))?;
+    invalid_argument(inference.append_input_buffer_with_host_policy(
+        "missing",
+        failed.clone(),
+        "pinned",
+    ))?;
+    inference.remove_input(IMAGE)?;
+    invalid_argument(inference.remove_input(IMAGE))?;
+    if Arc::strong_count(&ordinary) != 2
+        || Arc::strong_count(&policy) != 2
+        || Arc::strong_count(&failed) != 2
+    {
+        return Err("removed or failed input buffers were not retained".into());
+    }
+    // Reuse the name, then remove all inputs twice, including the empty case.
+    inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image.clone())?;
+    inference.remove_all_inputs()?;
+    inference.remove_all_inputs()?;
+    drop(inference);
+    if Arc::strong_count(&ordinary) != 1
+        || Arc::strong_count(&policy) != 1
+        || Arc::strong_count(&failed) != 1
+    {
+        return Err("dropping an unsubmitted request did not release retained inputs".into());
+    }
+
+    let mut inference = InferenceRequest::new(ctx.server(), &state.target_model, -1)?;
+    inference.add_input_with_buffer(IMAGE, DataType::Fp32, &IMAGE_SHAPE, ordinary.clone())?;
+    inference.remove_all_inputs()?;
+    inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image.clone())?;
+    // These undersized buffers must stop affecting allocation after removal.
+    inference.add_requested_output_into(LOGITS, ctx.memory().ram(1)?)?;
+    inference.remove_requested_output(LOGITS)?;
+    inference.remove_requested_output("missing")?; // Triton deliberately succeeds.
+    inference.add_requested_output_into(LOGITS, ctx.memory().ram(1)?)?;
+    inference.add_requested_output("unused")?;
+    inference.remove_all_requested_outputs()?;
+    inference.remove_all_requested_outputs()?;
+    // Empty requested-output list means all outputs, not none.
+    let result = ctx.server().infer_async(inference).await?;
+    let expected = infer_image(ctx, &state.target_model, image).await?;
+    if result.output(LOGITS)?.bytes()? != expected.output(LOGITS)?.bytes()? {
+        return Err("the rebuilt request returned different logits".into());
+    }
+    drop(result);
+    wait_for_input_release(&ordinary)?;
+    Ok(())
+}
+
+/// Waits for the actual release callback rather than assuming response == release.
+fn wait_for_input_release(buffer: &Arc<Vec<u8>>) -> Result<(), Error> {
+    let started = Instant::now();
+    while Arc::strong_count(buffer) != 1 {
+        if started.elapsed() > Duration::from_secs(2) {
+            return Err("BLS input release did not complete".into());
+        }
+        std::thread::yield_now();
+    }
+    Ok(())
+}
+
+/// Supplies policy data different from ordinary data, using both append APIs.
+async fn check_bls_policy_append(ctx: &Context, image: Vec<u8>) -> Result<(), Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), "host_policy_pinned", -1)?;
+    inference.add_input_with_data(IMAGE, DataType::Fp32, &IMAGE_SHAPE, image)?;
+    let mut first = 1.25_f32.to_ne_bytes().repeat(392);
+    inference.append_input_data_with_host_policy(IMAGE, &first, "pinned")?;
+    first.fill(0); // The copied append must not retain the caller's slice.
+    let second = Arc::new(1.25_f32.to_ne_bytes().repeat(392));
+    inference.append_input_buffer_with_host_policy(IMAGE, second.clone(), "pinned")?;
+    inference.set_parameter("check_specific_policy", Parameter::Bool(true))?;
+    let result = ctx.server().infer_async(inference).await?;
+    drop(result);
+    wait_for_input_release(&second)?;
+    Ok(())
+}
+
+/// Reads a distinct, split per-policy list and the default fallback separately.
+fn check_specific_policy(request: &Request) -> Result<(), Error> {
+    let input = request.get_input(IMAGE)?;
+    let properties = input.properties_for_host_policy("pinned")?;
+    let bytes = input.as_bytes_for_host_policy("pinned")?;
+    let expected = 1.25_f32.to_ne_bytes().repeat(784);
+    let first = input.buffer_for_host_policy("pinned", 0)?;
+    let second = input.buffer_for_host_policy("pinned", 1)?;
+    if properties.buffer_count != 2 || bytes != expected || [first, second].concat() != expected {
+        return Err("the policy-specific input did not preserve its two buffers".into());
+    }
+    if bytes == input.as_bytes()?
+        || input.as_bytes_for_host_policy("missing")? != input.as_bytes()?
+    {
+        return Err("the policy-specific input did not stay separate from default storage".into());
+    }
+    Ok(())
 }
 
 /// Reads policy-selected input metadata and owned bytes through the public API.

@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use triton_ng_macros::triton_call;
 
-/// Buffers referenced by a submitted request, see `Server::infer_async`.
+/// Buffers retained until request drop/release, including buffers of removed
+/// inputs and failed appends. See `Server::infer_async`.
 pub(crate) type InputBuffers = Vec<Box<dyn Send>>;
 
 /// Buffers that requested outputs are written into, by output name. `None`
@@ -408,6 +409,170 @@ impl InferenceRequest {
     ) -> Result<(), TritonError> {
         self.add_input(name, datatype, shape)?;
         self.append_input_buffer(name, buffer)
+    }
+
+    /// Removes the input declaration `name` and all its ordinary and policy data.
+    ///
+    /// Fails for a NUL in the name or a missing input, preserving Triton's
+    /// INVALID_ARG semantics. On success the name can be declared again.
+    /// Triton only erases its pointer records (r25.09 infer_request.cc,
+    /// RemoveOriginalInput); it never frees caller-owned data. SDK buffers,
+    /// including SharedInput guards, stay alive until this request is dropped
+    /// or its release callback runs, even after the input is removed.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.remove_input("AUDIO")?;
+    /// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], replacement)?;
+    /// ```
+    pub fn remove_input(&mut self, name: &str) -> Result<(), TritonError> {
+        let name = cstring_from_str(name)?;
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestRemoveInput(
+            self.ptr,
+            name.as_ptr()
+        ))
+    }
+
+    /// Removes all input declarations and their ordinary and policy data.
+    /// An already empty input list succeeds. SDK buffers remain owned until
+    /// request drop or release, just as with [`Self::remove_input`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.remove_all_inputs()?;
+    /// inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], bytes)?;
+    /// ```
+    pub fn remove_all_inputs(&mut self) -> Result<(), TritonError> {
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceRequestRemoveAllInputs(
+            self.ptr
+        ))
+    }
+
+    /// Appends an owned copy of host `data` for `host_policy_name` to input
+    /// `name`. This adds a separate policy-specific buffer list, not ordinary
+    /// input data. Supply ordinary data as well for fallback and validation.
+    ///
+    /// Fails for NUL in either name, a missing input, or a Triton error. The
+    /// copied buffer stays owned until request drop or release, including when
+    /// the input is removed. See [`Self::append_input_buffer_with_host_policy`].
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.append_input_data_with_host_policy("AUDIO", &local_bytes, "pinned")?;
+    /// ```
+    pub fn append_input_data_with_host_policy(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        host_policy_name: &str,
+    ) -> Result<(), TritonError> {
+        self.append_input_buffer_with_host_policy(name, data.to_vec(), host_policy_name)
+    }
+
+    /// Appends `buffer` without copying it to the policy-specific data of
+    /// input `name`. The request owns it until drop or Triton's release callback,
+    /// even if the input is removed or appending fails after partial progress.
+    ///
+    /// In r25.09 Input::AppendDataWithHostPolicy stores pointers in a
+    /// MemoryReference and never frees them. The SDK retains the entire owner
+    /// before handing any pointer to Triton, as for ordinary appended buffers.
+    /// This selects no NUMA allocation: pass a suitable pinned buffer yourself
+    /// when placement matters. The receiving backend can read the data through
+    /// [`crate::Input::as_bytes_for_host_policy`]. Missing policy data falls back
+    /// to ordinary data; an explicitly empty policy list does not.
+    ///
+    /// Fails for NUL in either name, a missing input, or a Triton error. Supply
+    /// ordinary input data too; each policy list must describe the full tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let mut local = ctx.memory().pinned(bytes.len())?;
+    /// local.copy_from_slice(&bytes);
+    /// inference.append_input_buffer_with_host_policy("AUDIO", local, "pinned")?;
+    /// ```
+    pub fn append_input_buffer_with_host_policy(
+        &mut self,
+        name: &str,
+        buffer: impl InputBuffer,
+        host_policy_name: &str,
+    ) -> Result<(), TritonError> {
+        let name = cstring_from_str(name)?;
+        let policy = cstring_from_str(host_policy_name)?;
+        let mut raw_buffers = buffer.buffers();
+        // SharedInput may have no segments for an empty tensor. Still call
+        // Triton once: AppendDataWithHostPolicy validates the input and creates
+        // an explicit empty policy list, which suppresses default fallback.
+        if raw_buffers.is_empty() {
+            raw_buffers.push(crate::RawBuffer {
+                ptr: std::ptr::null_mut(),
+                len: 0,
+                memory_type: crate::CPU,
+                memory_type_id: 0,
+            });
+        }
+        self.buffers.push(Box::new(buffer));
+        for raw in raw_buffers {
+            triton_call!(
+                triton_ng_sys::TRITONSERVER_InferenceRequestAppendInputDataWithHostPolicy(
+                    self.ptr,
+                    name.as_ptr(),
+                    raw.ptr.cast_const(),
+                    raw.len,
+                    raw.memory_type,
+                    raw.memory_type_id,
+                    policy.as_ptr(),
+                )
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Removes a requested output and immediately drops its SDK output buffer,
+    /// if any. Unlike [`Self::remove_input`], a missing name is a successful
+    /// no-op in Triton r25.09. Fails for a NUL in the name or a Triton error.
+    ///
+    /// An empty requested-output list means all model outputs, not no outputs.
+    /// Input buffers are unaffected. This request has not been submitted, so
+    /// Triton cannot be writing the removed output buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.remove_requested_output("DEBUG")?;
+    /// inference.add_requested_output("EMBEDDING")?;
+    /// ```
+    pub fn remove_requested_output(&mut self, name: &str) -> Result<(), TritonError> {
+        let c_name = cstring_from_str(name)?;
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestRemoveRequestedOutput(
+                self.ptr,
+                c_name.as_ptr()
+            )
+        )?;
+        self.outputs.remove(name);
+        Ok(())
+    }
+
+    /// Clears the requested-output list and drops all SDK output buffers.
+    /// An empty list succeeds and requests all model outputs on inference.
+    /// Fails only when Triton reports an error. Input buffers are unaffected.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// inference.remove_all_requested_outputs()?;
+    /// inference.add_requested_output("EMBEDDING")?;
+    /// ```
+    pub fn remove_all_requested_outputs(&mut self) -> Result<(), TritonError> {
+        triton_call!(
+            triton_ng_sys::TRITONSERVER_InferenceRequestRemoveAllRequestedOutputs(self.ptr)
+        )?;
+        self.outputs.clear();
+        Ok(())
     }
 
     /// Requests the output `name`, written into CPU memory that the result

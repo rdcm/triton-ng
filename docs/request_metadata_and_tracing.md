@@ -50,6 +50,63 @@ past the levels is the default of the model.
 `Response::set_parameter`. Reading a BYTES parameter fails; the other parameters of the response
 are still read.
 
+## Editing a BLS request before submission
+
+`InferenceRequest` can remove inputs and requested outputs before being consumed by
+`Server::infer_async` or `infer_stream`. The methods preserve r25.09 core semantics:
+
+| Method | Missing name / empty list | SDK-owned buffers |
+|---|---|---|
+| `remove_input(name)` | `INVALID_ARG` for a missing input | retained until request drop or release |
+| `remove_all_inputs()` | succeeds when already empty | retained until request drop or release |
+| `remove_requested_output(name)` | missing output is a successful no-op | that output buffer is dropped immediately |
+| `remove_all_requested_outputs()` | succeeds when already empty | all output buffers are dropped immediately |
+
+An empty requested-output list means **all model outputs**, not no outputs. Removing an input
+also removes its policy-specific data and allows the same name to be added again. NUL in a
+name is rejected before calling Triton.
+
+```rust ignore
+inference.remove_input("AUDIO")?;
+inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], replacement)?;
+inference.remove_all_requested_outputs()?;
+inference.add_requested_output("EMBEDDING")?;
+```
+
+`RemoveOriginalInput` destroys Triton's `MemoryReference` records, not the caller's data
+(`deps/triton-core/src/infer_request.cc`). The SDK keeps a flat list of buffer owners, so
+removal does not release any input buffers early. This includes `Arc` owners, `SharedInput`
+response/release guards, policy buffers and buffers retained after failed or partial appends.
+They are dropped with an unsubmitted request, or by the release callback after submission;
+response completion alone does not guarantee release. Output buffers can be dropped at removal
+because they have not yet been handed to Triton's response allocator.
+
+### Appending policy-specific input data
+
+`append_input_data_with_host_policy(name, bytes, policy)` takes an owned copy of a slice.
+`append_input_buffer_with_host_policy(name, buffer, policy)` takes ownership without copying
+and supports the same `InputBuffer` types as ordinary appends. Both retain the owner until
+request drop/release, even when removal follows or an append fails after partial progress.
+
+```rust ignore
+inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], default_bytes)?;
+let mut local = ctx.memory().pinned(local_bytes.len())?;
+local.copy_from_slice(&local_bytes);
+inference.append_input_buffer_with_host_policy("AUDIO", local, "pinned")?;
+```
+
+The two lists are independent: provide ordinary data for validation and fallback, and a full
+tensor in every policy-specific list. Multiple appends form a split tensor in order. A missing
+policy list falls back to ordinary input; an explicitly supplied empty list does not. These
+methods record memory selected by the caller; they do not allocate on a NUMA node themselves.
+The receiver reads it through `Input::*_for_host_policy`, including from `RequestView`.
+
+Integration tests rebuild inputs and outputs, check C error semantics, retained `Arc` counts
+before removal and after request drop/release, and output-buffer removal using intentionally
+undersized buffers. A BLS fixture appends two policy buffers containing different data from
+ordinary input and verifies both policy selection and default fallback. Physical NUMA
+placement and resource-exhaustion failures after a partially accepted append are not tested.
+
 ## Traces
 
 When Triton traces a client request (`--trace-config`, or the trace settings of the model), BLS
