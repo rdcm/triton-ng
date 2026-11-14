@@ -10,6 +10,8 @@ pub struct Config {
     pub mnist_model: String,
     pub backend_model: String,
     pub stream_model: String,
+    pub sequence_state_model: String,
+    pub sequence_state_other_model: String,
     pub input_name: String,
     pub output_name: String,
     pub backend_output_name: String,

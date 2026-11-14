@@ -84,15 +84,16 @@ impl FinalResponse {
         }
     }
 
-    /// Counts one more shared input. Fails once the final response is given.
-    pub(crate) fn share(&self) -> Result<(), TritonError> {
-        self.lock().share().map_err(TritonError::from_message)
+    /// Counts one more shared input named `name`. Fails once the final response
+    /// is given.
+    pub(crate) fn share(&self, name: &str) -> Result<(), TritonError> {
+        self.lock().share(name).map_err(TritonError::from_message)
     }
 
-    /// Counts a shared input dropped, and sends the final response kept for
-    /// the last one.
-    pub(crate) fn unshare(&self) {
-        let Some(pending) = self.lock().unshare() else {
+    /// Counts the shared input named `name` dropped, and sends the final
+    /// response kept for the last one.
+    pub(crate) fn unshare(&self, name: &str) {
+        let Some(pending) = self.lock().unshare(name) else {
             return;
         };
         if let Err(e) = self.send_now(pending) {
@@ -100,6 +101,11 @@ impl FinalResponse {
                 "failed to send the final response held for a shared input: {e}"
             ));
         }
+    }
+
+    /// Whether the input named `name` is shared and not dropped yet.
+    pub(crate) fn is_input_shared(&self, name: &str) -> bool {
+        self.lock().is_shared(name)
     }
 
     /// The mutex guards a counter and an option that every step leaves
@@ -212,6 +218,8 @@ impl Drop for FinalResponse {
 /// no shared input is left.
 pub(crate) struct Gate<T> {
     shared: usize,
+    /// The inputs shared and not dropped yet, by name.
+    shared_names: Vec<String>,
     given: bool,
     pending: Option<T>,
 }
@@ -220,6 +228,7 @@ impl<T> Default for Gate<T> {
     fn default() -> Self {
         Self {
             shared: 0,
+            shared_names: Vec::new(),
             given: false,
             pending: None,
         }
@@ -237,16 +246,25 @@ impl<T> Gate<T> {
         None
     }
 
-    fn share(&mut self) -> Result<(), &'static str> {
+    fn share(&mut self, name: &str) -> Result<(), &'static str> {
         if self.given {
             return Err("the request already has a final response");
         }
         self.shared = self.shared.checked_add(1).ok_or("too many shared inputs")?;
+        self.shared_names.push(name.to_owned());
         Ok(())
     }
 
+    /// Whether the input named `name` is shared and not dropped yet.
+    fn is_shared(&self, name: &str) -> bool {
+        self.shared_names.iter().any(|shared| shared == name)
+    }
+
     /// Returns the response kept for the last shared input.
-    fn unshare(&mut self) -> Option<T> {
+    fn unshare(&mut self, name: &str) -> Option<T> {
+        if let Some(index) = self.shared_names.iter().position(|shared| shared == name) {
+            self.shared_names.remove(index);
+        }
         self.shared = self.shared.saturating_sub(1);
         if self.shared == 0 {
             self.pending.take()
@@ -270,31 +288,47 @@ mod tests {
     #[test]
     fn response_is_kept_for_the_last_shared_input() {
         let mut gate = Gate::default();
-        gate.share().unwrap();
-        gate.share().unwrap();
+        gate.share("a").unwrap();
+        gate.share("b").unwrap();
 
         assert_eq!(gate.send(1), None);
-        assert_eq!(gate.unshare(), None);
-        assert_eq!(gate.unshare(), Some(1));
+        assert_eq!(gate.unshare("a"), None);
+        assert_eq!(gate.unshare("b"), Some(1));
     }
 
     #[test]
     fn shared_inputs_dropped_before_the_response_do_not_hold_it() {
         let mut gate = Gate::default();
-        gate.share().unwrap();
+        gate.share("a").unwrap();
 
-        assert_eq!(gate.unshare(), None::<i32>);
+        assert_eq!(gate.unshare("a"), None::<i32>);
         assert_eq!(gate.send(1), Some(1));
     }
 
     #[test]
     fn input_is_not_shared_after_the_response() {
         let mut gate = Gate::default();
-        gate.share().unwrap();
+        gate.share("a").unwrap();
         assert_eq!(gate.send(1), None);
 
-        assert!(gate.share().is_err());
-        assert_eq!(gate.unshare(), Some(1));
-        assert!(gate.share().is_err());
+        assert!(gate.share("a").is_err());
+        assert_eq!(gate.unshare("a"), Some(1));
+        assert!(gate.share("a").is_err());
+    }
+
+    #[test]
+    fn a_shared_input_is_known_by_its_name_until_it_is_dropped() {
+        let mut gate = Gate::<i32>::default();
+        gate.share("features").unwrap();
+        gate.share("features").unwrap();
+
+        assert!(gate.is_shared("features"));
+        assert!(!gate.is_shared("pixels"));
+
+        gate.unshare("features");
+        assert!(gate.is_shared("features"));
+
+        gate.unshare("features");
+        assert!(!gate.is_shared("features"));
     }
 }

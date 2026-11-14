@@ -51,7 +51,7 @@ impl SharedInput {
     ) -> Result<Self, TritonError> {
         let (buffers, byte_size) = checked_buffers(&properties.name, properties.byte_size, buffers)
             .map_err(TritonError::from_message)?;
-        final_response.share()?;
+        final_response.share(&properties.name)?;
         Ok(Self {
             name: properties.name,
             datatype: properties.datatype,
@@ -93,7 +93,7 @@ impl InputBuffer for SharedInput {}
 
 impl Drop for SharedInput {
     fn drop(&mut self) {
-        self.final_response.unshare();
+        self.final_response.unshare(&self.name);
     }
 }
 

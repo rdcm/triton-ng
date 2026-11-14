@@ -2166,3 +2166,230 @@ async fn unary_inference_of_a_decoupled_model_is_rejected() -> Result<()> {
     assert!(format!("{error:#}").contains("decoupled"), "{error:#}");
     Ok(())
 }
+
+/// Sends one request of the sequence `id` to the model whose requests are
+/// counted in its sequence state, and answers the counter it returned.
+async fn count_request(sut: &Sut, config: &Config, id: i64, start: bool) -> Result<f32> {
+    let mut parameters = HashMap::from([("sequence_id".to_string(), Parameter::Int(id))]);
+    if start {
+        parameters.insert("sequence_start".to_string(), Parameter::Bool(true));
+    }
+    let counter = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            parameters,
+        )
+        .await?
+        .outputs
+        .into_iter()
+        .find(|output| output.name == "COUNTER")
+        .context("COUNTER not found in response")?
+        .data_f32;
+    counter.first().copied().context("the counter is empty")
+}
+
+#[tokio::test]
+async fn sequence_state_counts_the_requests_of_one_sequence() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // The requests of the two sequences interleave, and each sequence counts
+    // only its own: the second starts at 1 while the first is already past it.
+    let first = [1.0, 2.0, 3.0];
+    let second = [1.0, 2.0, 3.0, 4.0];
+    for step in 0..first.len().max(second.len()) {
+        if let Some(expected) = first.get(step) {
+            assert_eq!(
+                count_request(&sut, &config, 41, step == 0).await?,
+                *expected
+            );
+        }
+        if let Some(expected) = second.get(step) {
+            assert_eq!(
+                count_request(&sut, &config, 42, step == 0).await?,
+                *expected
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_of_a_shape_the_configuration_does_not_declare_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(42)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("bad_state_shape".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of the wrong shape was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("has the dimension 2 where the configuration declares 1"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_of_another_model_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // `sequence_state_other` declares `counter_out` as FP32[2] and
+    // `sequence_state` as FP32[1]: the state of the first one is asked for on a
+    // request of the second, and cannot be created there.
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_other_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(41)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                (
+                    "foreign_state_model".to_string(),
+                    Parameter::String(config.sequence_state_model.clone()),
+                ),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of another model was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("is declared by the model 'sequence_state'"),
+        "{message}"
+    );
+    assert!(
+        message.contains("the request runs on another model"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_of_a_shared_input_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    // The input state of the sequence is the memory of `counter_in`, and the
+    // shared input hands that memory to another request: the state cannot be
+    // written while it is out there.
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(43)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("shared_state_input".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("a state of a shared input was created")?;
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("input 'counter_in' of the state 'counter_out' is shared"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(41)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("missing_state".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("the state was created")?;
+
+    let message = format!("{error:#}");
+    assert!(message.contains("no_such_state"), "{message}");
+    assert!(
+        message.contains("the model configuration declares no state"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn reallocated_state_buffer_requires_a_new_write() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(331)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("sequence_end".to_string(), Parameter::Bool(true)),
+                ("reallocate_state_buffer".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("the replacement buffer was accepted")?;
+    let message = format!("{error:#}");
+    assert!(message.contains("the state was never written"), "{message}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn batched_sequence_state_preserves_its_batch_dimension() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for step in 0..3 {
+        let result = sut
+            .infer_with_parameters(
+                "sequence_state_batched",
+                vec![config.mnist_blank_input()],
+                &["COUNTER"],
+                HashMap::from([
+                    ("sequence_id".to_string(), Parameter::Int(332)),
+                    ("sequence_start".to_string(), Parameter::Bool(step == 0)),
+                    ("sequence_end".to_string(), Parameter::Bool(step == 2)),
+                    ("check_batched_state".to_string(), Parameter::Bool(true)),
+                ]),
+            )
+            .await?;
+        let counter = result
+            .outputs
+            .into_iter()
+            .find(|output| output.name == "COUNTER")
+            .context("COUNTER not found")?;
+        assert_eq!(counter.data_f32, vec![(step + 1) as f32]);
+    }
+    Ok(())
+}

@@ -1,0 +1,54 @@
+name: "sequence_state"
+backend: "custom_backend"
+max_batch_size: 0
+
+sequence_batching {
+  max_sequence_idle_microseconds: 5000000
+  state [
+    {
+      input_name: "counter_in"
+      output_name: "counter_out"
+      data_type: TYPE_FP32
+      dims: [ 1 ]
+      initial_state [
+        {
+          name: "counter"
+          data_type: TYPE_FP32
+          dims: [ 1 ]
+          zero_data: true
+        }
+      ]
+    }
+  ]
+}
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ -1, 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "COUNTER"
+    data_type: TYPE_FP32
+    dims: [ 1 ]
+  }
+]
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
+
+parameters: {
+  key: "counts_state"
+  value: { string_value: "true" }
+}

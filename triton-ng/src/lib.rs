@@ -91,6 +91,8 @@ mod response_sender;
 mod server;
 #[path = "shared_input.rs"]
 mod shared_input;
+#[path = "state.rs"]
+mod state;
 #[path = "stream_response.rs"]
 mod stream_response;
 #[path = "trace.rs"]
@@ -129,6 +131,7 @@ pub use response::*;
 pub use response_sender::*;
 pub use server::*;
 pub use shared_input::*;
+pub use state::*;
 pub use stream_response::*;
 pub use trace::*;
 pub use types::*;
