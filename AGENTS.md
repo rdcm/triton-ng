@@ -102,3 +102,10 @@ The branch must match the Triton image the project targets (`r25.09` for
 Update submodules only with `make update-submodules` and commit the new `deps/` commits
 together with any `.gitmodules` change. `.gitmodules` alone proves nothing: it can name one
 branch while the recorded commits come from another.
+
+If a local submodule checkout does not match the branch configured in `.gitmodules`
+(for example, it was switched to `main`), restore it with `make update-submodules`
+without asking the user. Such a mismatched checkout is not a change to preserve or a
+reason to request confirmation or create a separate worktree. This is a standing
+instruction from the user. Preserve unrelated uncommitted file edits inside submodules;
+do not use a forced checkout or discard those edits.
