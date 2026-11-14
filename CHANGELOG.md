@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added (#30)
+
+- `Input::properties_for_host_policy`, `buffer_for_host_policy` and
+  `as_bytes_for_host_policy` select a host policy's input data. Metadata and host data copies
+  are owned; GPU buffers are rejected and missing policy data uses Triton's default fallback.
+
+
 A backend can decide which requests form a batch. `BatchStrategy` and the `batch_strategy`
 attribute export the five `TRITONBACKEND_ModelBatch*` entry points Triton looks up in the
 batching strategy library of a model, and `RequestView` reads the requests Triton is queueing.

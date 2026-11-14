@@ -2628,3 +2628,85 @@ async fn custom_batching_contains_failures_and_bounds_head_of_queue_stalls() -> 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn host_policy_input_metadata_and_owned_copies_match_the_client_data() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    // gRPC supplies ordinary input storage. Both the configured policy and an
+    // unknown policy must exercise r25.09's documented fallback consistently.
+    for (model, policy) in [
+        ("host_policy_pinned", None),
+        ("host_policy_unknown", None),
+        ("batch_strategy", None),
+        ("host_policy_pinned", Some("missing-policy")),
+        ("host_policy_pinned", Some("")),
+    ] {
+        let mut parameters = HashMap::from([
+            ("echo_policy_input".to_string(), Parameter::Bool(true)),
+            ("inspect_policy_input".to_string(), Parameter::Bool(true)),
+        ]);
+        if let Some(policy) = policy {
+            parameters.insert("input_policy".to_string(), string(policy));
+        }
+        let mut input = config.mnist_blank_input();
+        for (index, value) in input.data.iter_mut().enumerate() {
+            *value = (index as f32) * 0.25 - 3.0;
+        }
+        let result = sut
+            .infer_with_parameters(
+                model,
+                vec![input],
+                &[&config.backend_output_name],
+                parameters,
+            )
+            .await?;
+        let echoed = result.parameters;
+        assert_eq!(
+            echoed.get("policy_input_matches"),
+            Some(&Parameter::Bool(true)),
+            "{model}"
+        );
+        assert_eq!(echoed.get("input_name"), Some(&string(&config.input_name)));
+        assert_eq!(echoed.get("input_datatype"), Some(&string("Fp32")));
+        assert_eq!(echoed.get("input_shape"), Some(&string("[1, 1, 28, 28]")));
+        assert_eq!(
+            echoed.get("input_byte_size"),
+            Some(&Parameter::Int(784 * 4))
+        );
+        if let Some(policy) = policy {
+            assert_eq!(echoed.get("input_policy"), Some(&string(policy)));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_policy_input_rejects_nul_names_and_out_of_range_buffers() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for (extra, expected) in [
+        (("invalid_policy_name", Parameter::Bool(true)), "nul byte"),
+        (
+            ("invalid_policy_index", Parameter::Bool(true)),
+            "out of range",
+        ),
+    ] {
+        let error = sut
+            .infer_with_parameters(
+                "host_policy_pinned",
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([
+                    ("echo_policy_input".to_string(), Parameter::Bool(true)),
+                    (extra.0.to_string(), extra.1),
+                ]),
+            )
+            .await
+            .err()
+            .context("invalid host-policy input arguments were accepted")?;
+        let message = format!("{error:#}");
+        assert!(message.to_lowercase().contains(expected), "{message}");
+    }
+    Ok(())
+}

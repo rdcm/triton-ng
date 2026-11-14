@@ -86,6 +86,21 @@ impl BatchStrategy for ByKey {
         if self.mode == "refuse" {
             return Ok(false);
         }
+        if request.parameter("inspect_policy_input")? == Some(Parameter::Bool(true)) {
+            let input = request.get_input("Input3")?;
+            let properties = input.properties_for_host_policy("pinned")?;
+            let bytes = input.as_bytes_for_host_policy("pinned")?;
+            if properties.byte_size != bytes.len() as u64 || bytes != input.as_bytes()? {
+                return Err("queued policy input differs from ordinary input".into());
+            }
+            let mut pieces = Vec::new();
+            for index in 0..properties.buffer_count {
+                pieces.extend(input.buffer_for_host_policy("pinned", index)?);
+            }
+            if pieces != bytes {
+                return Err("queued policy input buffers differ".into());
+            }
+        }
         let key = match request.parameter(BATCH_KEY)? {
             Some(Parameter::String(key)) => Some(key),
             _ => None,
