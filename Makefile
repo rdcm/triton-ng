@@ -59,6 +59,7 @@ download-model:
 	mkdir -p models/mnist_stream/1
 	mkdir -p models/mnist_auto/1
 	mkdir -p models/mnist_steps/1
+	mkdir -p models/sequence_state_batched/1
 	mkdir -p models/sequence_state/1
 	mkdir -p models/sequence_state_other/1
 	mkdir -p models/identity_gpu/1

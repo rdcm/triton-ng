@@ -938,13 +938,38 @@ fn count_sequence(state: &State, requests: Vec<Request>) -> Result<(), Error> {
             continue;
         }
 
+        if request.parameter("reallocate_state_buffer")? == Some(Parameter::Bool(true)) {
+            let counter = state
+                .states
+                .iter()
+                .find(|entry| entry.name() == COUNTER_OUT)
+                .ok_or("the model configuration declares no counter_out state")?;
+            let mut output = triton_ng::State::new(&mut request, counter, &[1])?;
+            output.write_bytes(&1.0_f32.to_ne_bytes())?;
+            // Switching from host memory replaces the allocation, including when
+            // GPU allocation falls back to host memory and device_buffer fails.
+            let _allocation = output.device_buffer(MemoryType::Gpu { device_id: 0 });
+            let message = match output.update() {
+                Ok(()) => "an unwritten replacement buffer was published".to_string(),
+                Err(error) => error.to_string(),
+            };
+            request.respond_error(&message)?;
+            continue;
+        }
+
         // The state work borrows the request mutably, so it is over before the answer.
         let counted = count_one(&mut request, &state.states);
         match counted {
             Ok(next) => {
+                let request_batched =
+                    request.parameter("check_batched_state")? == Some(Parameter::Bool(true));
                 let mut response = Response::new(request)?;
                 response
-                    .create_output(COUNTER_OUTPUT, DataType::Fp32, &[1])?
+                    .create_output(
+                        COUNTER_OUTPUT,
+                        DataType::Fp32,
+                        if request_batched { &[1, 1] } else { &[1] },
+                    )?
                     .write_fp32_vec(&[next])?;
                 response.send()?;
             }
@@ -961,7 +986,21 @@ fn count_one(request: &mut Request, states: &[triton_ng::StateConfig]) -> Result
         .iter()
         .find(|declared| declared.name() == COUNTER_OUT)
         .ok_or("the model configuration declares no counter_out state")?;
-    let previous = request.get_input(COUNTER_IN)?.as_fp32_vec()?;
+    let input = request.get_input(COUNTER_IN)?;
+    let input_shape = input.properties()?.shape;
+    let expected_shape: &[i64] =
+        if request.parameter("check_batched_state")? == Some(Parameter::Bool(true)) {
+            &[1, 1]
+        } else {
+            &[1]
+        };
+    if input_shape != expected_shape {
+        return Err(format!(
+            "unexpected state input shape: {input_shape:?}, expected {expected_shape:?}"
+        )
+        .into());
+    }
+    let previous = input.as_fp32_vec()?;
     let previous = previous.first().ok_or("the counter state is empty")?;
     let next = previous + 1.0;
 

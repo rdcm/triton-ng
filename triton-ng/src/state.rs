@@ -163,7 +163,8 @@ pub struct State<'a> {
 
 impl<'a> State<'a> {
     /// The state `config` of `request`, whose data has `shape` without the
-    /// batch dimension.
+    /// batch dimension. For a batching model, the library prepends the
+    /// batch-size 1 dimension required by Triton's sequence scheduler.
     ///
     /// `config` has to come from the model of `request`, see
     /// [`crate::Model::sequence_states`]. Triton keeps one state per name for a
@@ -220,6 +221,17 @@ impl<'a> State<'a> {
         let byte_size = config
             .check_shape(shape)
             .map_err(|e| TritonError::from_message(format!("state '{}' {e}", config.name)))?;
+        // SequenceStates::Initialize prepends 1 for batching models, and
+        // OutputState stores the supplied shape verbatim (r25.09,
+        // sequence_state.cc). Sequence batching only accepts batch-size 1
+        // per request; preserve that dimension for the next request's input.
+        let shape = if request.has_batch_dimension() {
+            std::iter::once(1)
+                .chain(shape.iter().copied())
+                .collect::<Vec<_>>()
+        } else {
+            shape.to_vec()
+        };
         let name = cstring_from_str(&config.name)?;
         let dims_count = u32::try_from(shape.len()).map_err(|_| {
             TritonError::from_message(format!(
@@ -296,6 +308,10 @@ impl<'a> State<'a> {
     /// The address Triton keeps a state in GPU memory at, with its device and
     /// its size, for the CUDA code of the backend to fill.
     ///
+    /// Requesting a device buffer invalidates any earlier host write, even if
+    /// allocation falls back to host memory and this method returns an error.
+    /// Write the state again before calling the safe [`State::update`].
+    ///
     /// Returning the address initializes nothing: Triton allocates the buffer
     /// without clearing it, so the data reaches the state only when the backend
     /// writes it. The state counts as written once the backend says so with
@@ -311,7 +327,7 @@ impl<'a> State<'a> {
     ///
     /// ```ignore
     /// let mut state = State::new(&mut request, &counter, &[1])?;
-    /// let buffer = state.device_buffer(MemoryType::Gpu { id: 0 })?;
+    /// let buffer = state.device_buffer(MemoryType::Gpu { device_id: 0 })?;
     /// copy_to_device(buffer.ptr, &next, stream)?;
     /// stream.synchronize()?;
     /// // SAFETY: the stream that copied `next` into the state is synchronized.
@@ -437,7 +453,7 @@ impl<'a> State<'a> {
     ///
     /// ```ignore
     /// let mut state = State::new(&mut request, &counter, &[1])?;
-    /// let buffer = state.device_buffer(MemoryType::Gpu { id: 0 })?;
+    /// let buffer = state.device_buffer(MemoryType::Gpu { device_id: 0 })?;
     /// copy_to_device(buffer.ptr, &next, stream)?;
     /// stream.synchronize()?;
     /// // SAFETY: the stream that copied `next` into the state is synchronized.
@@ -459,6 +475,11 @@ impl<'a> State<'a> {
         &mut self,
         memory_type: MemoryType,
     ) -> Result<(*mut c_void, MemoryType), TritonError> {
+        // StateBuffer may replace the allocation on a memory-type change,
+        // including a GPU request that falls back to host memory. The old
+        // write no longer proves initialization, even if this call fails.
+        // Only a successful full host write can restore the safe update path.
+        self.written = false;
         let (mut kind, mut memory_type_id) = memory_type.to_sys();
         let mut buffer: *mut c_void = ptr::null_mut();
         triton_call!(triton_ng_sys::TRITONBACKEND_StateBuffer(

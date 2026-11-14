@@ -2341,3 +2341,55 @@ async fn state_that_the_model_configuration_does_not_declare_is_refused() -> Res
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn reallocated_state_buffer_requires_a_new_write() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let error = sut
+        .infer_with_parameters(
+            &config.sequence_state_model,
+            vec![config.mnist_blank_input()],
+            &["COUNTER"],
+            HashMap::from([
+                ("sequence_id".to_string(), Parameter::Int(331)),
+                ("sequence_start".to_string(), Parameter::Bool(true)),
+                ("sequence_end".to_string(), Parameter::Bool(true)),
+                ("reallocate_state_buffer".to_string(), Parameter::Bool(true)),
+            ]),
+        )
+        .await
+        .err()
+        .context("the replacement buffer was accepted")?;
+    let message = format!("{error:#}");
+    assert!(message.contains("the state was never written"), "{message}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn batched_sequence_state_preserves_its_batch_dimension() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for step in 0..3 {
+        let result = sut
+            .infer_with_parameters(
+                "sequence_state_batched",
+                vec![config.mnist_blank_input()],
+                &["COUNTER"],
+                HashMap::from([
+                    ("sequence_id".to_string(), Parameter::Int(332)),
+                    ("sequence_start".to_string(), Parameter::Bool(step == 0)),
+                    ("sequence_end".to_string(), Parameter::Bool(step == 2)),
+                    ("check_batched_state".to_string(), Parameter::Bool(true)),
+                ]),
+            )
+            .await?;
+        let counter = result
+            .outputs
+            .into_iter()
+            .find(|output| output.name == "COUNTER")
+            .context("COUNTER not found")?;
+        assert_eq!(counter.data_f32, vec![(step + 1) as f32]);
+    }
+    Ok(())
+}

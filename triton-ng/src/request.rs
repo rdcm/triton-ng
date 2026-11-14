@@ -99,6 +99,11 @@ impl Request {
         self.policy.model
     }
 
+    /// Whether the model prepends a batch dimension to its tensors.
+    pub(crate) fn has_batch_dimension(&self) -> bool {
+        self.policy.batching
+    }
+
     /// Whether input `name` is shared, and read somewhere else, until the
     /// [`crate::SharedInput`] holding it is dropped.
     ///
