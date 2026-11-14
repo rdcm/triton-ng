@@ -2534,3 +2534,97 @@ async fn custom_batching_strategy_groups_the_requests_of_a_batch() -> Result<()>
     }
     Ok(())
 }
+
+/// Waits for asynchronous model destruction and checks both values' drop counts.
+async fn wait_for_strategy_cleanup(config: &Config, model: &str) -> Result<()> {
+    for _ in 0..100 {
+        let events =
+            std::fs::read_to_string(config.trace_dir().join("batch_strategy_lifecycle.log"))?;
+        let count = |kind: &str| {
+            events
+                .lines()
+                .filter(|line| *line == format!("{model} {kind}"))
+                .count()
+        };
+        if count("strategy_created") > 0
+            && count("strategy_created") == count("strategy_dropped")
+            && count("batch_created") == count("batch_dropped")
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("batch or strategy of {model} was not released")
+}
+
+#[tokio::test]
+async fn custom_batching_releases_unfinished_batches_on_repeated_unload() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    let model = "batch_strategy_lifecycle";
+    // Loading starts an empty batch. Unload without sending a request: the core
+    // omits ModelBatchFinalize for precisely this abandoned payload.
+    for _ in 0..3 {
+        sut.repository_model_load(model).await?;
+        sut.repository_model_unload(model).await?;
+        wait_for_strategy_cleanup(&config, model).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_batching_contains_failures_and_bounds_head_of_queue_stalls() -> Result<()> {
+    let config = Config::load()?;
+    let sut = Sut::new(&config.triton_url).await?;
+    for mode in ["init_error", "init_panic"] {
+        let model = format!("batch_strategy_{mode}");
+        assert!(
+            sut.repository_model_load(&model).await.is_err(),
+            "{mode} unexpectedly loaded"
+        );
+        // r25.09 retains the failed version's reason even after an unload.
+        // These fixtures succeed on the next initialization, so recover that
+        // version before unloading it and restoring strict server readiness.
+        sut.repository_model_load(&model).await?;
+        sut.repository_model_unload(&model).await?;
+        wait_for_strategy_cleanup(&config, &model).await?;
+        assert!(sut.server_live().await?);
+    }
+    for mode in [
+        "batch_panic",
+        "include_error",
+        "include_panic",
+        "refuse",
+        "drop_panic",
+    ] {
+        let model = format!("batch_strategy_{mode}");
+        sut.repository_model_load(&model).await?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sut.infer_with_parameters(
+                &model,
+                vec![config.mnist_blank_input()],
+                &[&config.backend_output_name],
+                HashMap::from([("echo_batch_keys".to_string(), Parameter::Bool(true))]),
+            ),
+        )
+        .await
+        .context("strategy stalled past its queue timeout")?;
+        if mode == "drop_panic" {
+            result?;
+        } else {
+            let error = result
+                .err()
+                .context("a refusing strategy answered successfully")?;
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("timeout") || message.contains("expired"),
+                "{mode}: {message}"
+            );
+        }
+        sut.repository_model_unload(&model).await?;
+        wait_for_strategy_cleanup(&config, &model).await?;
+        assert!(sut.server_live().await?);
+    }
+    Ok(())
+}

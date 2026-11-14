@@ -23,6 +23,10 @@ way as those of a request a backend owns.
 - `Input<'a, P = Request>`: the owner of an input is a type parameter, and only an input of a
   `Request` can be shared into a BLS request; `RequestView::get_input` returns the same `Input`
   without `share`.
+- Batching state is retired through a synchronized token registry, including unfinished
+  batches at model unload. In-flight callbacks retain their state, late callbacks cannot
+  dereference retired values, and destructor panics are contained independently.
+- Lifecycle, callback-failure and queue-timeout regression coverage for custom batching.
 - `example/batch-strategy`, the `batch_strategy` fixture model and an integration test that
   reads back the batches the strategy formed.
 

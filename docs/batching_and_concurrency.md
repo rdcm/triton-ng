@@ -125,9 +125,22 @@ What the callbacks get is what matters for a strategy that works:
 - The batch state a strategy keeps is dropped when the batch is handed to a model instance, so
   a strategy never sees how a batch turned out. What it needs to remember across batches is in
   the strategy itself, behind the `&self` of `include`.
-- Triton finalizes the strategy before it stops its batching thread, and it does not finalize a
-  batch it started but never formed when the model unloads: that batch state is leaked. Work
-  that must happen belongs in the callbacks, not in a `Drop`.
+- An error or panic from `include` excludes that request but does not roll back mutations
+  already made to the batch. Subsequent callbacks see the partially modified state. Validate
+  fallible inputs before committing changes when rollback is needed.
+- On r25.09, `TritonModel::~TritonModel` calls batcher finalize before stopping the scheduler,
+  and an abandoned payload can miss batch finalize (`backend_model.cc`, `payload.cc`). The
+  wrapper uses opaque, never-reused tokens in a synchronized registry. Batcher finalize
+  atomically retires the strategy and all its batches, including unfinished ones; late
+  callbacks find no value, and callbacks already running keep an `Arc` until they return.
+  User destructors run outside the registry lock. Each destructor panic is contained and
+  logged independently, so it cannot prevent cleanup of the other values.
+- The registry protects Rust values, not the core's function pointers or library mapping.
+  r25.09 also calls `ClearHandles`/`dlclose` before joining the scheduler. Do not unload a
+  strategy library concurrently with an active scheduler callback: stop producers and drain
+  requests first. Fully concurrent library unload requires a core fix that joins the
+  scheduler before clearing its callback pointers and closing the library. The unload tests
+  exercise idle models, not arbitrary concurrent library unmapping.
 
 The `example/batch-strategy` crate is the strategy of the `batch_strategy` fixture model, and
 its integration test reads back the batches it formed from the response parameters of the
