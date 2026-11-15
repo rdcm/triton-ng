@@ -11,12 +11,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Rewrite the README with progressively introduced, compile-checked API examples and a
   guide catalogue. Both documentation landing pages include python_backend comparison and
-  recorded benchmark summaries; the full comparison has its own guide.
+  recorded benchmark summaries; the full comparison maps every area of the #17 audit.
+- Compile-check Rust snippets from every guide as well as README in `make build`.
+- Verify parent–child trace links for all 50 early-response requests in the tracing test.
 - Keep `examples/minimal-backend` and the contributor's minimal by-key strategy in
   `examples/batch-strategy` as user examples. Test backend scenarios and batching
   strategy move under `triton-ng-client/tests/fixtures`; feature models
   and tests select fixtures explicitly. Root models and Compose remain in place.
 - Remove the unused configurable client demo; the small client in README is compile-checked.
+
+
+### Added after 0.3.1
+
+- Backend API compatibility check during initialization (#16, backend API 1.19).
+- Model and instance memory-usage reports and client access to reported usage (#18).
+- Custom trace activities through `Request::trace` and `Trace::report_activity` (#19 / #31).
+- Instance profiles, passive status and secondary devices; backend artifacts, shared state,
+  and execution-policy access (#20 / #27).
+- Opt-in per-response statistics for unary and decoupled responses, including errors (#21 / #32).
+- Sequence-state configuration, validated state writes and updates, and buffer attributes
+  through `State` and `StateConfig` (#22 / #33).
+- Owned instance host-policy name and settings through `ModelInstance::host_policy` (#23 / #28).
 
 
 ### Added (#25)

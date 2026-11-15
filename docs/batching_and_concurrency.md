@@ -72,6 +72,9 @@ A strategy in triton-ng is an `impl BatchStrategy` with the `#[triton_ng::batch_
 attribute in a `cdylib` of its own: the attribute exports the five `TRITONBACKEND_ModelBatch*`
 entry points Triton looks up, and the crate name decides the name of the shared library.
 
+Export the implementation below with `#[triton_ng::batch_strategy]` in a separate library,
+as in [the complete example](https://github.com/rdcm/triton-ng/blob/main/examples/batch-strategy/src/lib.rs).
+
 ```rust ignore
 struct ByKey;
 
@@ -80,7 +83,6 @@ struct Batch {
     key: Option<String>,
 }
 
-#[triton_ng::batch_strategy]
 impl BatchStrategy for ByKey {
     type Batch = Batch;
 

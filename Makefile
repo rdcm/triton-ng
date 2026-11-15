@@ -54,7 +54,7 @@ gen-grpc-client:
 publish:
 	cargo publish --workspace $(if $(DRY_RUN),--dry-run)
 
-# Build the workspace in release mode, including examples, test libraries, and README snippet checks.
+# Build the workspace in release mode, including examples, test libraries, and README and guide snippet checks.
 build:
 	cargo build --release
 

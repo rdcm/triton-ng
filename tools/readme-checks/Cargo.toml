@@ -9,6 +9,7 @@ test = false
 doctest = false
 
 [dependencies]
+futures = { workspace = true }
 triton-ng = { workspace = true }
 triton-ng-client = { workspace = true }
 

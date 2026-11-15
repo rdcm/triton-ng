@@ -24,6 +24,27 @@ library built against these headers does not load on a server that predates one 
 `24.02-py3` the load fails with `undefined symbol: TRITONSERVER_MetricArgsNew` before any backend
 code runs.
 
+## Wrapped areas from the #17 audit
+
+These are available in the current Git API; see [CHANGELOG](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for release boundaries.
+The [Python comparison](https://github.com/rdcm/triton-ng/blob/main/docs/python_backend.md#coverage-of-the-backend-api-additions) describes what
+Python exposes to model authors for the same areas.
+
+| Area | C API | Rust API |
+|---|---|---|
+| Memory usage | `TRITONBACKEND_ModelReportMemoryUsage`, `TRITONBACKEND_ModelInstanceReportMemoryUsage` | `Model::report_memory_usage`, `ModelInstance::report_memory_usage` |
+| Host policies | `TRITONBACKEND_ModelInstanceHostPolicy`, `TRITONBACKEND_InputPropertiesForHostPolicy`, `TRITONBACKEND_InputBufferForHostPolicy` | `ModelInstance::host_policy`, `Input::*_for_host_policy` |
+| Trace activities | `TRITONSERVER_InferenceTraceReportActivity` | `Trace::report_activity` |
+| Response statistics | `TRITONBACKEND_ModelInstanceReportResponseStatistics`, `TRITONBACKEND_ModelInstanceResponseStatistics*` | Opt-in `enable_statistics` on requests and responses |
+| Sequence state | `TRITONBACKEND_StateNew`, `StateUpdate`, `StateBuffer`, `StateBufferAttributes` | `State`, `StateConfig` |
+| Custom batching | Five `TRITONBACKEND_ModelBatch*` callbacks | `BatchStrategy`, `RequestView`, `#[batch_strategy]` |
+| Instance details | `TRITONBACKEND_ModelInstanceProfileCount` / `ProfileName`, `ModelInstanceIsPassive`, `ModelInstanceSecondaryDeviceCount` / `Properties` | `ModelInstance::profile_names`, `is_passive`, `secondary_devices` |
+| Backend level | `TRITONBACKEND_BackendArtifacts`, `BackendSetState`, `BackendState`, `BackendSetExecutionPolicy` | `Backend::artifacts`, `set_state`, `state`, `set_execution_policy` |
+| BLS mutation | `TRITONSERVER_InferenceRequestRemoveInput`, `RemoveAllInputs`, `RemoveRequestedOutput`, `RemoveAllRequestedOutputs`, `AppendInputDataWithHostPolicy` | `InferenceRequest::remove_*`, `append_input_*_with_host_policy` |
+
+`TRITONBACKEND_ModelInstances`, mentioned in the original audit, is not a function in r25.09.
+Sequence-state buffer attributes are wrapped; the input/response buffer functions below are not.
+
 ## Not wrapped
 
 Absent from the tree; the C functions are named so that they can be compared against the headers.

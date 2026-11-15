@@ -136,17 +136,24 @@ async fn an_early_response_preserves_its_bls_child_trace() -> Result<()> {
         responses += 1;
     }
     sut.set_tracing("OFF").await?;
-    let first = format!("{request_id}-0");
-    let mut found = false;
+    let expected_requests: std::collections::BTreeSet<_> = (0..50)
+        .map(|index| format!("{request_id}-{index}"))
+        .collect();
+    let mut traced_requests = std::collections::BTreeSet::new();
     for _ in 0..100 {
-        found = has_traced_child(&sut.trace_entries()?, &first, sut.model("fixture_tracing"));
-        if found {
+        let entries = sut.trace_entries()?;
+        traced_requests = expected_requests
+            .iter()
+            .filter(|id| has_traced_child(&entries, id, sut.model("fixture_tracing")))
+            .cloned()
+            .collect();
+        if traced_requests == expected_requests {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let expected = (50, true);
-    let actual = (responses, found);
+    let expected = (50, expected_requests);
+    let actual = (responses, traced_requests);
     assert_eq!(actual, expected);
     Ok(())
 }

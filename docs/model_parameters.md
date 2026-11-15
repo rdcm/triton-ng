@@ -17,10 +17,15 @@ parameters: {
 ```
 
 ```rust ignore
+struct Vocabulary {
+    batch_size: usize,
+    vocab: String,
+}
+
 fn model_initialize(model: &Model) -> Result<(), Error> {
     let batch_size = model.config_parameter_or("batch_size", 4usize)?;
     let vocab_file = model.config_parameter("vocab_file")?.ok_or("vocab_file is not set")?;
-    model.set_state(State { batch_size, vocab: read_vocab(&model.path(&vocab_file)?)? })?;
+    model.set_state(Vocabulary { batch_size, vocab: std::fs::read_to_string(&model.path(&vocab_file)?)? })?;
     Ok(())
 }
 ```

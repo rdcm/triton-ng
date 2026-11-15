@@ -35,7 +35,7 @@ Against python_backend **r25.09**:
 | Best fit | Python/framework code inside the backend | Typed orchestration around Triton framework models |
 
 [Full comparison](https://github.com/rdcm/triton-ng/blob/main/docs/python_backend.md), including
-feature gaps and cases where Python is the better choice.
+a coverage matrix for every area of the #17 audit and cases where Python is the better choice.
 
 ## Benchmarks
 
@@ -66,6 +66,12 @@ Each feature or failure group has its own [test fixture](https://github.com/rdcm
 The test model selects its fixture at initialization; no shared request-parameter dispatcher
 selects unrelated test behavior. `models/` and `docker-compose.yml` stay in the root.
 
-`make build` also compiles every Rust snippet in the root README using the compile-only
-[`tools/readme-checks`](../tools/readme-checks) tool. `make doc` includes these guides in the SDK's Rust documentation;
-`make tests` runs the SDK and integration suite against the root Triton service.
+`make build` compiles every Rust snippet in the root README and these guides using the
+compile-only [`tools/readme-checks`](https://github.com/rdcm/triton-ng/tree/main/tools/readme-checks) tool. Each code block is checked
+independently with SDK types, `Arc`, `Mutex`, and `Instant` in scope. The examples are functions
+or hooks; import those types when copying them into your backend.
+
+`make doc` renders the guides and checks rustdoc warnings; it does not execute examples.
+`make tests` runs unit and integration tests against the root Triton service. Runtime examples
+require their documented model configs and inputs; compilation alone does not validate those
+configs or GPU behavior. The benchmark tables are recorded results, not part of these checks.

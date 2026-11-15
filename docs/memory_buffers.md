@@ -22,9 +22,14 @@ Every batch gets Triton's memory manager from `Context::memory`:
 | `gpu(device_id, len)` | `UninitGpuBuffer` | GPU memory from Triton's CUDA pool on `device_id` | none |
 
 ```rust ignore
-let mut tokens = ctx.memory().pinned(batch * 8)?;
-tokens.copy_from_slice(&token_bytes);
-let state = ctx.memory().gpu(ctx.device_id(), batch * 320 * 4)?;
+fn allocate_decoder_buffers(ctx: &Context, token_bytes: &[u8], state_bytes: usize)
+    -> Result<(PinnedRamBuffer, UninitGpuBuffer), Error>
+{
+    let mut tokens = ctx.memory().pinned(token_bytes.len())?;
+    tokens.copy_from_slice(token_bytes);
+    let state = ctx.memory().gpu(ctx.device_id(), state_bytes)?;
+    Ok((tokens, state))
+}
 ```
 
 The memory comes from the server's own pools, triton-ng does not use the CUDA runtime:
@@ -79,8 +84,11 @@ memory with undefined content cannot become a model input.
 | `Arc<T>` of any of them | the memory of `T` |
 
 ```rust ignore
-inference.add_input_with_buffer("x", DataType::Int64, &[batch, 1], tokens)?;
-inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
+fn attach_inputs(inference: &mut InferenceRequest, batch: i64, tokens: PinnedRamBuffer, state: Arc<GpuBuffer>) -> Result<(), Error> {
+    inference.add_input_with_buffer("x", DataType::Int64, &[batch, 1], tokens)?;
+    inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
+    Ok(())
+}
 ```
 
 triton-ng does not copy the input. Triton copies it to the memory the model needs, if it is
@@ -98,9 +106,12 @@ chain (a step of an ensemble, or a model called by another backend) passes a GPU
 way, and a CPU one without the copy into a `Vec` that `Input::as_bytes` makes.
 
 ```rust ignore
-let features = request.get_input("features")?.share()?;
-let shape = features.shape().to_vec();
-inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
+fn forward_features(request: &Request, inference: &mut InferenceRequest) -> Result<(), Error> {
+    let features = request.get_input("features")?.share()?;
+    let shape = features.shape().to_vec();
+    inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
+    Ok(())
+}
 ```
 
 The data of a request input lives until the request gets its final response and is released,
@@ -134,13 +145,17 @@ methods.
 `add_requested_output_into` writes the output into a buffer of the backend instead:
 
 ```rust ignore
-inference.add_requested_output_into("ho", state)?;          // UninitGpuBuffer
-inference.add_requested_output_into("logits", logits)?;     // PinnedRamBuffer
-let mut result = ctx.server().infer_async(inference).await?;
-
-let scores = result.output("logits")?.as_fp32_vec()?;       // RAM and pinned outputs are readable
-let state: GpuBuffer = result.take_gpu("ho")?;              // hands the buffer back
-let logits: PinnedRamBuffer = result.take_pinned("logits")?;
+async fn collect_outputs(ctx: &Context, mut inference: InferenceRequest,
+    state: UninitGpuBuffer, logits: PinnedRamBuffer)
+    -> Result<(GpuBuffer, PinnedRamBuffer), Error>
+{
+    inference.add_requested_output_into("ho", state)?;
+    inference.add_requested_output_into("logits", logits)?;
+    let mut result = ctx.server().infer_async(inference).await?;
+    let scores = result.output("logits")?.as_fp32_vec()?;
+    println!("{scores:?}");
+    Ok((result.take_gpu("ho")?, result.take_pinned("logits")?))
+}
 ```
 
 - **The size must match exactly.** The output of a request is its own rows of the batch, even
@@ -190,14 +205,16 @@ impl Buffers {
 fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
     instance.set_state(Buffers::default())
 }
+
+async fn reuse_cached_output(ctx: &Context, mut inference: InferenceRequest, len: usize) -> Result<(), Error> {
+    let buffers = ctx.instance_state::<Buffers>()?;
+    inference.add_requested_output_into("ho", buffers.gpu(ctx.memory(), ctx.device_id(), len)?)?;
+    let mut result = ctx.server().infer_async(inference).await?;
+    buffers.put_gpu(result.take_gpu("ho")?)?;
+    Ok(())
+}
 ```
 
-```rust ignore
-let buffers = ctx.instance_state::<Buffers>()?;
-inference.add_requested_output_into("ho", buffers.gpu(ctx.memory(), ctx.device_id(), len)?)?;
-let mut result = ctx.server().infer_async(inference).await?;
-buffers.put_gpu(result.take_gpu("ho")?)?;
-```
 
 What a real cache needs on top of this:
 

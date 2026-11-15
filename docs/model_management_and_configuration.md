@@ -78,14 +78,15 @@ failure. The owned copy exposes its name with `HostPolicy::name`, one value with
 The policy reports configuration, not actual thread affinity. To read the input storage selected
 for its name, use `Input::properties_for_host_policy`, `Input::buffer_for_host_policy` (one
 buffer by index), or `Input::as_bytes_for_host_policy` (the whole tensor). The same methods work
-on inputs borrowed from a batching strategy's `RequestView`.
+on inputs borrowed from a batching strategy's `RequestView`. Store
+`instance.host_policy()?` with `instance.set_state(...)` during instance initialization
+for the following example.
 
 ```rust ignore
-let state = ctx.instance_state::<Buffers>()?;
-let policy = state.host_policy.as_ref().ok_or("missing host policy")?;
-let input = request.get_input("Input3")?;
-let properties = input.properties_for_host_policy(policy.name())?;
-let bytes = input.as_bytes_for_host_policy(policy.name())?;
+fn policy_input(ctx: &Context, request: &Request) -> Result<Vec<u8>, Error> {
+    let policy = ctx.instance_state::<HostPolicy>()?;
+    request.get_input("Input3")?.as_bytes_for_host_policy(policy.name())
+}
 ```
 
 Properties own their name and shape, and both data methods return an owned `Vec<u8>`. The C
@@ -157,22 +158,25 @@ A backend loads and unloads models of the server like python_backend's `pb_utils
 `pb_utils.unload_model`:
 
 ```rust ignore
-// From the model repository, or reloaded when its files changed.
-server.load_model("punctuation", None, &[])?;
+fn reload_models(server: &Server) -> Result<(), Error> {
+    // From the model repository, or reloaded when its files changed.
+    server.load_model("punctuation", None, &[])?;
 
-// With another config.
-server.load_model("punctuation", Some(r#"{"backend": "onnxruntime", "max_batch_size": 8}"#), &[])?;
+    // With another config.
+    server.load_model("punctuation", Some(r#"{"backend": "onnxruntime", "max_batch_size": 8}"#), &[])?;
 
-// From files instead of the repository: they need a config.
-let onnx = std::fs::read("/weights/punctuation_v2.onnx")?;
-server.load_model(
-    "punctuation_v2",
-    Some(r#"{"backend": "onnxruntime"}"#),
-    &[("file:1/model.onnx", &onnx)],
-)?;
+    // From files instead of the repository: they need a config.
+    let onnx = std::fs::read("/weights/punctuation_v2.onnx")?;
+    server.load_model(
+        "punctuation_v2",
+        Some(r#"{"backend": "onnxruntime"}"#),
+        &[("file:1/model.onnx", &onnx)],
+    )?;
 
-server.unload_model("punctuation_v1", false)?;
-server.unload_model("asr_ensemble", true)?; // with its composing models
+    server.unload_model("punctuation_v1", false)?;
+    server.unload_model("asr_ensemble", true)?; // with its composing models
+    Ok(())
+}
 ```
 
 - **Explicit model control only.** Triton must run with `--model-control-mode=explicit`, and the
@@ -205,23 +209,25 @@ named in `unload_model`.
 With `sequence_batching { iterative_sequence: true }` a model can work on a request step by step:
 after a step it hands the request back to Triton instead of answering it, and Triton batches the
 next step together with the steps of other sequences. `Request::reschedule` does that for a model
-that answers once, `ResponseSender::reschedule` for a decoupled model that streams every step:
+that answers once, `ResponseSender::reschedule` for a decoupled model that streams every step.
+The following example uses `max_batch_size: 1`, output `TOKEN` of type `INT64` with
+`dims: [1]`, and a decoupled iterative-sequence configuration:
 
 ```rust ignore
-let Some(id) = request.correlation_id()? else {
-    continue; // a null request of the sequence batcher
-};
-let step = state.next_step(&id)?;
-
-let mut sender = request.into_sender()?;
-let mut response = sender.response()?;
-response.create_output("TOKEN", DataType::Int64, &[1, 1])?.write_i64_vec(&[step.token])?;
-response.send()?;
-
-if step.last {
-    sender.finish()?;
-} else {
-    sender.reschedule()?;
+fn execute_two_steps(requests: Vec<Request>) -> Result<(), Error> {
+    for request in requests {
+        if request.correlation_id()?.is_none() {
+            continue; // Skip null requests inserted by the sequence batcher.
+        }
+        let first = request.flags()?.sequence_start;
+        let mut sender = request.into_sender()?;
+        let mut response = sender.response()?;
+        response.create_output("TOKEN", DataType::Int64, &[1, 1])?
+            .write_i64_vec(&[if first { 1 } else { 2 }])?;
+        response.send()?;
+        if first { sender.reschedule()?; } else { sender.finish()?; }
+    }
+    Ok(())
 }
 ```
 
@@ -275,10 +281,14 @@ the backend writes what the next request of the sequence should see through `Sta
 `counter_out`:
 
 ```rust ignore
-let previous = request.get_input("counter_in")?.as_fp32_vec()?;
-let mut state = State::new(&mut request, &counter, &[1])?;
-state.write_bytes(&(previous[0] + 1.0).to_ne_bytes())?;
-state.update()?;
+fn update_counter(request: &mut Request, counter: &StateConfig) -> Result<(), Error> {
+    let previous = request.get_input("counter_in")?.as_fp32_vec()?;
+    let mut state = State::new(request, counter, &[1])?;
+    let previous = previous.first().copied().ok_or("counter input is empty")?;
+    state.write_bytes(&(previous + 1.0).to_ne_bytes())?;
+    state.update()?;
+    Ok(())
+}
 ```
 
 - **The state belongs to the request.** Triton frees it with the request, there is no delete call,

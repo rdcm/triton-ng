@@ -89,18 +89,13 @@ async fn call_example() -> Result<(), ClientError> {
 }
 ```
 
-The remaining backend snippets are small hook/function bodies. Import the SDK types they use
-from `triton_ng`. State examples are independent: combine their fields in your own model or
-instance state when using several features. Each snippet is compiled against the SDK to keep it aligned with the API.
+The examples below are independent functions or hooks; import their SDK types from
+`triton_ng`. Combine state fields when using several examples in one backend.
+`make build` compile-checks the Rust snippets in this README and every guide.
 
 ## Compose models with BLS
 
-`Server::infer_async` submits immediately and returns a future. Joining futures allows the BLS
-calls of a batch to run together; batches of one instance still execute sequentially on its
-Triton thread. Dropping a pending future requests cancellation.
-
-An input can be shared without copying. The SDK holds back the parent's final response until
-the last shared input is dropped; its lifetime does not depend on the BLS response arriving.
+Forward an input to another model without copying it:
 
 ```rust ignore
 async fn forward_input(ctx: &Context, request: &Request) -> Result<InferenceResult, Error> {
@@ -112,31 +107,24 @@ async fn forward_input(ctx: &Context, request: &Request) -> Result<InferenceResu
 }
 ```
 
-### Edit a request before submission
-
-Helpers can add and remove inputs or requested outputs. Removing a missing input returns
-`INVALID_ARG`; removing a missing requested output succeeds. An empty requested-output list
-selects **all outputs**. Removed input owners stay alive until request drop/release; removed
-SDK output buffers are dropped immediately.
+To replace an input prepared by another helper and request only the embedding:
 
 ```rust ignore
-fn rebuild_call(ctx: &Context) -> Result<InferenceRequest, Error> {
-    let mut call = InferenceRequest::new(ctx.server(), "minimal_backend_target", -1)?;
-    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], vec![0; 40])?;
-    call.remove_input("INPUT0")?;
-    call.remove_all_inputs()?; // Already empty is fine.
-    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], vec![0; 40])?;
-    call.add_requested_output("OUTPUT0")?;
-    call.remove_requested_output("OUTPUT0")?;
+fn replace_audio(call: &mut InferenceRequest, samples: i64, audio: Vec<u8>) -> Result<(), Error> {
+    call.remove_input("AUDIO")?;
+    call.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], audio)?;
     call.remove_all_requested_outputs()?;
-    Ok(call)
+    call.add_requested_output("EMBEDDING")?;
+    Ok(())
 }
 ```
 
+[Request editing and buffer lifetimes](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md#editing-a-bls-request-before-submission).
+
 ## Streaming
 
-A decoupled model declares `model_transaction_policy { decoupled: true }`. Each request owns
-one `ResponseSender`: send any number of responses, then send the final flag exactly once.
+Return tokens as they become available. Configure the model with
+`model_transaction_policy { decoupled: true }`:
 
 ```rust ignore
 fn send_tokens(request: Request) -> Result<(), Error> {
@@ -151,29 +139,14 @@ fn send_tokens(request: Request) -> Result<(), Error> {
 }
 ```
 
-BLS can consume that model's stream. `next` is available directly on `InferenceStream`:
-
-```rust ignore
-async fn read_tokens(ctx: &Context) -> Result<(), Error> {
-    let mut call = InferenceRequest::new(ctx.server(), "tokens", -1)?;
-    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], vec![0; 40])?;
-    let mut stream = ctx.server().infer_stream(call);
-    while let Some(result) = stream.next().await {
-        println!("{:?}", result?.output("TOKEN")?.as_i32_vec()?);
-    }
-    Ok(())
-}
-```
-
-The gRPC client's `infer_stream(...).await?` exposes the same response sequence to applications;
-its stream is consumed with `futures::StreamExt`. Drop a BLS stream or call `cancel()` to request
-cancellation. Cancellation is cooperative: check `request.is_cancelled()` between work steps.
-A normal `infer_async` call to a decoupled model rejects zero or multiple responses.
+Call a streaming model from another backend with `Server::infer_stream`, or from an
+application with `TritonClient::infer_stream`. See [streaming and cancellation](https://github.com/rdcm/triton-ng/blob/main/docs/streaming.md)
+for complete examples.
 
 ## Metrics and response statistics
 
-Counters, gauges, and histograms are exported on Triton's Prometheus endpoint. Create metric
-families once, keep the metric in model/instance state, and update it from execute:
+Count completed requests on Triton's Prometheus endpoint. Create the counter once in
+model initialization and call `count_request` from execute:
 
 ```rust ignore
 fn model_initialize(model: &Model) -> Result<(), Error> {
@@ -190,8 +163,7 @@ fn count_request(ctx: &Context) -> Result<(), Error> {
 }
 ```
 
-Request and batch inference statistics are reported automatically. **Response** statistics are
-opt-in, independently for each response; enabling twice does not report twice:
+Request and batch statistics are automatic. Enable per-response statistics when needed:
 
 ```rust ignore
 fn answer_with_statistics(request: Request) -> Result<(), Error> {
@@ -201,18 +173,13 @@ fn answer_with_statistics(request: Request) -> Result<(), Error> {
     response.send()?;
     Ok(())
 }
-
-fn reject_with_statistics(mut request: Request) -> Result<(), Error> {
-    request.enable_statistics();
-    request.respond_error_with_code(ErrorCode::InvalidArg, "invalid input")?;
-    Ok(())
-}
 ```
+
+[Metric types, error responses, and statistics](https://github.com/rdcm/triton-ng/blob/main/docs/metrics.md).
 
 ## Tracing and metadata
 
-Preserve a client's ID and attach BLS work to the parent's trace. A custom activity is recorded
-only when tracing is enabled; invalid collector names are rejected instead of corrupting JSON.
+Add a trace activity and connect a BLS call to its client request:
 
 ```rust ignore
 async fn traced_call(ctx: &Context, request: &Request) -> Result<InferenceResult, Error> {
@@ -226,14 +193,11 @@ async fn traced_call(ctx: &Context, request: &Request) -> Result<InferenceResult
 }
 ```
 
-Correlation IDs, sequence flags, timeouts, priority, and typed parameters are also available.
-The [metadata and tracing guide](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md)
-explains tracing ownership and the r25.09 validation-failure limitation.
+[Request IDs, sequence flags, priority, timeouts, and tracing](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md).
 
-## Memory and instance configuration
+## Memory buffers
 
-Allocate RAM, pinned RAM, or GPU memory through `ctx.memory()`. `add_requested_output_into`
-lets a BLS model write into a supplied buffer; take the written buffer from the result for reuse:
+Supply an output buffer, then take it back for reuse:
 
 ```rust ignore
 async fn reuse_output(ctx: &Context) -> Result<RamBuffer, Error> {
@@ -245,14 +209,10 @@ async fn reuse_output(ctx: &Context) -> Result<RamBuffer, Error> {
 }
 ```
 
-GPU output buffers are handed back with `take_gpu` and can become another BLS input without a
-host copy. Reading GPU data on the CPU requires your CUDA code; the SDK does not dereference
-device pointers or depend on the CUDA runtime.
+Use `pinned` for pinned host memory or `gpu` / `take_gpu` to keep BLS outputs on the GPU.
+CPU access to GPU data requires your own CUDA code.
 
-### Report model and instance memory
-
-Reports describe allocations you own; reporting does not allocate memory. Keep reported memory
-alive in state and replace the report when its usage changes:
+Report memory held by your model so clients can inspect it in model statistics:
 
 ```rust ignore
 fn model_initialize(model: &Model) -> Result<(), Error> {
@@ -263,9 +223,29 @@ fn model_initialize(model: &Model) -> Result<(), Error> {
 }
 ```
 
-`ModelInstance::report_memory_usage` does the same for one instance. Triton aggregates records
-by memory type and ID. Metadata such as passive-instance status, optimization profiles, secondary
-devices, and the selected host policy is available in instance initialization:
+For per-instance allocations use `ModelInstance::report_memory_usage`.
+[Memory ownership, GPU chaining, and caching](https://github.com/rdcm/triton-ng/blob/main/docs/memory_buffers.md).
+
+## Configure backend and instances
+
+Keep a setting shared by every model of your backend:
+
+```rust ignore
+fn initialize(backend: &Backend) -> Result<(), Error> {
+    let language = backend.config()?.parameter_or("language", String::from("en"))?;
+    backend.set_state(language)?;
+    backend.set_execution_policy(ExecutionPolicy::Blocking)?;
+    let (_, directory) = backend.artifacts()?;
+    println!("Backend files: {}", directory.display());
+    Ok(())
+}
+
+fn language(ctx: &Context) -> Result<&str, Error> {
+    Ok(ctx.backend_state::<String>()?.as_str())
+}
+```
+
+Inspect an instance and save its host policy for later input reads:
 
 ```rust ignore
 fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
@@ -274,60 +254,39 @@ fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
     instance.set_state(instance.host_policy()?)?;
     Ok(())
 }
-
-fn initialize(backend: &Backend) -> Result<(), Error> {
-    let (kind, directory) = backend.artifacts()?;
-    println!("{kind:?}: {}", directory.display());
-    backend.set_execution_policy(ExecutionPolicy::Blocking)?;
-    Ok(())
-}
 ```
 
-Backend config, preferred instance groups, parallel model loading, and auto-completed configs
-are described in the model-management guide. `DeviceBlocking` shares a device execution thread
-between GPU instances; CPU instances retain independent execution threads.
+[Backend configuration, execution policies, and instance settings](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md).
 
-### Read and supply host-policy input data
+### Host-policy input data
 
-A policy name selects existing storage. When that policy has no data, r25.09 falls back to
-ordinary input. The owned metadata and host copies can outlive the request. They work for
-`Request` and the read-only `RequestView` used by custom batching:
+Read the input storage selected for this instance:
 
 ```rust ignore
 fn read_policy(ctx: &Context, request: &Request) -> Result<Vec<u8>, Error> {
     let policy = ctx.instance_state::<HostPolicy>()?;
-    let input = request.get_input("INPUT")?;
-    let properties = input.properties_for_host_policy(policy.name())?;
-    println!("{:?}: {} buffers", properties.shape, properties.buffer_count);
-    if properties.buffer_count > 0 {
-        let first = input.buffer_for_host_policy(policy.name(), 0)?;
-        println!("First segment: {} bytes", first.len());
-    }
-    input.as_bytes_for_host_policy(policy.name())
+    request.get_input("INPUT")?.as_bytes_for_host_policy(policy.name())
 }
+```
 
-fn policy_call(ctx: &Context) -> Result<InferenceRequest, Error> {
+Supply different input bytes for a BLS target's host policy:
+
+```rust ignore
+fn policy_call(ctx: &Context, default: Vec<u8>, local: &[u8]) -> Result<InferenceRequest, Error> {
     let mut call = InferenceRequest::new(ctx.server(), "minimal_backend_target", -1)?;
-    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], vec![0; 40])?;
-    call.append_input_data_with_host_policy("INPUT0", &[0; 40], "pinned")?;
-    let mut local = ctx.memory().pinned(40)?;
-    local.copy_from_slice(&[0; 40]);
-    call.append_input_buffer_with_host_policy("INPUT0", local, "cpu")?;
+    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], default)?;
+    call.append_input_data_with_host_policy("INPUT0", local, "cpu")?;
     Ok(call)
 }
 ```
 
-`buffer_for_host_policy(name, index)` copies one segment instead of the full input.
-`append_input_buffer_with_host_policy` transfers ownership without copying and accepts pinned
-buffers or shared inputs. Each policy list describes a full tensor. An explicitly empty policy
-list suppresses fallback. These APIs do not allocate on a NUMA node themselves.
+Each input above contains ten FP32 values (40 bytes). A policy without supplied data uses
+the ordinary input. [Policy selection and zero-copy appends](https://github.com/rdcm/triton-ng/blob/main/docs/request_metadata_and_tracing.md#appending-policy-specific-input-data).
 
 ## Sequence state and iterative requests
 
-With `sequence_batching.state` and an `initial_state` in the config, the sequence state of one
-request becomes the next request's input. Read the configuration once with `Model::sequence_states`
-and keep it in model state. This counter example uses `max_batch_size: 0` and state dims `[1]`.
-A state borrows its request mutably and is consumed by `update`:
+Count requests in a sequence. Declare a state tensor with an initial value of zero,
+read its `StateConfig` with `Model::sequence_states`, then update it on each request:
 
 ```rust ignore
 fn increment(mut request: Request, config: &StateConfig) -> Result<(), Error> {
@@ -335,7 +294,6 @@ fn increment(mut request: Request, config: &StateConfig) -> Result<(), Error> {
     let previous = previous.first().copied().ok_or("state has no counter")?;
     let mut state = State::new(&mut request, config, &[1])?;
     state.write_bytes(&(previous + 1.0).to_ne_bytes())?;
-    println!("State storage: {:?}", state.buffer_attributes()?);
     state.update()?;
     let mut response = Response::new(request)?;
     response.create_output("OUTPUT", DataType::Fp32, &[1])?.write_fp32_vec(&[previous + 1.0])?;
@@ -344,12 +302,10 @@ fn increment(mut request: Request, config: &StateConfig) -> Result<(), Error> {
 }
 ```
 
-The SDK rejects configurations from another model, invalid shapes, and shared state inputs;
-a safe update also rejects an unwritten buffer. Shapes passed to `State::new` exclude batching:
-the SDK prepends the per-sequence batch dimension when needed. Device writes require the
-explicit unsafe completion contract of `update_after_device_write`.
+This example uses `max_batch_size: 0` and state dimensions `[1]`.
+[Complete sequence-state configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md#sequence-state).
 
-An iterative sequence can return its request to the scheduler instead of finishing it:
+Return a partial result and schedule another step of a decoupled iterative sequence:
 
 ```rust ignore
 fn next_step(request: Request) -> Result<(), Error> {
@@ -362,12 +318,12 @@ fn next_step(request: Request) -> Result<(), Error> {
 }
 ```
 
-This fragment uses `max_batch_size: 0`; the model must declare a decoupled iterative sequence. r25.09 only reschedules a request once;
-see the guide before designing a multi-step loop.
+Triton r25.09 allows only one reschedule per request; finish the response on the second step.
+[Two-step execution and model configuration](https://github.com/rdcm/triton-ng/blob/main/docs/model_management_and_configuration.md#rescheduling-requests).
 
 ## Custom batching
 
-Group adjacent requests by a shared parameter using a custom batching strategy:
+Group adjacent requests with the same `batch_key` parameter:
 
 ```rust ignore
 struct ByKey;
@@ -393,17 +349,9 @@ impl BatchStrategy for ByKey {
 }
 ```
 
-See [examples/batch-strategy](https://github.com/rdcm/triton-ng/tree/main/examples/batch-strategy)
-for the complete example.
-
-Point `TRITON_BATCH_STRATEGY_PATH` in the model config at that library. `false` ends a batch
-before the current request; it cannot skip to a matching request farther in the queue. A head
-that always refuses stalls until a configured timeout. Callback errors retain partial mutations.
-
-The SDK retires unfinished states at batcher finalization and protects in-flight callbacks with
-`Arc`. **r25.09 still closes the strategy library before joining its scheduler**: concurrent
-library unmapping during a callback requires a core fix. Stop producers and drain callbacks
-before unload. See [the lifecycle and failure guide](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
+Build this as a separate library and set `TRITON_BATCH_STRATEGY_PATH` in the model config.
+[Runnable example](https://github.com/rdcm/triton-ng/tree/main/examples/batch-strategy) ·
+[Queue behavior and safe model unload](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
 
 ## Comparison with python_backend
 

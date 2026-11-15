@@ -5,7 +5,7 @@ Prometheus endpoint (`:8002/metrics`), with no exporter of the backend's own.
 
 ```rust ignore
 struct State {
-    answered: Counter,
+    completed: Counter,
     encoder_seconds: Histogram,
 }
 
@@ -13,7 +13,7 @@ fn model_initialize(model: &Model) -> Result<(), Error> {
     let name = model.name()?;
     let labels = [("model", name.as_str())];
     model.set_state(State {
-        answered: CounterFamily::new("asr_answered_total", "Requests answered")?
+        completed: CounterFamily::new("asr_encoder_calls_total", "Encoder calls completed")?
             .counter(&labels)?,
         encoder_seconds: HistogramFamily::new(
             "asr_encoder_seconds",
@@ -25,14 +25,13 @@ fn model_initialize(model: &Model) -> Result<(), Error> {
     Ok(())
 }
 
-async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
+async fn measure_encoder(ctx: &Context, inference: InferenceRequest) -> Result<InferenceResult, Error> {
     let state = ctx.state::<State>()?;
     let started = Instant::now();
     let result = ctx.server().infer_async(inference).await?;
     state.encoder_seconds.observe(started.elapsed().as_secs_f64())?;
-    // ... answer the requests ...
-    state.answered.increment(requests.len() as f64)?;
-    Ok(())
+    state.completed.increment(1.0)?;
+    Ok(result)
 }
 ```
 
@@ -100,12 +99,15 @@ own, and a backend opts one in with `Response::enable_statistics` or
 `StreamResponse::enable_statistics`, just before sending it:
 
 ```rust ignore
-let mut response = Response::new(request)?;
-response
-    .create_output("DIGIT", DataType::Int32, &[1])?
-    .write_i32_vec(&[digit])?;
-response.enable_statistics();
-response.send()?;
+fn answer_digit(request: Request, digit: i32) -> Result<(), Error> {
+    let mut response = Response::new(request)?;
+    response
+        .create_output("DIGIT", DataType::Int32, &[1])?
+        .write_i32_vec(&[digit])?;
+    response.enable_statistics();
+    response.send()?;
+    Ok(())
+}
 ```
 
 The clock starts when the response was created, so filling the outputs is inside the measured
@@ -132,5 +134,4 @@ when the request was cancelled. Without the opt-in a failed or cancelled respons
 
 The test backend enables it for a request that asks with its `enable_statistics` parameter, on
 a plain response, on every response of a stream, and on the error or cancelled response it answers
-with, and `custom_backend_reports_the_response_statistics_it_enables` checks them in
-`response_stats`.
+with, and the response-statistics integration tests check them in `response_stats`.
