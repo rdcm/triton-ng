@@ -1,7 +1,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use crate::common::config::Config;
 use crate::common::support::string;
 use crate::common::sut::Sut;
 use anyhow::{Context, Result};
@@ -10,25 +9,13 @@ use triton_ng_client::Parameter;
 
 #[tokio::test]
 async fn backend_state_preserves_its_configuration() -> Result<()> {
-    let config = Config::isolated(
-        "backend_state_preserves_its_configuration",
-        "fixture_backend_config",
-        &[
-            "fixture_backend_config",
-            "fixture_backend_state",
-            "fixture_backend_state_other",
-        ],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("fixture_backend_config", &[]).await?;
 
     let echoed = sut
-        .infer_with_parameters(
-            &config.backend_model,
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([("echo_backend_config".to_string(), Parameter::Bool(true))]),
-        )
+        .infer_with_parameters(HashMap::from([(
+            "echo_backend_config".to_string(),
+            Parameter::Bool(true),
+        )]))
         .await?
         .parameters;
     let actual = echoed.get("greeting");
@@ -39,25 +26,13 @@ async fn backend_state_preserves_its_configuration() -> Result<()> {
 
 #[tokio::test]
 async fn backend_artifacts_describe_the_backend_directory() -> Result<()> {
-    let config = Config::isolated(
-        "backend_artifacts_describe_the_backend_directory",
-        "fixture_backend_config",
-        &[
-            "fixture_backend_config",
-            "fixture_backend_state",
-            "fixture_backend_state_other",
-        ],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("fixture_backend_config", &[]).await?;
 
     let echoed = sut
-        .infer_with_parameters(
-            &config.backend_model,
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([("echo_backend_config".to_string(), Parameter::Bool(true))]),
-        )
+        .infer_with_parameters(HashMap::from([(
+            "echo_backend_config".to_string(),
+            Parameter::Bool(true),
+        )]))
         .await?
         .parameters;
     let backend_directory = echoed
@@ -81,28 +56,16 @@ async fn backend_artifacts_describe_the_backend_directory() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_shares_its_state_between_models() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_shares_its_state_between_models",
-        "mnist",
-        &[
-            "fixture_backend_state",
-            "fixture_backend_state_other",
-            "mnist",
-        ],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("fixture_backend_state", &["fixture_backend_state_other"]).await?;
 
     let mut counted = Vec::new();
     for model in [
-        config.model("fixture_backend_state"),
-        config.model("fixture_backend_state_other"),
+        sut.model("fixture_backend_state"),
+        sut.model("fixture_backend_state_other"),
     ] {
         let echoed = sut
-            .infer_with_parameters(
+            .infer_model_with_parameters(
                 model,
-                vec![config.mnist_blank_input()],
-                &[&config.backend_output_name],
                 HashMap::from([("count_backend_state".to_string(), Parameter::Bool(true))]),
             )
             .await?

@@ -12,7 +12,7 @@ These are test assets, not user examples. User examples live in
 Root `models/` contains fixture configs and root `docker-compose.yml` mounts their libraries.
 Run `make build`, `make download-model`, `make docker-env-up`, then `make tests` from the root.
 Tests run concurrently. Each test creates private model instances and shared-memory names;
-fixture guards unload their models on teardown, and the test runner removes generated
+fixture guards unload their models on teardown, and `make tests` removes generated
 directories after all tests finish (Triton may scan the whole repository during a test). Triton
 uses `--strict-readiness=false` so expected model-load failures do not change server health
 for unrelated tests; model readiness is tested independently.
@@ -25,10 +25,18 @@ server resource use, with no serial test groups or locks around whole tests.
 
 ## Feature fixtures
 
-Tests use `Config::isolated(test_name, backend, models)` to create private copies of the
-selected models. `config.model("template")` returns that test's model name. Templates stay
-in root `models/`; generated `models/test_*/` directories are ignored by Git and removed
-after the complete test run. Read-only BLS targets remain shared. Per-request
+Tests construct `Sut::new(backend, dependencies)`, which reads configuration, prepares
+private model copies, and loads their dependencies and the backend. Lifecycle tests use
+`Sut::unloaded(backend, dependencies)` to prepare the backend without loading it.
+`sut.model("template")` returns its private model name. Cloned `Sut` values share the fixture
+guard, keeping models alive until the last worker finishes. Test operations are methods of
+`Sut`; configuration stays private and has no getter. `infer_with_parameters(parameters)`
+constructs the primary backend request internally; `infer_with_input(values, parameters)`
+accepts custom input values, and `infer_model_with_parameters(model, parameters)` targets a
+dependency. Test-only operations are grouped in private modules under
+[common/sut](../common/sut/mod.rs). Tests do not construct `Config` or pass `&Sut` to free helpers.
+Templates stay in root `models/`; generated `models/test_*/` directories are ignored by Git
+and removed after the complete test run. Read-only BLS targets remain shared. Per-request
 parameters inside a fixture select variants of that feature, such as an invalid shape or an
 error response; they do not route into another feature's handler.
 

@@ -1,7 +1,6 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use crate::common::config::Config;
 use crate::common::support::string;
 use crate::common::sut::Sut;
 use anyhow::{Context, Result};
@@ -10,20 +9,12 @@ use triton_ng_client::Parameter;
 
 #[tokio::test]
 async fn host_policy_pinned_reports_its_name_and_settings() -> Result<()> {
-    let config = Config::isolated(
-        "host_policy_pinned_reports_its_name_and_settings",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
     let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([("echo_host_policy".to_string(), Parameter::Bool(true))]),
-        )
+        .infer_with_parameters(HashMap::from([(
+            "echo_host_policy".to_string(),
+            Parameter::Bool(true),
+        )]))
         .await?
         .parameters;
     let expected = (Some(string("pinned")), Some(string("cpu-cores=0-7")));
@@ -37,20 +28,12 @@ async fn host_policy_pinned_reports_its_name_and_settings() -> Result<()> {
 
 #[tokio::test]
 async fn host_policy_unknown_reports_its_name_and_settings() -> Result<()> {
-    let config = Config::isolated(
-        "host_policy_unknown_reports_its_name_and_settings",
-        "mnist",
-        &["host_policy_unknown"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("host_policy_unknown", &[]).await?;
     let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_unknown"),
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([("echo_host_policy".to_string(), Parameter::Bool(true))]),
-        )
+        .infer_with_parameters(HashMap::from([(
+            "echo_host_policy".to_string(),
+            Parameter::Bool(true),
+        )]))
         .await?
         .parameters;
     let expected = (Some(string("unset_policy")), Some(string("")));
@@ -64,20 +47,12 @@ async fn host_policy_unknown_reports_its_name_and_settings() -> Result<()> {
 
 #[tokio::test]
 async fn host_policy_default_reports_its_name_and_settings() -> Result<()> {
-    let config = Config::isolated(
-        "host_policy_default_reports_its_name_and_settings",
-        "mnist",
-        &["host_policy_default"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("host_policy_default", &[]).await?;
     let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_default"),
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([("echo_host_policy".to_string(), Parameter::Bool(true))]),
-        )
+        .infer_with_parameters(HashMap::from([(
+            "echo_host_policy".to_string(),
+            Parameter::Bool(true),
+        )]))
         .await?
         .parameters;
     let expected = (Some(string("cpu")), Some(string("cpu-cores=0-7")));
@@ -91,30 +66,16 @@ async fn host_policy_default_reports_its_name_and_settings() -> Result<()> {
 
 #[tokio::test]
 async fn configured_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
-    let config = Config::isolated(
-        "configured_host_policy_preserves_input_metadata_and_bytes",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    let mut input = config.mnist_blank_input();
-    for (index, value) in input.data.iter_mut().enumerate() {
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
+    let mut input = vec![0.0_f32; 784];
+    for (index, value) in input.iter_mut().enumerate() {
         *value = index as f32 * 0.25 - 3.0;
     }
     let parameters = HashMap::from([
         ("echo_policy_input".to_string(), Parameter::Bool(true)),
         ("inspect_policy_input".to_string(), Parameter::Bool(true)),
     ]);
-    let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![input],
-            &[&config.backend_output_name],
-            parameters,
-        )
-        .await?
-        .parameters;
+    let echoed = sut.infer_with_input(input, parameters).await?.parameters;
     let keys = [
         "policy_input_matches",
         "input_name",
@@ -125,7 +86,7 @@ async fn configured_host_policy_preserves_input_metadata_and_bytes() -> Result<(
     let actual_values = keys.map(|key| echoed.get(key).cloned());
     let expected_values = [
         Some(Parameter::Bool(true)),
-        Some(string(&config.input_name)),
+        Some(string("Input3")),
         Some(string("Fp32")),
         Some(string("[1, 1, 28, 28]")),
         Some(Parameter::Int(784 * 4)),
@@ -139,30 +100,16 @@ async fn configured_host_policy_preserves_input_metadata_and_bytes() -> Result<(
 
 #[tokio::test]
 async fn unset_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
-    let config = Config::isolated(
-        "unset_host_policy_preserves_input_metadata_and_bytes",
-        "mnist",
-        &["host_policy_unknown"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    let mut input = config.mnist_blank_input();
-    for (index, value) in input.data.iter_mut().enumerate() {
+    let sut = Sut::new("host_policy_unknown", &[]).await?;
+    let mut input = vec![0.0_f32; 784];
+    for (index, value) in input.iter_mut().enumerate() {
         *value = index as f32 * 0.25 - 3.0;
     }
     let parameters = HashMap::from([
         ("echo_policy_input".to_string(), Parameter::Bool(true)),
         ("inspect_policy_input".to_string(), Parameter::Bool(true)),
     ]);
-    let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_unknown"),
-            vec![input],
-            &[&config.backend_output_name],
-            parameters,
-        )
-        .await?
-        .parameters;
+    let echoed = sut.infer_with_input(input, parameters).await?.parameters;
     let keys = [
         "policy_input_matches",
         "input_name",
@@ -173,7 +120,7 @@ async fn unset_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
     let actual_values = keys.map(|key| echoed.get(key).cloned());
     let expected_values = [
         Some(Parameter::Bool(true)),
-        Some(string(&config.input_name)),
+        Some(string("Input3")),
         Some(string("Fp32")),
         Some(string("[1, 1, 28, 28]")),
         Some(Parameter::Int(784 * 4)),
@@ -187,30 +134,16 @@ async fn unset_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
 
 #[tokio::test]
 async fn batching_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
-    let config = Config::isolated(
-        "batching_host_policy_preserves_input_metadata_and_bytes",
-        "mnist",
-        &["host_policy_batching"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    let mut input = config.mnist_blank_input();
-    for (index, value) in input.data.iter_mut().enumerate() {
+    let sut = Sut::new("host_policy_batching", &[]).await?;
+    let mut input = vec![0.0_f32; 784];
+    for (index, value) in input.iter_mut().enumerate() {
         *value = index as f32 * 0.25 - 3.0;
     }
     let parameters = HashMap::from([
         ("echo_policy_input".to_string(), Parameter::Bool(true)),
         ("inspect_policy_input".to_string(), Parameter::Bool(true)),
     ]);
-    let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_batching"),
-            vec![input],
-            &[&config.backend_output_name],
-            parameters,
-        )
-        .await?
-        .parameters;
+    let echoed = sut.infer_with_input(input, parameters).await?.parameters;
     let keys = [
         "policy_input_matches",
         "input_name",
@@ -221,7 +154,7 @@ async fn batching_host_policy_preserves_input_metadata_and_bytes() -> Result<()>
     let actual_values = keys.map(|key| echoed.get(key).cloned());
     let expected_values = [
         Some(Parameter::Bool(true)),
-        Some(string(&config.input_name)),
+        Some(string("Input3")),
         Some(string("Fp32")),
         Some(string("[1, 1, 28, 28]")),
         Some(Parameter::Int(784 * 4)),
@@ -235,15 +168,9 @@ async fn batching_host_policy_preserves_input_metadata_and_bytes() -> Result<()>
 
 #[tokio::test]
 async fn missing_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
-    let config = Config::isolated(
-        "missing_host_policy_preserves_input_metadata_and_bytes",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    let mut input = config.mnist_blank_input();
-    for (index, value) in input.data.iter_mut().enumerate() {
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
+    let mut input = vec![0.0_f32; 784];
+    for (index, value) in input.iter_mut().enumerate() {
         *value = index as f32 * 0.25 - 3.0;
     }
     let mut parameters = HashMap::from([
@@ -251,15 +178,7 @@ async fn missing_host_policy_preserves_input_metadata_and_bytes() -> Result<()> 
         ("inspect_policy_input".to_string(), Parameter::Bool(true)),
     ]);
     parameters.insert("input_policy".to_string(), string("missing-policy"));
-    let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![input],
-            &[&config.backend_output_name],
-            parameters,
-        )
-        .await?
-        .parameters;
+    let echoed = sut.infer_with_input(input, parameters).await?.parameters;
     let keys = [
         "policy_input_matches",
         "input_name",
@@ -270,7 +189,7 @@ async fn missing_host_policy_preserves_input_metadata_and_bytes() -> Result<()> 
     let actual_values = keys.map(|key| echoed.get(key).cloned());
     let expected_values = [
         Some(Parameter::Bool(true)),
-        Some(string(&config.input_name)),
+        Some(string("Input3")),
         Some(string("Fp32")),
         Some(string("[1, 1, 28, 28]")),
         Some(Parameter::Int(784 * 4)),
@@ -284,15 +203,9 @@ async fn missing_host_policy_preserves_input_metadata_and_bytes() -> Result<()> 
 
 #[tokio::test]
 async fn empty_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
-    let config = Config::isolated(
-        "empty_host_policy_preserves_input_metadata_and_bytes",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    let mut input = config.mnist_blank_input();
-    for (index, value) in input.data.iter_mut().enumerate() {
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
+    let mut input = vec![0.0_f32; 784];
+    for (index, value) in input.iter_mut().enumerate() {
         *value = index as f32 * 0.25 - 3.0;
     }
     let mut parameters = HashMap::from([
@@ -300,15 +213,7 @@ async fn empty_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
         ("inspect_policy_input".to_string(), Parameter::Bool(true)),
     ]);
     parameters.insert("input_policy".to_string(), string(""));
-    let echoed = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![input],
-            &[&config.backend_output_name],
-            parameters,
-        )
-        .await?
-        .parameters;
+    let echoed = sut.infer_with_input(input, parameters).await?.parameters;
     let keys = [
         "policy_input_matches",
         "input_name",
@@ -319,7 +224,7 @@ async fn empty_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
     let actual_values = keys.map(|key| echoed.get(key).cloned());
     let expected_values = [
         Some(Parameter::Bool(true)),
-        Some(string(&config.input_name)),
+        Some(string("Input3")),
         Some(string("Fp32")),
         Some(string("[1, 1, 28, 28]")),
         Some(Parameter::Int(784 * 4)),
@@ -333,23 +238,12 @@ async fn empty_host_policy_preserves_input_metadata_and_bytes() -> Result<()> {
 
 #[tokio::test]
 async fn host_policy_input_rejects_nul_names() -> Result<()> {
-    let config = Config::isolated(
-        "host_policy_input_rejects_nul_names",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
     let error = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([
-                ("echo_policy_input".to_string(), Parameter::Bool(true)),
-                ("invalid_policy_name".to_string(), Parameter::Bool(true)),
-            ]),
-        )
+        .infer_with_parameters(HashMap::from([
+            ("echo_policy_input".to_string(), Parameter::Bool(true)),
+            ("invalid_policy_name".to_string(), Parameter::Bool(true)),
+        ]))
         .await
         .err()
         .context("invalid host-policy arguments were accepted")?;
@@ -361,23 +255,12 @@ async fn host_policy_input_rejects_nul_names() -> Result<()> {
 
 #[tokio::test]
 async fn host_policy_input_rejects_out_of_range_buffers() -> Result<()> {
-    let config = Config::isolated(
-        "host_policy_input_rejects_out_of_range_buffers",
-        "mnist",
-        &["host_policy_pinned"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("host_policy_pinned", &[]).await?;
     let error = sut
-        .infer_with_parameters(
-            config.model("host_policy_pinned"),
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([
-                ("echo_policy_input".to_string(), Parameter::Bool(true)),
-                ("invalid_policy_index".to_string(), Parameter::Bool(true)),
-            ]),
-        )
+        .infer_with_parameters(HashMap::from([
+            ("echo_policy_input".to_string(), Parameter::Bool(true)),
+            ("invalid_policy_index".to_string(), Parameter::Bool(true)),
+        ]))
         .await
         .err()
         .context("invalid host-policy arguments were accepted")?;

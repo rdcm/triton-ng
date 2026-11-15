@@ -1,6 +1,55 @@
+#[path = "statistics.rs"]
+mod statistics;
+
+#[path = "model_configuration.rs"]
+mod model_configuration;
+
+#[path = "concurrency.rs"]
+mod concurrency;
+
+#[path = "cancellation.rs"]
+mod cancellation;
+
+#[path = "memory_buffers.rs"]
+mod memory_buffers;
+
+#[path = "shared_inputs.rs"]
+mod shared_inputs;
+
+#[path = "errors.rs"]
+mod errors;
+
+#[path = "tracing.rs"]
+mod tracing;
+
+#[path = "metadata.rs"]
+mod metadata;
+
+#[path = "model_control.rs"]
+mod model_control;
+
+#[path = "iterative_sequence.rs"]
+mod iterative_sequence;
+
+#[path = "bls_streaming.rs"]
+mod bls_streaming;
+
+#[path = "sequence_state.rs"]
+mod sequence_state;
+
+#[path = "custom_batching.rs"]
+mod custom_batching;
+
+#[path = "inference.rs"]
+mod inference;
+
+#[path = "streaming.rs"]
+mod streaming;
+
 use std::collections::HashMap;
 use std::ffi::CString;
 
+use super::config::Config;
 use anyhow::{Context, Result};
 use triton_ng_client as client;
 
@@ -9,17 +58,203 @@ use super::dto::{
     OutputTensor, ServerInfo, ShmRegion, TensorMeta,
 };
 
+#[derive(Clone)]
 pub struct Sut {
     inner: client::TritonClient,
+    config: Config,
+    models: std::sync::Arc<super::models::Models>,
 }
 
 impl Sut {
-    pub async fn new(triton_url: &str) -> Result<Sut> {
-        let triton_config = client::TritonClientConfig::new(triton_url);
+    pub async fn new(backend: &str, dependencies: &[&str]) -> Result<Self> {
+        Self::prepare(backend, dependencies, true).await
+    }
+
+    pub async fn unloaded(backend: &str, dependencies: &[&str]) -> Result<Self> {
+        Self::prepare(backend, dependencies, false).await
+    }
+
+    async fn prepare(backend: &str, dependencies: &[&str], load_backend: bool) -> Result<Self> {
+        let mut config = Config::load(backend)?;
+        let fixtures: Vec<_> = std::iter::once(backend)
+            .chain(dependencies.iter().copied())
+            .collect();
+        let models =
+            std::sync::Arc::new(super::models::Models::new(&config.triton_url, &fixtures)?);
+        config.mnist_model = models.name(&config.mnist_model).to_string();
+        config.backend_model = models.name(&config.backend_model).to_string();
+        config.stream_model = models.name(&config.stream_model).to_string();
+        config.sequence_state_model = models.name(&config.sequence_state_model).to_string();
+        config.sequence_state_other_model =
+            models.name(&config.sequence_state_other_model).to_string();
+        config.batch_strategy_model = models.name(&config.batch_strategy_model).to_string();
+        let triton_config = client::TritonClientConfig::new(&config.triton_url);
         let inner = client::TritonClient::new(triton_config)
             .await
             .context("Failed to connect to Triton")?;
-        Ok(Sut { inner })
+        let sut = Self {
+            inner,
+            config,
+            models,
+        };
+        for dependency in dependencies {
+            sut.repository_model_load_at(sut.model(dependency)).await?;
+        }
+        if load_backend {
+            sut.repository_model_load_at(&sut.config.backend_model)
+                .await?;
+        }
+        Ok(sut)
+    }
+
+    pub fn model<'a>(&'a self, name: &'a str) -> &'a str {
+        self.models.name(name)
+    }
+
+    pub async fn infer_with_parameters(
+        &self,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        self.infer_model_with_parameters(&self.config.backend_model, parameters)
+            .await
+    }
+
+    pub async fn infer_model_with_parameters(
+        &self,
+        model: &str,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let model = self.model(model);
+        let (inputs, outputs) = self.request_tensors(model, None).await?;
+        let names: Vec<_> = outputs.iter().map(String::as_str).collect();
+        self.infer_raw_with_parameters(model, inputs, &names, parameters)
+            .await
+    }
+
+    pub async fn infer_with_input(
+        &self,
+        data: Vec<f32>,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let model = &self.config.backend_model;
+        let (inputs, outputs) = self.request_tensors(model, Some(data)).await?;
+        let names: Vec<_> = outputs.iter().map(String::as_str).collect();
+        self.infer_raw_with_parameters(model, inputs, &names, parameters)
+            .await
+    }
+
+    pub async fn infer_with_id_and_parameters(
+        &self,
+        id: &str,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<InferResult> {
+        let model = &self.config.backend_model;
+        let (inputs, outputs) = self.request_tensors(model, None).await?;
+        let names: Vec<_> = outputs.iter().map(String::as_str).collect();
+        self.infer_raw_with_id_and_parameters(model, inputs, &names, id, parameters)
+            .await
+    }
+
+    pub async fn infer_stream(
+        &self,
+        parameters: HashMap<String, client::Parameter>,
+    ) -> Result<client::InferStream> {
+        let model = &self.config.backend_model;
+        let (inputs, outputs) = self.request_tensors(model, None).await?;
+        let names: Vec<_> = outputs.iter().map(String::as_str).collect();
+        self.infer_raw_stream(model, inputs, &names, parameters)
+            .await
+    }
+
+    async fn request_tensors(
+        &self,
+        model: &str,
+        data: Option<Vec<f32>>,
+    ) -> Result<(Vec<InferInput>, Vec<String>)> {
+        let metadata = self.model_metadata_at(model, None).await?;
+        let input = metadata.inputs.first().context("fixture has no input")?;
+        if metadata.inputs.len() != 1 || input.datatype != "FP32" {
+            return Err(anyhow::anyhow!("fixture must have one FP32 input"));
+        }
+        let shape: Vec<_> = input
+            .shape
+            .iter()
+            .map(|&dimension| if dimension == -1 { 1 } else { dimension })
+            .collect();
+        let size = shape.iter().try_fold(1_usize, |size, &dimension| {
+            size.checked_mul(usize::try_from(dimension)?)
+                .context("fixture input size overflow")
+        })?;
+        let data = data.unwrap_or_else(|| vec![0.0; size]);
+        if data.len() != size {
+            return Err(anyhow::anyhow!(
+                "fixture input has {} values, expected {size}",
+                data.len()
+            ));
+        }
+        let outputs = metadata
+            .outputs
+            .into_iter()
+            .map(|output| output.name)
+            .collect();
+        Ok((
+            vec![InferInput {
+                name: input.name.clone(),
+                shape,
+                data,
+            }],
+            outputs,
+        ))
+    }
+
+    pub async fn model_ready(&self) -> Result<bool> {
+        self.model_ready_at(&self.config.backend_model, None).await
+    }
+    pub async fn repository_model_ready(&self, model: &str) -> Result<bool> {
+        self.model_ready_at(self.model(model), None).await
+    }
+    pub async fn model_metadata(&self) -> Result<ModelInfo> {
+        self.model_metadata_at(&self.config.backend_model, None)
+            .await
+    }
+    pub async fn model_config(&self) -> Result<Option<ModelConfig>> {
+        self.model_config_at(&self.config.backend_model, None).await
+    }
+    pub async fn model_statistics(&self) -> Result<Vec<ModelStats>> {
+        self.model_statistics_at(Some(&self.config.backend_model), None)
+            .await
+    }
+    pub async fn repository_statistics(&self) -> Result<Vec<ModelStats>> {
+        self.model_statistics_at(None, None).await
+    }
+    pub async fn model_memory_usage(&self) -> Result<Vec<client::MemoryUsage>> {
+        self.model_memory_usage_at(&self.config.backend_model).await
+    }
+    pub async fn response_statistics(&self) -> Result<u64> {
+        self.response_statistics_at(&self.config.backend_model)
+            .await
+    }
+    pub async fn failed_and_cancelled_responses(&self) -> Result<(u64, u64)> {
+        self.failed_and_cancelled_responses_at(&self.config.backend_model)
+            .await
+    }
+    pub async fn successful_response_ns(&self) -> Result<u64> {
+        self.successful_response_ns_at(&self.config.backend_model)
+            .await
+    }
+    pub async fn repository_model_load(&self) -> Result<()> {
+        self.repository_model_load_at(&self.config.backend_model)
+            .await
+    }
+    pub async fn repository_model_unload(&self) -> Result<()> {
+        self.repository_model_unload_at(&self.config.backend_model)
+            .await
+    }
+    pub async fn trace_settings(
+        &self,
+        settings: HashMap<String, Vec<String>>,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        self.trace_settings_at(settings, None).await
     }
 
     pub async fn server_live(&self) -> Result<bool> {
@@ -45,14 +280,14 @@ impl Sut {
         })
     }
 
-    pub async fn model_ready(&self, model: &str, version: Option<&str>) -> Result<bool> {
+    async fn model_ready_at(&self, model: &str, version: Option<&str>) -> Result<bool> {
         self.inner
             .model_ready(model, version, None)
             .await
             .context("model_ready failed")
     }
 
-    pub async fn model_metadata(&self, model: &str, version: Option<&str>) -> Result<ModelInfo> {
+    async fn model_metadata_at(&self, model: &str, version: Option<&str>) -> Result<ModelInfo> {
         let info = self.inner.model_metadata(model, version, None).await?;
         Ok(ModelInfo {
             name: info.name,
@@ -79,7 +314,7 @@ impl Sut {
         })
     }
 
-    pub async fn model_config(
+    async fn model_config_at(
         &self,
         model: &str,
         version: Option<&str>,
@@ -99,7 +334,7 @@ impl Sut {
         }))
     }
 
-    pub async fn model_statistics(
+    async fn model_statistics_at(
         &self,
         model: Option<&str>,
         version: Option<&str>,
@@ -116,7 +351,7 @@ impl Sut {
             .collect())
     }
 
-    pub async fn model_memory_usage(&self, model: &str) -> Result<Vec<client::MemoryUsage>> {
+    async fn model_memory_usage_at(&self, model: &str) -> Result<Vec<client::MemoryUsage>> {
         let stats = self.inner.model_statistics(Some(model), None, None).await?;
         let stats = stats
             .into_iter()
@@ -127,7 +362,7 @@ impl Sut {
 
     /// The number of responses the model reported per-response statistics for,
     /// the sum over every bucket Triton keeps for a response.
-    pub async fn response_statistics(&self, model: &str) -> Result<u64> {
+    async fn response_statistics_at(&self, model: &str) -> Result<u64> {
         let stats = self.inner.model_statistics(Some(model), None, None).await?;
         let stats = stats
             .into_iter()
@@ -154,7 +389,7 @@ impl Sut {
 
     /// How many responses of the model the statistics count as failed and how
     /// many as cancelled, summed over the responses Triton keeps.
-    pub async fn failed_and_cancelled_responses(&self, model: &str) -> Result<(u64, u64)> {
+    async fn failed_and_cancelled_responses_at(&self, model: &str) -> Result<(u64, u64)> {
         let stats = self.inner.model_statistics(Some(model), None, None).await?;
         let stats = stats
             .into_iter()
@@ -170,7 +405,7 @@ impl Sut {
 
     /// The nanoseconds of the responses the statistics count as successful,
     /// summed over the responses Triton keeps.
-    pub async fn successful_response_ns(&self, model: &str) -> Result<u64> {
+    async fn successful_response_ns_at(&self, model: &str) -> Result<u64> {
         let stats = self.inner.model_statistics(Some(model), None, None).await?;
         let stats = stats
             .into_iter()
@@ -184,7 +419,7 @@ impl Sut {
             .sum())
     }
 
-    pub async fn infer(
+    async fn infer_raw(
         &self,
         model: &str,
         version: Option<&str>,
@@ -200,7 +435,7 @@ impl Sut {
             .await
     }
 
-    pub async fn infer_with_parameters(
+    async fn infer_raw_with_parameters(
         &self,
         model: &str,
         inputs: Vec<InferInput>,
@@ -215,7 +450,7 @@ impl Sut {
             .await
     }
 
-    pub async fn infer_with_id_and_parameters(
+    async fn infer_raw_with_id_and_parameters(
         &self,
         model: &str,
         inputs: Vec<InferInput>,
@@ -232,7 +467,7 @@ impl Sut {
             .await
     }
 
-    pub async fn infer_stream(
+    async fn infer_raw_stream(
         &self,
         model: &str,
         inputs: Vec<InferInput>,
@@ -287,14 +522,14 @@ impl Sut {
             .collect())
     }
 
-    pub async fn repository_model_load(&self, model: &str) -> Result<()> {
+    async fn repository_model_load_at(&self, model: &str) -> Result<()> {
         self.inner
             .repository_model_load(model, None)
             .await
             .context("repository_model_load failed")
     }
 
-    pub async fn repository_model_unload(&self, model: &str) -> Result<()> {
+    async fn repository_model_unload_at(&self, model: &str) -> Result<()> {
         self.inner
             .repository_model_unload(model, None)
             .await
@@ -380,7 +615,7 @@ impl Sut {
             .context("cuda_shared_memory_unregister failed")
     }
 
-    pub async fn trace_settings(
+    async fn trace_settings_at(
         &self,
         settings: HashMap<String, Vec<String>>,
         model: Option<&str>,
@@ -405,9 +640,29 @@ impl Sut {
             .map(|(k, v)| (k, log_value_from(v)))
             .collect())
     }
+
+    pub fn scrape_metrics(&self) -> Result<String> {
+        let address = &self.config.metrics_address;
+        use std::io::{Read, Write};
+
+        let mut stream = std::net::TcpStream::connect(address)
+            .context("failed to connect to the metrics port")?;
+        write!(
+            stream,
+            "GET /metrics HTTP/1.0\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        let (head, body) = response
+            .split_once("\r\n\r\n")
+            .context("metrics response has no body")?;
+        if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+            return Err(anyhow::anyhow!("metrics endpoint answered {head}"));
+        }
+        Ok(body.to_string())
+    }
 }
 
-/// The Prometheus text Triton serves at `/metrics` of `address`.
 fn proto_inputs(inputs: Vec<InferInput>) -> Vec<client::InferInput> {
     inputs
         .into_iter()
@@ -437,26 +692,6 @@ pub fn infer_result(response: client::InferResponse) -> InferResult {
             })
             .collect(),
     }
-}
-
-pub fn scrape_metrics(address: &str) -> Result<String> {
-    use std::io::{Read, Write};
-
-    let mut stream =
-        std::net::TcpStream::connect(address).context("failed to connect to the metrics port")?;
-    write!(
-        stream,
-        "GET /metrics HTTP/1.0\r\nHost: {address}\r\nConnection: close\r\n\r\n"
-    )?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
-    let (head, body) = response
-        .split_once("\r\n\r\n")
-        .context("metrics response has no body")?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err(anyhow::anyhow!("metrics endpoint answered {head}"));
-    }
-    Ok(body.to_string())
 }
 
 pub fn create_posix_shm(name: &str, size: i64) -> Result<()> {

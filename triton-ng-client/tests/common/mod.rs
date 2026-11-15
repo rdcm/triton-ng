@@ -1,20 +1,14 @@
 #![allow(dead_code)]
 
 #[path = "config.rs"]
-pub mod config;
+mod config;
 #[path = "dto.rs"]
 pub mod dto;
-#[path = "sut.rs"]
+#[path = "sut/mod.rs"]
 pub mod sut;
 
 #[path = "support.rs"]
 pub mod support;
 
-#[path = "shared_inputs.rs"]
-pub mod shared_inputs;
-
-#[path = "streaming.rs"]
-pub mod streaming;
-
 #[path = "models.rs"]
-pub mod models;
+mod models;

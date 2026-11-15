@@ -8,10 +8,11 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub struct Models {
     names: HashMap<String, String>,
     url: String,
+    cleanup: Vec<String>,
 }
 
 impl Models {
-    pub fn new(test: &str, url: &str) -> Result<Self> {
+    pub fn new(url: &str, fixtures: &[&str]) -> Result<Self> {
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models");
         let run =
             std::env::var("TRITON_NG_TEST_RUN").context("run integration tests with make tests")?;
@@ -24,6 +25,7 @@ impl Models {
         let mut models = Self {
             names: HashMap::new(),
             url: url.to_string(),
+            cleanup: Vec::new(),
         };
         for entry in &templates {
             if entry.path().join("config.pbtxt").is_file()
@@ -40,14 +42,26 @@ impl Models {
                 .names
                 .insert(name.to_string(), format!("{prefix}_{name}"));
         }
+        for name in
+            fixtures
+                .iter()
+                .copied()
+                .chain(["mnist_from_files", "mnist_escaped", "no_such_model"])
+        {
+            models.cleanup.push(models.name(name).to_string());
+        }
         for entry in templates {
             let original = entry.file_name().to_string_lossy().into_owned();
-            let Some(name) = models.names.get(&original) else {
+            if !fixtures.contains(&original.as_str()) {
                 continue;
-            };
+            }
+            let name = models
+                .names
+                .get(&original)
+                .with_context(|| format!("unknown fixture {original}"))?;
             let directory = repository.join(name);
             std::fs::create_dir(&directory)
-                .with_context(|| format!("creating model fixture for {test}"))?;
+                .with_context(|| format!("creating model fixture {}", directory.display()))?;
             let mut config = std::fs::read_to_string(entry.path().join("config.pbtxt"))?;
             config = config.replacen(
                 &format!("name: \"{original}\""),
@@ -81,7 +95,7 @@ impl Models {
 impl Drop for Models {
     fn drop(&mut self) {
         let url = self.url.clone();
-        let names: Vec<_> = self.names.values().cloned().collect();
+        let names = self.cleanup.clone();
         // Use a separate runtime so cleanup also runs on an early test failure, without
         // trying to enter or drive the test's current-thread Tokio runtime recursively.
         let cleanup = std::thread::spawn(move || -> Result<()> {
@@ -89,9 +103,12 @@ impl Drop for Models {
                 .enable_all()
                 .build()?
                 .block_on(async {
-                    let sut = super::sut::Sut::new(&url).await?;
+                    let client = triton_ng_client::TritonClient::new(
+                        triton_ng_client::TritonClientConfig::new(&url),
+                    )
+                    .await?;
                     for name in names {
-                        if let Err(error) = sut.repository_model_unload(&name).await {
+                        if let Err(error) = client.repository_model_unload(&name, None).await {
                             eprintln!("cannot unload test model {name}: {error}");
                         }
                     }
@@ -103,6 +120,6 @@ impl Drop for Models {
             Ok(Err(error)) => eprintln!("cannot clean up test models: {error}"),
             Err(_) => eprintln!("test model cleanup thread panicked"),
         }
-        // tools/run-tests.py removes directories after all tests have stopped scanning.
+        // make tests removes directories after all tests have stopped scanning.
     }
 }

@@ -1,32 +1,24 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use crate::common::config::Config;
-use crate::common::support::infer_digit;
-use crate::common::sut::{Sut, scrape_metrics};
+use crate::common::sut::Sut;
 use anyhow::{Context, Result};
 
 #[tokio::test]
 async fn custom_backend_answered_total_increases_after_inference() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_answered_total_increases_after_inference",
-        "mnist",
-        &["mnist"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    infer_digit(&sut, &config).await?;
+    let sut = Sut::new("mnist", &[]).await?;
+    sut.infer_digit().await?;
     let before = mnist_metric(
-        &scrape_metrics(&config.metrics_address)?,
+        &sut.scrape_metrics()?,
         "triton_ng_example_answered_total",
-        &config.backend_model,
+        sut.model("mnist"),
     )?
     .context("metric missing")?;
-    infer_digit(&sut, &config).await?;
+    sut.infer_digit().await?;
     let after = mnist_metric(
-        &scrape_metrics(&config.metrics_address)?,
+        &sut.scrape_metrics()?,
         "triton_ng_example_answered_total",
-        &config.backend_model,
+        sut.model("mnist"),
     )?
     .context("metric missing")?;
     let expected = true;
@@ -37,25 +29,19 @@ async fn custom_backend_answered_total_increases_after_inference() -> Result<()>
 
 #[tokio::test]
 async fn custom_backend_bls_seconds_count_increases_after_inference() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_bls_seconds_count_increases_after_inference",
-        "mnist",
-        &["mnist"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    infer_digit(&sut, &config).await?;
+    let sut = Sut::new("mnist", &[]).await?;
+    sut.infer_digit().await?;
     let before = mnist_metric(
-        &scrape_metrics(&config.metrics_address)?,
+        &sut.scrape_metrics()?,
         "triton_ng_example_bls_seconds_count",
-        &config.backend_model,
+        sut.model("mnist"),
     )?
     .context("metric missing")?;
-    infer_digit(&sut, &config).await?;
+    sut.infer_digit().await?;
     let after = mnist_metric(
-        &scrape_metrics(&config.metrics_address)?,
+        &sut.scrape_metrics()?,
         "triton_ng_example_bls_seconds_count",
-        &config.backend_model,
+        sut.model("mnist"),
     )?
     .context("metric missing")?;
     let expected = true;
@@ -66,15 +52,9 @@ async fn custom_backend_bls_seconds_count_increases_after_inference() -> Result<
 
 #[tokio::test]
 async fn custom_backend_exports_its_metric_families() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_exports_its_metric_families",
-        "mnist",
-        &["mnist"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
-    infer_digit(&sut, &config).await?;
-    let metrics = scrape_metrics(&config.metrics_address)?;
+    let sut = Sut::new("mnist", &[]).await?;
+    sut.infer_digit().await?;
+    let metrics = sut.scrape_metrics()?;
     let names = [
         "triton_ng_example_answered_total",
         "triton_ng_example_bls_seconds_count",
@@ -82,12 +62,12 @@ async fn custom_backend_exports_its_metric_families() -> Result<()> {
     ];
     let mut present = Vec::new();
     for name in names {
-        present.push(mnist_metric(&metrics, name, &config.backend_model)?.is_some());
+        present.push(mnist_metric(&metrics, name, sut.model("mnist"))?.is_some());
     }
     let histogram = metrics.contains("# TYPE triton_ng_example_bls_seconds histogram");
     let bucket = metrics.contains(&format!(
         "triton_ng_example_bls_seconds_bucket{{model=\"{}\",le=\"0.01\"}}",
-        config.backend_model
+        sut.model("mnist")
     ));
     let expected = (vec![true; 3], true, true);
     let actual = (present, histogram, bucket);

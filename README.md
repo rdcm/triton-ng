@@ -461,7 +461,7 @@ Start with the topics you need; the guides and this README are also included in
 ## Development
 
 Install Rust, Docker, the NVIDIA Container Toolkit, and a compatible NVIDIA driver.
-The test suite also requires Python 3 and `cargo-nextest`. From the repository root:
+The test suite also requires `cargo-nextest`. From the repository root:
 
 ```bash
 make build

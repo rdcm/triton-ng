@@ -1,22 +1,13 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use crate::common::config::Config;
 use crate::common::sut::Sut;
-use anyhow::{Context, Result};
-use std::collections::HashMap;
+use anyhow::Result;
 use tonic::Code;
-use triton_ng_client::Parameter;
 
 #[tokio::test]
 async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_answers_with_the_requested_error_code",
-        "fixture_errors",
-        &["fixture_errors"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("fixture_errors", &[]).await?;
 
     let mut actual = Vec::new();
     let mut expected = Vec::new();
@@ -29,7 +20,9 @@ async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
         ("ALREADY_EXISTS", Code::AlreadyExists),
         ("CANCELLED", Code::Cancelled),
     ] {
-        let actual_code = grpc_code_of_failed_inference(&sut, &config, "error_code", code).await?;
+        let actual_code = sut
+            .grpc_code_of_failed_inference("error_code", code)
+            .await?;
         actual.push(actual_code);
         expected.push(expected_code);
     }
@@ -39,40 +32,14 @@ async fn custom_backend_answers_with_the_requested_error_code() -> Result<()> {
 
 #[tokio::test]
 async fn custom_backend_passes_on_the_code_of_a_failed_bls_call() -> Result<()> {
-    let config = Config::isolated(
-        "custom_backend_passes_on_the_code_of_a_failed_bls_call",
-        "fixture_errors",
-        &["fixture_errors"],
-    )
-    .await?;
-    let sut = Sut::new(&config.triton_url).await?;
+    let sut = Sut::new("fixture_errors", &[]).await?;
 
-    let code = grpc_code_of_failed_inference(&sut, &config, "infer_model", "missing_model").await?;
+    let code = sut
+        .grpc_code_of_failed_inference("infer_model", "missing_model")
+        .await?;
 
     let actual = code;
     let expected = Code::NotFound;
     assert_eq!(actual, expected);
     Ok(())
-}
-
-async fn grpc_code_of_failed_inference(
-    sut: &Sut,
-    config: &Config,
-    parameter: &str,
-    value: &str,
-) -> Result<Code> {
-    let error = sut
-        .infer_with_parameters(
-            &config.backend_model,
-            vec![config.mnist_blank_input()],
-            &[&config.backend_output_name],
-            HashMap::from([(parameter.to_string(), Parameter::String(value.to_string()))]),
-        )
-        .await
-        .err()
-        .context("the inference succeeded")?;
-    match error.downcast_ref::<triton_ng_client::Error>() {
-        Some(triton_ng_client::Error::Grpc(status)) => Ok(status.code()),
-        _ => return Err(anyhow::anyhow!("not a gRPC error: {error:#}")),
-    }
 }

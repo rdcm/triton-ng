@@ -34,7 +34,11 @@ doc:
 
 # Run workspace unit and integration tests. Integration tests require local Triton.
 tests:
-	python3 tools/run-tests.py
+	@set -eu; \
+	TRITON_NG_TEST_RUN=$$(cat /proc/sys/kernel/random/uuid); \
+	export TRITON_NG_TEST_RUN; \
+	trap 'rm -rf -- models/test_"$$TRITON_NG_TEST_RUN"_*' EXIT; \
+	cargo nextest run --workspace --no-fail-fast
 
 # Restore submodules to the branches in .gitmodules and refresh vendored Triton headers.
 update-submodules:

@@ -207,34 +207,84 @@ mod tests {
 
     #[test]
     fn abandoned_batches_are_released_on_every_unload() -> Result<(), Error> {
-        let mut actual_0 = Vec::new();
-        let mut expected_0 = Vec::new();
-        let mut actual_1 = Vec::new();
-        let mut expected_1 = Vec::new();
-        let mut actual_2 = Vec::new();
-        let mut expected_2 = Vec::new();
-        let mut actual_3 = Vec::new();
-        let mut expected_3 = Vec::new();
-
         let mut registry = Registry::default();
         let drops = Arc::new(AtomicUsize::new(0));
-        for cycle in 1..=5 {
+        let mut actual = Vec::new();
+
+        for _ in 0..5 {
             let strategy = Arc::new(Protected::new(Counted(drops.clone(), false)));
             let owner = registry.insert(0, strategy)?;
             let batch = Arc::new(Protected::new(Counted(drops.clone(), false)));
-            let token = registry.insert(owner, batch)?;
-            actual_0.push(registry.remove(0).is_empty());
-            expected_0.push(true);
+            registry.insert(owner, batch)?;
+
             drop(registry.remove(owner));
-            actual_1.push(registry.entries.is_empty());
-            expected_1.push(true);
-            actual_2.push(drops.load(Ordering::SeqCst));
-            expected_2.push(cycle * 2);
-            actual_3.push(registry.remove(token).is_empty());
-            expected_3.push(true);
+
+            actual.push(UnloadResult {
+                remaining_entries: registry.entries.len(),
+                dropped_values: drops.load(Ordering::SeqCst),
+            });
         }
-        let expected = (expected_0, expected_1, expected_2, expected_3);
-        let actual = (actual_0, actual_1, actual_2, actual_3);
+
+        let expected = vec![
+            UnloadResult {
+                remaining_entries: 0,
+                dropped_values: 2,
+            },
+            UnloadResult {
+                remaining_entries: 0,
+                dropped_values: 4,
+            },
+            UnloadResult {
+                remaining_entries: 0,
+                dropped_values: 6,
+            },
+            UnloadResult {
+                remaining_entries: 0,
+                dropped_values: 8,
+            },
+            UnloadResult {
+                remaining_entries: 0,
+                dropped_values: 10,
+            },
+        ];
+
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn removing_the_root_token_preserves_registered_values() -> Result<(), Error> {
+        let mut registry = Registry::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let strategy = Arc::new(Protected::new(Counted(drops.clone(), false)));
+        let owner = registry.insert(0, strategy)?;
+        let batch = Arc::new(Protected::new(Counted(drops.clone(), false)));
+        registry.insert(owner, batch)?;
+
+        let removed = registry.remove(0);
+
+        let expected = (0, 2, 0);
+        let actual = (
+            removed.len(),
+            registry.entries.len(),
+            drops.load(Ordering::SeqCst),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_batch_after_its_owner_returns_no_values() -> Result<(), Error> {
+        let mut registry = Registry::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let strategy = Arc::new(Protected::new(Counted(drops.clone(), false)));
+        let owner = registry.insert(0, strategy)?;
+        let batch = Arc::new(Protected::new(Counted(drops.clone(), false)));
+        let token = registry.insert(owner, batch)?;
+        drop(registry.remove(owner));
+
+        let expected = 0;
+        let actual = registry.remove(token).len();
         assert_eq!(actual, expected);
         Ok(())
     }
@@ -403,6 +453,12 @@ mod tests {
         );
         assert_eq!(actual, expected);
         Ok(())
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct UnloadResult {
+        remaining_entries: usize,
+        dropped_values: usize,
     }
 
     struct Counted(Arc<AtomicUsize>, bool);

@@ -88,6 +88,14 @@ against `make docker-env-up`.
 - Do not put assertions in the middle of a test. An intermediate assertion indicates that
   the test must be split into independent tests, each with its own final assertion.
 - Put helper functions at the bottom of the test file, after all tests.
+- Test setup and stateful operations belong to `Sut` methods. Do not write free helper
+  functions accepting `&Sut` or pass its configuration around separately.
+- `Sut` loads configuration internally and owns the fixture lifecycle. Tests construct
+  `Sut` with the backend and dependencies; they do not construct `Config` themselves.
+- Keep `Config` private to `Sut`: no configuration getters or field accessors that make
+  tests reconstruct requests. Inference methods assemble model and tensor metadata
+  internally; callers pass only parameters, input values, and an explicit other model
+  when the scenario requires one.
 - Name each test as a declarative sentence that clearly states the behavior it verifies.
 - All tests must support parallel execution. Isolate their state and resources; do not rely
   on execution order, serial test groups, or a global lock to serialize tests.

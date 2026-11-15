@@ -38,7 +38,7 @@ pub struct ModelEntry {
     pub state: String,
 }
 
-pub struct InferInput {
+pub(super) struct InferInput {
     pub name: String,
     pub shape: Vec<i64>,
     pub data: Vec<f32>,
