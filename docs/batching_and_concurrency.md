@@ -16,9 +16,9 @@ Two things narrow that sharing, both from the core of r25.09. A model that confi
 `sequence_batching` keeps `ExecutionPolicy::Blocking`, and Triton logs that it overrides the policy. An
 instance takes the thread of a sibling the core has created already (`GetInstancesByDevice` reads the
 instances of the model being loaded), so a backend that also sets `parallel_model_instance_loading`
-creates its instances at the same time and none of them finds a sibling: the example backend therefore
+creates its instances at the same time and none of them finds a sibling: the test backend therefore
 turns parallel instance loading off when it selects the policy, and
-`custom_backend_serializes_the_gpu_instances_of_a_device` measures the result.
+`device_blocking_serializes_gpu_instances` measures the result.
 
 The batcher thread moves requests from the request queue into a batch only when there is a *slot*
 for it (`dynamic_batch_scheduler.cc`, `WaitForPayloadSlotAvailable`; `rate_limiter.cc`,
@@ -72,6 +72,9 @@ A strategy in triton-ng is an `impl BatchStrategy` with the `#[triton_ng::batch_
 attribute in a `cdylib` of its own: the attribute exports the five `TRITONBACKEND_ModelBatch*`
 entry points Triton looks up, and the crate name decides the name of the shared library.
 
+Export the implementation below with `#[triton_ng::batch_strategy]` in a separate library,
+as in [the complete example](https://github.com/rdcm/triton-ng/blob/main/examples/batch-strategy/src/lib.rs).
+
 ```rust ignore
 struct ByKey;
 
@@ -80,7 +83,6 @@ struct Batch {
     key: Option<String>,
 }
 
-#[triton_ng::batch_strategy]
 impl BatchStrategy for ByKey {
     type Batch = Batch;
 
@@ -142,7 +144,12 @@ What the callbacks get is what matters for a strategy that works:
   scheduler before clearing its callback pointers and closing the library. The unload tests
   exercise idle models, not arbitrary concurrent library unmapping.
 
-The `example/batch-strategy` crate is the strategy of the `batch_strategy` fixture model, and
+For a standalone user example, see
+[examples/batch-strategy](https://github.com/rdcm/triton-ng/tree/main/examples/batch-strategy):
+the original by-key strategy without failure injection. Root Compose's `minimal_batching`
+model combines it with `examples/minimal-backend`.
+
+The `triton-ng-client/tests/fixtures/batch-strategy` crate is the strategy of the `batch_strategy` fixture model, and
 its integration test reads back the batches it formed from the response parameters of the
 backend. `make build` builds the library and `docker-compose.yml` mounts it into the container,
 where the config of the fixture names it through `TRITON_BATCH_STRATEGY_PATH`.

@@ -35,7 +35,5 @@ parameters: {
   value: { string_value: "identity_gpu" }
 }
 
-parameters: {
-  key: "forwards_input"
-  value: { string_value: "true" }
-}
+
+parameters: { key: "fixture" value: { string_value: "input_forward" } }

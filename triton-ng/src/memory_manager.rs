@@ -191,22 +191,34 @@ mod tests {
     use super::MemoryManager;
 
     #[test]
-    fn cpu_buffers_are_zeroed_and_writable() {
+    fn cpu_buffers_are_initialized_with_zeroes() {
+        let memory = MemoryManager::heap();
+        let ram = memory.ram(16).unwrap();
+        let pinned = memory.pinned(8).unwrap();
+
+        let expected = (&[0; 16][..], &[0; 8][..]);
+        let actual = (&ram[..], &pinned[..]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn cpu_buffers_preserve_written_bytes() {
         let memory = MemoryManager::heap();
         let mut ram = memory.ram(16).unwrap();
         let mut pinned = memory.pinned(8).unwrap();
 
-        assert_eq!(&ram[..], &[0; 16]);
-        assert_eq!(&pinned[..], &[0; 8]);
         ram[3] = 7;
         pinned.copy_from_slice(&[1; 8]);
-        assert_eq!(ram[3], 7);
-        assert_eq!(&pinned[..], &[1; 8]);
+        let expected = (7, &[1; 8][..]);
+        let actual = (ram[3], &pinned[..]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn negative_gpu_device_is_rejected() {
-        assert!(MemoryManager::heap().gpu(-1, 4).is_err());
+        let actual = MemoryManager::heap().gpu(-1, 4).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -217,8 +229,12 @@ mod tests {
             free: |_, _, _, _| panic!("freed an empty buffer"),
         };
 
-        assert!(memory.ram(0).unwrap().is_empty());
-        assert!(memory.pinned(0).unwrap().is_empty());
-        assert!(memory.gpu(0, 0).unwrap().is_empty());
+        let expected = (true, true, true);
+        let actual = (
+            memory.ram(0).unwrap().is_empty(),
+            memory.pinned(0).unwrap().is_empty(),
+            memory.gpu(0, 0).unwrap().is_empty(),
+        );
+        assert_eq!(actual, expected);
     }
 }

@@ -5,7 +5,7 @@ each with its own Triton thread that calls execute. With `ExecutionPolicy::Devic
 non-passive GPU instances of one model and device share an execution thread; CPU instances and
 instances of other models keep their own threads. The core keeps `Blocking` for a model with
 `sequence_batching`, and an instance can only take the thread of a sibling created before it, so a
-backend that loads its instances in parallel gets one thread per instance; the example backend
+backend that loads its instances in parallel gets one thread per instance; the test backend
 stops loading them in parallel when it selects the policy. `model_instance_execute` is an `async fn`:
 triton-ng runs the future of the batch to its end on the calling thread and only then returns to
 Triton, so an instance works on one batch at a time and batches use the available execution
@@ -123,7 +123,7 @@ makes is compiled against those headers, and Triton does nothing with the versio
 reports about itself. The versions go to the log, `TRITONBACKEND API version: server 1.19,
 compiled 1.19`, next to the line Triton prints for its own backends.
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) sends every image of a batch to
+[`inference` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/inference.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
 `hold_until_cancelled` parameter repeats a BLS call and checks `Request::is_cancelled` between the
 calls until the client cancels it: Triton only marks a cancelled request, a backend finds out at

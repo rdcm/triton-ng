@@ -46,7 +46,7 @@ call the same model over BLS, take the argmax of its logits, answer.
 
 The BLS target is tiny on purpose, so that the numbers are the cost of the backends themselves; a
 heavy model on a GPU takes most of the time in inference and the difference shrinks with its
-share. It is `bench_onnx`, the MNIST ONNX model of the examples
+share. It is `bench_onnx`, the MNIST ONNX model used by the test fixtures
 (`models/mnist_onnx/1/model.onnx`, copied by `make benchmarks`), on four CPU instances with one
 thread each (`intra_op_thread_count: 1`): 0.1 ms per call, so that it is not the bottleneck and
 does not spin on every core, which made the measurements unstable with the default thread count.

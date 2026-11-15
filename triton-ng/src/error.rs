@@ -198,7 +198,7 @@ impl TritonError {
                 message: "Unknown Triton error".to_string(),
             };
         }
-        // SAFETY: ptr not null
+        // SAFETY: the caller supplies a live Triton error; the null case returned above.
         let (code, msg_ptr) = unsafe {
             (
                 triton_ng_sys::TRITONSERVER_ErrorCode(ptr),
@@ -307,33 +307,58 @@ mod tests {
 
     #[test]
     fn codes_round_trip_through_triton_values() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for code in CODES {
-            assert_eq!(ErrorCode::from_sys(code.to_sys()), code);
+            actual_0.push(ErrorCode::from_sys(code.to_sys()));
+            expected_0.push(code);
         }
-        assert_eq!(ErrorCode::from_sys(u32::MAX), ErrorCode::Unknown);
+        actual_1.push(ErrorCode::from_sys(u32::MAX));
+        expected_1.push(ErrorCode::Unknown);
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn triton_values_are_distinct() {
         let mut values = CODES.map(ErrorCode::to_sys);
         values.sort();
-        values
-            .windows(2)
-            .for_each(|pair| assert_ne!(pair[0], pair[1]));
+        let expected = true;
+        let actual = values.windows(2).all(|pair| pair[0] != pair[1]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn names_round_trip() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for code in CODES {
-            assert_eq!(code.to_string().parse::<ErrorCode>(), Ok(code));
+            actual_0.push(code.to_string().parse::<ErrorCode>());
+            expected_0.push(Ok(code));
         }
-        assert_eq!(ErrorCode::InvalidArg.to_string(), "INVALID_ARG");
+        actual_1.push(ErrorCode::InvalidArg.to_string());
+        expected_1.push("INVALID_ARG".to_string());
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn unknown_names_are_refused() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+
         for name in ["not_found", "NotFound", "", "TRITONSERVER_ERROR_NOT_FOUND"] {
-            assert!(name.parse::<ErrorCode>().is_err(), "{name}");
+            actual.push(name.parse::<ErrorCode>().is_err());
+            expected.push(true);
         }
+        assert_eq!(actual, expected);
     }
 }

@@ -128,38 +128,55 @@ mod tests {
         let config = BackendConfig::from_json(
             r#"{"cmdline":{"pool-size":"8","default-max-batch-size":"4"}}"#,
         )?;
-        assert_eq!(config.parameter("pool-size"), Some("8"));
-        assert_eq!(config.parameter("missing"), None);
-        assert_eq!(
-            config.parameters().collect::<Vec<_>>(),
-            vec![("default-max-batch-size", "4"), ("pool-size", "8")]
+        let expected = (
+            Some("8"),
+            None,
+            vec![("default-max-batch-size", "4"), ("pool-size", "8")],
         );
+        let actual = (
+            config.parameter("pool-size"),
+            config.parameter("missing"),
+            config.parameters().collect::<Vec<_>>(),
+        );
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn config_without_cmdline_is_empty() -> Result<(), String> {
-        assert_eq!(BackendConfig::from_json("")?, BackendConfig::default());
-        assert_eq!(BackendConfig::from_json("{}")?, BackendConfig::default());
+        let expected = (BackendConfig::default(), BackendConfig::default());
+        let actual = (
+            BackendConfig::from_json("")?,
+            BackendConfig::from_json("{}")?,
+        );
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn values_are_parsed_or_defaulted() -> Result<(), String> {
         let config = BackendConfig::from_json(r#"{"cmdline":{"pool-size":"8","name":"x"}}"#)?;
-        assert_eq!(config.parameter_or("pool-size", 4).ok(), Some(8));
-        assert_eq!(config.parameter_or("missing", 4).ok(), Some(4));
-        assert!(config.parameter_or("name", 4).is_err());
-        assert!(config.required_parameter("missing").is_err());
-        assert_eq!(config.required_parameter("name").ok(), Some("x"));
+        let expected = (Some(8), Some(4), true, true, Some("x"));
+        let actual = (
+            config.parameter_or("pool-size", 4).ok(),
+            config.parameter_or("missing", 4).ok(),
+            config.parameter_or("name", 4).is_err(),
+            config.required_parameter("missing").is_err(),
+            config.required_parameter("name").ok(),
+        );
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn malformed_config_is_rejected() {
-        assert!(BackendConfig::from_json("not json").is_err());
-        assert!(BackendConfig::from_json("[]").is_err());
-        assert!(BackendConfig::from_json(r#"{"cmdline":[]}"#).is_err());
-        assert!(BackendConfig::from_json(r#"{"cmdline":{"pool-size":8}}"#).is_err());
+        let expected = (true, true, true, true);
+        let actual = (
+            BackendConfig::from_json("not json").is_err(),
+            BackendConfig::from_json("[]").is_err(),
+            BackendConfig::from_json(r#"{"cmdline":[]}"#).is_err(),
+            BackendConfig::from_json(r#"{"cmdline":{"pool-size":8}}"#).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 }

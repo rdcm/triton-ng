@@ -447,18 +447,26 @@ mod tests {
 
     #[test]
     fn element_count_multiplies_dimensions() {
-        assert_eq!(element_count(&[2, 3, 4]), Ok(24));
-        assert_eq!(element_count(&[1, 0, 2]), Ok(0));
-        assert_eq!(element_count(&[]), Ok(1));
+        let expected = (Ok(24), Ok(0), Ok(1));
+        let actual = (
+            element_count(&[2, 3, 4]),
+            element_count(&[1, 0, 2]),
+            element_count(&[]),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn element_count_rejects_negative_dimensions() {
-        assert!(element_count(&[1, -1]).is_err());
+        let actual = element_count(&[1, -1]).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn element_count_rejects_overflow() {
-        assert!(element_count(&[i64::MAX, i64::MAX]).is_err());
+        let actual = element_count(&[i64::MAX, i64::MAX]).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 }

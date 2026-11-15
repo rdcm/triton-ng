@@ -102,6 +102,11 @@ mod tests {
 
     #[test]
     fn a_name_the_trace_collector_cannot_write_is_refused() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for name in [
             "tok\0enize",
             "decode \"first\"",
@@ -109,23 +114,23 @@ mod tests {
             "line\nbreak",
             "tab\there",
         ] {
-            assert!(activity_name(name).is_err(), "{name:?} was accepted");
+            actual_0.push(activity_name(name).is_err());
+            expected_0.push(true);
         }
-        assert_eq!(
-            activity_name("decode (batch 1)").ok(),
-            CString::new("decode (batch 1)").ok()
-        );
+        actual_1.push(activity_name("decode (batch 1)").ok());
+        expected_1.push(CString::new("decode (batch 1)").ok());
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn a_timestamp_is_taken_from_the_monotonic_clock() -> Result<(), String> {
         let first = crate::batch_statistics::now_ns();
         let second = crate::batch_statistics::now_ns();
-        assert!(second >= first, "{second} < {first}");
-        // The clock counts from boot, like the one Triton stamps its own events
-        // with: a Unix timestamp is three orders of magnitude above it and would
-        // put every activity after the end of its request.
-        assert!(second < 1_577_836_800_000_000_000, "{second}");
+        let expected = (true, true);
+        let actual = (second >= first, second < 1_577_836_800_000_000_000);
+        assert_eq!(actual, expected);
         Ok(())
     }
 }

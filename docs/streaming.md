@@ -36,16 +36,18 @@ What Triton allows for a decoupled model:
 `Request::into_sender` turns a request into a `ResponseSender`, which sends any number of responses
 and then exactly one final flag:
 
+This small example emits UTF-8 byte values as tokens; substitute your tokenizer as needed.
+
 ```rust ignore
 async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
-    for request in requests {
+    'requests: for request in requests {
         let text = request.get_input("TEXT")?.as_string()?;
         let mut sender = request.into_sender()?;
 
-        for token in tokenize(&text) {
+        for token in text.bytes().map(i64::from) {
             if sender.is_cancelled()? {
                 sender.respond_cancelled()?;
-                return Ok(());
+                continue 'requests;
             }
             let mut response = sender.response()?;
             response
@@ -134,15 +136,20 @@ Checked against core `r25.09`:
 response, in the order the model sent them:
 
 ```rust ignore
-let mut inference = InferenceRequest::new(ctx.server(), "tokenizer_stream", -1)?;
-inference.add_input_with_data("TEXT", DataType::Bytes, &[1], text)?;
-inference.add_requested_output("TOKEN")?;
-inference.set_parent_trace(sender.request())?;
+async fn read_tokens(ctx: &Context, sender: &ResponseSender, text: &str) -> Result<(), Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), "tokenizer_stream", -1)?;
+    let mut encoded = u32::try_from(text.len())?.to_le_bytes().to_vec();
+    encoded.extend_from_slice(text.as_bytes());
+    inference.add_input_with_data("TEXT", DataType::Bytes, &[1], encoded)?;
+    inference.add_requested_output("TOKEN")?;
+    inference.set_parent_trace(sender.request())?;
 
-let mut stream = ctx.server().infer_stream(inference);
-while let Some(result) = stream.next().await {
-    let tokens = result?.output("TOKEN")?.as_i64_vec()?;
-    // ...
+    let mut stream = ctx.server().infer_stream(inference);
+    while let Some(result) = stream.next().await {
+        let tokens = result?.output("TOKEN")?.as_i64_vec()?;
+        println!("{tokens:?}");
+    }
+    Ok(())
 }
 ```
 
@@ -192,11 +199,17 @@ while let Some(result) = stream.next().await {
 `TritonClient::infer_stream` sends one request over gRPC `ModelStreamInfer`:
 
 ```rust ignore
-let mut stream = client
-    .infer_stream("mnist_stream", None, [images], ["DIGIT"], InferOptions::default())
-    .await?;
-while let Some(response) = stream.next().await {
-    println!("{:?}", response?.outputs);
+use futures::StreamExt;
+use triton_ng_client::{TritonClient, InferInput, InferOptions};
+
+async fn read_digits(client: &TritonClient, images: InferInput) -> Result<(), Error> {
+    let mut stream = client
+        .infer_stream("mnist_stream", None, [images], ["DIGIT"], InferOptions::default())
+        .await?;
+    while let Some(response) = stream.next().await {
+        println!("{:?}", response?.outputs);
+    }
+    Ok(())
 }
 ```
 
@@ -220,7 +233,7 @@ while let Some(response) = stream.next().await {
 
 ## Example
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) serves `mnist_stream`, a decoupled
+[`streaming` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/streaming.rs) serves `mnist_stream`, a decoupled
 model of the same backend: a request carries several images (`[-1, 1, 28, 28]`), and the model
 streams the digit of every image, each from a BLS call to `mnist_onnx`. With the
 `hold_until_cancelled` parameter it waits for the client to cancel the stream after the digits, and

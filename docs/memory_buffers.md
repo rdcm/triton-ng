@@ -22,9 +22,14 @@ Every batch gets Triton's memory manager from `Context::memory`:
 | `gpu(device_id, len)` | `UninitGpuBuffer` | GPU memory from Triton's CUDA pool on `device_id` | none |
 
 ```rust ignore
-let mut tokens = ctx.memory().pinned(batch * 8)?;
-tokens.copy_from_slice(&token_bytes);
-let state = ctx.memory().gpu(ctx.device_id(), batch * 320 * 4)?;
+fn allocate_decoder_buffers(ctx: &Context, token_bytes: &[u8], state_bytes: usize)
+    -> Result<(PinnedRamBuffer, UninitGpuBuffer), Error>
+{
+    let mut tokens = ctx.memory().pinned(token_bytes.len())?;
+    tokens.copy_from_slice(token_bytes);
+    let state = ctx.memory().gpu(ctx.device_id(), state_bytes)?;
+    Ok((tokens, state))
+}
 ```
 
 The memory comes from the server's own pools, triton-ng does not use the CUDA runtime:
@@ -79,8 +84,11 @@ memory with undefined content cannot become a model input.
 | `Arc<T>` of any of them | the memory of `T` |
 
 ```rust ignore
-inference.add_input_with_buffer("x", DataType::Int64, &[batch, 1], tokens)?;
-inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
+fn attach_inputs(inference: &mut InferenceRequest, batch: i64, tokens: PinnedRamBuffer, state: Arc<GpuBuffer>) -> Result<(), Error> {
+    inference.add_input_with_buffer("x", DataType::Int64, &[batch, 1], tokens)?;
+    inference.add_input_with_buffer("hi", DataType::Fp32, &[1, batch, 320], Arc::clone(&state))?;
+    Ok(())
+}
 ```
 
 triton-ng does not copy the input. Triton copies it to the memory the model needs, if it is
@@ -98,9 +106,12 @@ chain (a step of an ensemble, or a model called by another backend) passes a GPU
 way, and a CPU one without the copy into a `Vec` that `Input::as_bytes` makes.
 
 ```rust ignore
-let features = request.get_input("features")?.share()?;
-let shape = features.shape().to_vec();
-inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
+fn forward_features(request: &Request, inference: &mut InferenceRequest) -> Result<(), Error> {
+    let features = request.get_input("features")?.share()?;
+    let shape = features.shape().to_vec();
+    inference.add_input_with_buffer("features", features.datatype(), &shape, features)?;
+    Ok(())
+}
 ```
 
 The data of a request input lives until the request gets its final response and is released,
@@ -134,13 +145,17 @@ methods.
 `add_requested_output_into` writes the output into a buffer of the backend instead:
 
 ```rust ignore
-inference.add_requested_output_into("ho", state)?;          // UninitGpuBuffer
-inference.add_requested_output_into("logits", logits)?;     // PinnedRamBuffer
-let mut result = ctx.server().infer_async(inference).await?;
-
-let scores = result.output("logits")?.as_fp32_vec()?;       // RAM and pinned outputs are readable
-let state: GpuBuffer = result.take_gpu("ho")?;              // hands the buffer back
-let logits: PinnedRamBuffer = result.take_pinned("logits")?;
+async fn collect_outputs(ctx: &Context, mut inference: InferenceRequest,
+    state: UninitGpuBuffer, logits: PinnedRamBuffer)
+    -> Result<(GpuBuffer, PinnedRamBuffer), Error>
+{
+    inference.add_requested_output_into("ho", state)?;
+    inference.add_requested_output_into("logits", logits)?;
+    let mut result = ctx.server().infer_async(inference).await?;
+    let scores = result.output("logits")?.as_fp32_vec()?;
+    println!("{scores:?}");
+    Ok((result.take_gpu("ho")?, result.take_pinned("logits")?))
+}
 ```
 
 - **The size must match exactly.** The output of a request is its own rows of the batch, even
@@ -190,14 +205,16 @@ impl Buffers {
 fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
     instance.set_state(Buffers::default())
 }
+
+async fn reuse_cached_output(ctx: &Context, mut inference: InferenceRequest, len: usize) -> Result<(), Error> {
+    let buffers = ctx.instance_state::<Buffers>()?;
+    inference.add_requested_output_into("ho", buffers.gpu(ctx.memory(), ctx.device_id(), len)?)?;
+    let mut result = ctx.server().infer_async(inference).await?;
+    buffers.put_gpu(result.take_gpu("ho")?)?;
+    Ok(())
+}
 ```
 
-```rust ignore
-let buffers = ctx.instance_state::<Buffers>()?;
-inference.add_requested_output_into("ho", buffers.gpu(ctx.memory(), ctx.device_id(), len)?)?;
-let mut result = ctx.server().infer_async(inference).await?;
-buffers.put_gpu(result.take_gpu("ho")?)?;
-```
 
 What a real cache needs on top of this:
 
@@ -243,7 +260,7 @@ fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
 
 The numbers are what the backend reports, not what Triton measures: report the total of each
 memory type and device, and keep it up to date when it changes. Triton copies the entries while
-the call runs, so the slices can be dropped afterwards. The example backend reports the size of
+the call runs, so the slices can be dropped afterwards. The test backend reports the size of
 its Rust state, which is ordinary RAM, and the `memory_usage` fixture of `models/memory_usage`
 reports two CPU entries that add up to one and a pinned buffer that its instance really allocates:
 
@@ -257,14 +274,14 @@ an instance reports as `cpu_pinned` should be the page-locked buffers it holds.
 
 ## Example
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) answers a request with the
+[`memory_buffers` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/memory_buffers.rs) answers a request with the
 parameter `memory` set to `ram`, `pinned` or `gpu` from a buffer of that kind: the image goes in
 a RAM or pinned buffer, the logits are written into a buffer cached in the instance state, and
 the response reports how many buffers the instance has allocated. `gpu_input` writes the logits
 into a GPU buffer and passes it, through an `Arc`, as the input of two concurrent requests to
 `identity_gpu` (Triton's `identity` backend on a GPU instance); the backend drops its own `Arc`
 before the requests finish and checks that both copies equal the logits. `gpu_forward` passes the
-GPU logits to `identity_forward`, a model of the example backend that shares its GPU input with a
+GPU logits to `identity_forward`, a model of the test backend that shares its GPU input with a
 request to `identity_gpu` and answers with what comes back; the caller checks that the input was
 in GPU memory and equals the logits. `wrong_size` writes the logits into a buffer of the wrong
 size and gets an error.

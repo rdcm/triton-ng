@@ -95,6 +95,8 @@ mod tests {
     fn the_clock_does_not_go_back() {
         let first = now_ns();
         let second = now_ns();
-        assert!(first > 0 && second >= first);
+        let actual = first > 0 && second >= first;
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 }

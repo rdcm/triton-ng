@@ -48,3 +48,5 @@ parameters: {
   key: "stream_model"
   value: { string_value: "mnist_stream" }
 }
+
+parameters: { key: "fixture" value: { string_value: "inference" } }

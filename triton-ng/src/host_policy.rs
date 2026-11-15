@@ -109,50 +109,66 @@ mod tests {
     fn name_and_settings_are_read() -> Result<(), String> {
         let policy =
             HostPolicy::from_json(r#"{"numa":{"numa-node":"0","cpu-node":"1","strict":"yes"}}"#)?;
-        assert_eq!(policy.name(), "numa");
-        assert_eq!(policy.setting("numa-node"), Some("0"));
-        assert_eq!(policy.setting("missing"), None);
-        assert_eq!(
+        let expected = (
+            "numa",
+            Some("0"),
+            None,
+            vec![("cpu-node", "1"), ("numa-node", "0"), ("strict", "yes")],
+        );
+        let actual = (
+            policy.name(),
+            policy.setting("numa-node"),
+            policy.setting("missing"),
             policy
                 .settings()
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("cpu-node", "1"), ("numa-node", "0"), ("strict", "yes")]
         );
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn a_policy_without_settings_is_read() -> Result<(), String> {
         let policy = HostPolicy::from_json(r#"{"gpu_0":{}}"#)?;
-        assert_eq!(policy.name(), "gpu_0");
-        assert!(policy.settings().is_empty());
+        let expected = ("gpu_0", true);
+        let actual = (policy.name(), policy.settings().is_empty());
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn names_are_taken_verbatim() -> Result<(), String> {
         let policy = HostPolicy::from_json(r#"{"numa \"node\" \\ ☃":{"a":"b"}}"#)?;
-        assert_eq!(policy.name(), "numa \"node\" \\ ☃");
-        assert_eq!(policy.setting("a"), Some("b"));
+        let expected = ("numa \"node\" \\ ☃", Some("b"));
+        let actual = (policy.name(), policy.setting("a"));
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn malformed_json_and_policy_counts_are_rejected() {
-        assert!(HostPolicy::from_json("").is_err());
-        assert!(HostPolicy::from_json("not json").is_err());
-        assert!(HostPolicy::from_json("[]").is_err());
-        assert!(HostPolicy::from_json("{}").is_err());
-        assert!(HostPolicy::from_json(r#"{"first":{},"second":{}}"#).is_err());
+        let expected = (true, true, true, true, true);
+        let actual = (
+            HostPolicy::from_json("").is_err(),
+            HostPolicy::from_json("not json").is_err(),
+            HostPolicy::from_json("[]").is_err(),
+            HostPolicy::from_json("{}").is_err(),
+            HostPolicy::from_json(r#"{"first":{},"second":{}}"#).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn malformed_policies_and_settings_are_rejected() {
-        assert!(HostPolicy::from_json(r#"{"":{}}"#).is_err());
-        assert!(HostPolicy::from_json(r#"{"":{"numa-node":"0"}}"#).is_err());
-        assert!(HostPolicy::from_json(r#"{"numa":[]}"#).is_err());
-        assert!(HostPolicy::from_json(r#"{"numa":{"numa-node":0}}"#).is_err());
+        let expected = (true, true, true, true);
+        let actual = (
+            HostPolicy::from_json(r#"{"":{}}"#).is_err(),
+            HostPolicy::from_json(r#"{"":{"numa-node":"0"}}"#).is_err(),
+            HostPolicy::from_json(r#"{"numa":[]}"#).is_err(),
+            HostPolicy::from_json(r#"{"numa":{"numa-node":0}}"#).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 }

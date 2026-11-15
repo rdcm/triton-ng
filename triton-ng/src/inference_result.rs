@@ -220,6 +220,78 @@ mod tests {
     use super::{InferenceResult, OutputData, OutputTensor};
     use crate::{DataType, MemoryManager, OutputBuffer, Parameter};
 
+    #[test]
+    fn first_parameter_of_a_name_is_returned() {
+        let result = result_with_buffers();
+
+        let expected = (Some(Parameter::Int(42)), None);
+        let actual = (
+            result.parameter("tokens").unwrap(),
+            result.parameter("missing").unwrap(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn only_reading_an_unsupported_parameter_fails() {
+        let result = result_with_buffers();
+
+        let expected = (true, true);
+        let actual = (
+            result.parameter("blob").is_err(),
+            result.parameter("tokens").is_ok(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn output_buffer_is_taken_once() {
+        let mut result = result_with_buffers();
+
+        let expected = (8, true, true);
+        let actual = (
+            result.take_gpu("gpu").unwrap().len(),
+            result.take_gpu("gpu").is_err(),
+            result.output("gpu").unwrap().bytes().is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn buffer_of_other_memory_stays_in_the_result() {
+        let mut result = result_with_buffers();
+
+        let expected = (true, vec![0.0, 0.0], 8);
+        let actual = (
+            result.take_gpu("pinned").is_err(),
+            result.output("pinned").unwrap().as_fp32_vec().unwrap(),
+            result.take_pinned("pinned").unwrap().len(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn host_outputs_have_no_buffer_to_take() {
+        let mut result = result_with_buffers();
+
+        let expected = (true, 8, true);
+        let actual = (
+            result.take_ram("host").is_err(),
+            result.output("host").unwrap().bytes().unwrap().len(),
+            result.take_ram("missing").is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn gpu_outputs_cannot_be_read_on_the_cpu() {
+        let result = result_with_buffers();
+
+        let actual = result.output("gpu").unwrap().as_fp32_vec().is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
     fn result_with_buffers() -> InferenceResult {
         let memory = MemoryManager::heap();
         let output = |name: &str, data| OutputTensor {
@@ -244,61 +316,5 @@ mod tests {
                 ("tokens".to_string(), Ok(Parameter::Int(7))),
             ],
         }
-    }
-
-    #[test]
-    fn first_parameter_of_a_name_is_returned() {
-        let result = result_with_buffers();
-
-        assert_eq!(
-            result.parameter("tokens").unwrap(),
-            Some(Parameter::Int(42))
-        );
-        assert_eq!(result.parameter("missing").unwrap(), None);
-    }
-
-    #[test]
-    fn only_reading_an_unsupported_parameter_fails() {
-        let result = result_with_buffers();
-
-        assert!(result.parameter("blob").is_err());
-        assert!(result.parameter("tokens").is_ok());
-    }
-
-    #[test]
-    fn output_buffer_is_taken_once() {
-        let mut result = result_with_buffers();
-
-        assert_eq!(result.take_gpu("gpu").unwrap().len(), 8);
-        assert!(result.take_gpu("gpu").is_err());
-        assert!(result.output("gpu").unwrap().bytes().is_err());
-    }
-
-    #[test]
-    fn buffer_of_other_memory_stays_in_the_result() {
-        let mut result = result_with_buffers();
-
-        assert!(result.take_gpu("pinned").is_err());
-        assert_eq!(
-            result.output("pinned").unwrap().as_fp32_vec().unwrap(),
-            [0.0, 0.0]
-        );
-        assert_eq!(result.take_pinned("pinned").unwrap().len(), 8);
-    }
-
-    #[test]
-    fn host_outputs_have_no_buffer_to_take() {
-        let mut result = result_with_buffers();
-
-        assert!(result.take_ram("host").is_err());
-        assert_eq!(result.output("host").unwrap().bytes().unwrap().len(), 8);
-        assert!(result.take_ram("missing").is_err());
-    }
-
-    #[test]
-    fn gpu_outputs_cannot_be_read_on_the_cpu() {
-        let result = result_with_buffers();
-
-        assert!(result.output("gpu").unwrap().as_fp32_vec().is_err());
     }
 }

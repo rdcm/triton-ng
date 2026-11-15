@@ -82,6 +82,27 @@ impl Drop for CancelOnDrop {
 mod tests {
     use super::RequestCancel;
 
+    #[test]
+    fn a_live_request_can_be_used() {
+        let mut request = 0u8;
+        let cancel = RequestCancel::new((&raw mut request).cast());
+
+        let actual = live_calls(&cancel);
+        let expected = 1;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_released_request_is_not_used() {
+        let mut request = 0u8;
+        let cancel = RequestCancel::new((&raw mut request).cast());
+
+        cancel.released();
+        let actual = live_calls(&cancel);
+        let expected = 0;
+        assert_eq!(actual, expected);
+    }
+
     fn live_calls(cancel: &RequestCancel) -> usize {
         let mut calls = 0;
         cancel
@@ -91,15 +112,5 @@ mod tests {
             })
             .unwrap();
         calls
-    }
-
-    #[test]
-    fn request_is_used_until_it_is_released() {
-        let mut request = 0u8;
-        let cancel = RequestCancel::new((&raw mut request).cast());
-
-        assert_eq!(live_calls(&cancel), 1);
-        cancel.released();
-        assert_eq!(live_calls(&cancel), 0);
     }
 }

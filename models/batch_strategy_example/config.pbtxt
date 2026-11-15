@@ -1,0 +1,53 @@
+name: "batch_strategy_example"
+backend: "custom_backend"
+max_batch_size: 4
+
+input [
+  {
+    name: "Input3"
+    data_type: TYPE_FP32
+    dims: [ 1, 28, 28 ]
+  }
+]
+
+output [
+  {
+    name: "DIGIT"
+    data_type: TYPE_INT32
+    dims: [ 1 ]
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 200000
+  # A queue policy disables prefetching, keeping requests in the scheduler queue
+  # while the only instance is held by the batch-composition test.
+  default_queue_policy {
+    allow_timeout_override: true
+  }
+}
+
+# One instance: the test fills its queue and reads back the batches it formed.
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+  }
+]
+
+parameters: {
+  key: "TRITON_BATCH_STRATEGY_PATH"
+  value: { string_value: "/strategies/example-batchstrategy.so" }
+}
+
+parameters: {
+  key: "target_model"
+  value: { string_value: "mnist_onnx" }
+}
+
+parameters: {
+  key: "identity_model"
+  value: { string_value: "identity_gpu" }
+}
+
+parameters: { key: "fixture" value: { string_value: "batching" } }

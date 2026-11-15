@@ -1,0 +1,12 @@
+name: "minimal_batching"
+backend: "minimal_backend"
+max_batch_size: 4
+input [{ name: "INPUT" data_type: TYPE_FP32 dims: [10] }]
+output [{ name: "OUTPUT" data_type: TYPE_FP32 dims: [10] }]
+instance_group [{ count: 1 kind: KIND_CPU }]
+
+dynamic_batching { max_queue_delay_microseconds: 200000 }
+parameters: {
+  key: "TRITON_BATCH_STRATEGY_PATH"
+  value: { string_value: "/strategies/example-batchstrategy.so" }
+}

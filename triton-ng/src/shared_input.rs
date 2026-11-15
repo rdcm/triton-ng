@@ -138,47 +138,57 @@ mod tests {
     use super::checked_buffers;
     use crate::{CPU, GPU, RawBuffer};
 
-    fn buffer(data: &[u8], memory_type: u32) -> RawBuffer {
-        RawBuffer {
-            ptr: data.as_ptr().cast_mut().cast(),
-            len: data.len(),
-            memory_type,
-            memory_type_id: 0,
-        }
-    }
-
     #[test]
-    fn every_non_empty_buffer_is_kept_in_order() {
+    fn shared_input_byte_size_matches_its_buffers() {
         let (first, second) = ([1u8, 2], [3u8; 4]);
         let empty = RawBuffer {
             ptr: std::ptr::null_mut(),
             ..buffer(&[], CPU)
         };
 
-        let (kept, byte_size) = checked_buffers(
+        let (_kept, byte_size) = checked_buffers(
             "x",
             6,
             vec![buffer(&first, GPU), empty, buffer(&second, CPU)],
         )
         .unwrap();
 
-        assert_eq!(byte_size, 6);
+        let actual = byte_size;
+        let expected = 6;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn shared_input_buffers_keep_their_original_order() {
+        let (first, second) = ([1u8, 2], [3u8; 4]);
+        let empty = RawBuffer {
+            ptr: std::ptr::null_mut(),
+            ..buffer(&[], CPU)
+        };
+
+        let (kept, _byte_size) = checked_buffers(
+            "x",
+            6,
+            vec![buffer(&first, GPU), empty, buffer(&second, CPU)],
+        )
+        .unwrap();
+
         let kept: Vec<_> = kept.iter().map(|b| (b.ptr, b.memory_type)).collect();
-        assert_eq!(
-            kept,
-            [
-                (first.as_ptr().cast_mut().cast(), GPU),
-                (second.as_ptr().cast_mut().cast(), CPU)
-            ]
-        );
+        let actual = kept;
+        let expected = [
+            (first.as_ptr().cast_mut().cast(), GPU),
+            (second.as_ptr().cast_mut().cast(), CPU),
+        ];
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn empty_tensor_has_no_buffers() {
         let (kept, byte_size) = checked_buffers("x", 0, vec![]).unwrap();
 
-        assert!(kept.is_empty());
-        assert_eq!(byte_size, 0);
+        let expected = (true, 0);
+        let actual = (kept.is_empty(), byte_size);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -196,8 +206,21 @@ mod tests {
         ]
         .map(|result| result.err().unwrap());
 
-        assert!(errors[0].contains("has 4 bytes in its buffers, expected 8"));
-        assert!(errors[1].contains("is null"));
-        assert!(errors[2].contains("unknown memory type 42"));
+        let expected = (true, true, true);
+        let actual = (
+            errors[0].contains("has 4 bytes in its buffers, expected 8"),
+            errors[1].contains("is null"),
+            errors[2].contains("unknown memory type 42"),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    fn buffer(data: &[u8], memory_type: u32) -> RawBuffer {
+        RawBuffer {
+            ptr: data.as_ptr().cast_mut().cast(),
+            len: data.len(),
+            memory_type,
+            memory_type_id: 0,
+        }
     }
 }

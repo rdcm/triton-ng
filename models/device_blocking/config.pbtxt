@@ -18,11 +18,7 @@ output [
   }
 ]
 
-# Two GPU instances on the same device. The model uses a second copy of the
-# example backend, which `make docker-env-up` configures for
-# `ExecutionPolicy::DeviceBlocking`: these two share one execution thread and
-# their execute calls never overlap. No other test uses this model, so its
-# counters are its own.
+# Non-passive GPU instances on one device share a DeviceBlocking execution thread.
 instance_group [
   {
     count: 2
@@ -40,3 +36,5 @@ parameters: {
   key: "identity_model"
   value: { string_value: "identity_gpu" }
 }
+
+parameters: { key: "fixture" value: { string_value: "concurrency" } }

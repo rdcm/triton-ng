@@ -137,32 +137,63 @@ mod tests {
 
     #[test]
     fn distinct_valid_labels_are_accepted() {
-        assert!(validate_labels(&[]).is_ok());
-        assert!(validate_labels(&[("model", "encoder"), ("gpu", "0")]).is_ok());
-        assert!(validate_labels(&[("model", "")]).is_ok());
+        let expected = (true, true, true);
+        let actual = (
+            validate_labels(&[]).is_ok(),
+            validate_labels(&[("model", "encoder"), ("gpu", "0")]).is_ok(),
+            validate_labels(&[("model", "")]).is_ok(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn repeated_or_invalid_labels_are_refused() {
-        assert!(validate_labels(&[("model", "a"), ("model", "b")]).is_err());
-        assert!(validate_labels(&[("bad-name", "a")]).is_err());
-        assert!(validate_labels(&[("model", "a\0b")]).is_err());
+        let expected = (true, true, true);
+        let actual = (
+            validate_labels(&[("model", "a"), ("model", "b")]).is_err(),
+            validate_labels(&[("bad-name", "a")]).is_err(),
+            validate_labels(&[("model", "a\0b")]).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn counters_only_grow_by_finite_values() {
-        assert!(validate_counter_increment(0.0).is_ok());
-        assert!(validate_counter_increment(2.5).is_ok());
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+        let mut actual_2 = Vec::new();
+        let mut expected_2 = Vec::new();
+
+        actual_0.push(validate_counter_increment(0.0).is_ok());
+        expected_0.push(true);
+        actual_1.push(validate_counter_increment(2.5).is_ok());
+        expected_1.push(true);
         for value in [-1.0, f64::NAN, f64::INFINITY] {
-            assert!(validate_counter_increment(value).is_err(), "{value}");
+            actual_2.push(validate_counter_increment(value).is_err());
+            expected_2.push(true);
         }
+        let expected = (expected_0, expected_1, expected_2);
+        let actual = (actual_0, actual_1, actual_2);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn gauges_and_histograms_take_finite_values() {
-        assert!(validate_finite(-3.0).is_ok());
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
+        actual_0.push(validate_finite(-3.0).is_ok());
+        expected_0.push(true);
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            assert!(validate_finite(value).is_err(), "{value}");
+            actual_1.push(validate_finite(value).is_err());
+            expected_1.push(true);
         }
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 }

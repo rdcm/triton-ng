@@ -509,13 +509,6 @@ mod tests {
     use crate::executor::RequestPolicy;
     use crate::types::RequestFlags;
 
-    fn flags(sequence_start: bool) -> RequestFlags {
-        RequestFlags {
-            sequence_start,
-            sequence_end: false,
-        }
-    }
-
     #[test]
     fn only_a_request_starting_an_iterative_sequence_is_rescheduled() {
         let iterative = RequestPolicy {
@@ -524,8 +517,19 @@ mod tests {
             batching: false,
             model: Default::default(),
         };
-        assert_eq!(reschedule_refusal(iterative, flags(true)), None);
-        assert!(reschedule_refusal(iterative, flags(false)).is_some());
-        assert!(reschedule_refusal(RequestPolicy::default(), flags(true)).is_some());
+        let expected = (None, true, true);
+        let actual = (
+            reschedule_refusal(iterative, flags(true)),
+            reschedule_refusal(iterative, flags(false)).is_some(),
+            reschedule_refusal(RequestPolicy::default(), flags(true)).is_some(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    fn flags(sequence_start: bool) -> RequestFlags {
+        RequestFlags {
+            sequence_start,
+            sequence_end: false,
+        }
     }
 }

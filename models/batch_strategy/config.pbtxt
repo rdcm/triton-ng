@@ -20,12 +20,8 @@ output [
 
 dynamic_batching {
   max_queue_delay_microseconds: 200000
-  # Naming a queue policy turns prefetching off: Triton prefetches only while
-  # the policy has no timeout, no timeout override and no queue size. With
-  # prefetching on, Triton lets the batcher fill one more payload while the
-  # only instance is busy, so a request holding the instance does not keep the
-  # requests behind it in the queue and the test cannot see the batches the
-  # strategy formed.
+  # A queue policy disables prefetching, keeping requests in the scheduler queue
+  # while the only instance is held by the batch-composition test.
   default_queue_policy {
     allow_timeout_override: true
   }
@@ -39,8 +35,6 @@ instance_group [
   }
 ]
 
-# The strategy library `make build` produces, mounted into the container by
-# the `triton` service of `docker-compose.yml`.
 parameters: {
   key: "TRITON_BATCH_STRATEGY_PATH"
   value: { string_value: "/strategies/batchstrategy.so" }
@@ -55,3 +49,5 @@ parameters: {
   key: "identity_model"
   value: { string_value: "identity_gpu" }
 }
+
+parameters: { key: "fixture" value: { string_value: "batching" } }

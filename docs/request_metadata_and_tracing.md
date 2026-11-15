@@ -24,19 +24,22 @@ than ignore what may change the meaning of the request.
 the getters above:
 
 ```rust ignore
-let mut inference = InferenceRequest::new(ctx.server(), "decoder", -1)?;
-if let Some(id) = request.id()? {
-    inference.set_id(&id)?;
+fn forward_metadata(ctx: &Context, request: &Request) -> Result<InferenceRequest, Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), "decoder", -1)?;
+    if let Some(id) = request.id()? {
+        inference.set_id(&id)?;
+    }
+    if let Some(session) = request.correlation_id()? {
+        inference.set_correlation_id(session)?;
+        inference.set_flags(request.flags()?)?;
+    }
+    if let Some(timeout) = request.timeout()? {
+        inference.set_timeout(timeout)?;
+    }
+    inference.set_priority(1)?;
+    inference.set_parameter("language", "ru")?;
+    Ok(inference)
 }
-if let Some(session) = request.correlation_id()? {
-    inference.set_correlation_id(session)?;
-    inference.set_flags(request.flags()?)?;
-}
-if let Some(timeout) = request.timeout()? {
-    inference.set_timeout(timeout)?;
-}
-inference.set_priority(1)?;
-inference.set_parameter("language", "ru")?;
 ```
 
 Every setter refuses what Triton would read as something else instead of passing it on: a zero
@@ -67,10 +70,13 @@ also removes its policy-specific data and allows the same name to be added again
 name is rejected before calling Triton.
 
 ```rust ignore
-inference.remove_input("AUDIO")?;
-inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], replacement)?;
-inference.remove_all_requested_outputs()?;
-inference.add_requested_output("EMBEDDING")?;
+fn replace_audio(inference: &mut InferenceRequest, samples: i64, replacement: Vec<u8>) -> Result<(), Error> {
+    inference.remove_input("AUDIO")?;
+    inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], replacement)?;
+    inference.remove_all_requested_outputs()?;
+    inference.add_requested_output("EMBEDDING")?;
+    Ok(())
+}
 ```
 
 `RemoveOriginalInput` destroys Triton's `MemoryReference` records, not the caller's data
@@ -89,10 +95,13 @@ and supports the same `InputBuffer` types as ordinary appends. Both retain the o
 request drop/release, even when removal follows or an append fails after partial progress.
 
 ```rust ignore
-inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], default_bytes)?;
-let mut local = ctx.memory().pinned(local_bytes.len())?;
-local.copy_from_slice(&local_bytes);
-inference.append_input_buffer_with_host_policy("AUDIO", local, "pinned")?;
+fn attach_policy_audio(ctx: &Context, inference: &mut InferenceRequest, samples: i64, default_bytes: Vec<u8>, local_bytes: &[u8]) -> Result<(), Error> {
+    inference.add_input_with_data("AUDIO", DataType::Fp32, &[1, samples], default_bytes)?;
+    let mut local = ctx.memory().pinned(local_bytes.len())?;
+    local.copy_from_slice(local_bytes);
+    inference.append_input_buffer_with_host_policy("AUDIO", local, "pinned")?;
+    Ok(())
+}
 ```
 
 The two lists are independent: provide ordinary data for validation and fallback, and a full
@@ -114,9 +123,12 @@ calls made for it are invisible in the trace unless they are its children. One c
 request a child of the trace of a request:
 
 ```rust ignore
-let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
-inference.set_parent_trace(&requests[0])?;
-let result = ctx.server().infer_async(inference).await?;
+async fn traced_encoder(ctx: &Context, request: &Request, image: Vec<u8>) -> Result<InferenceResult, Error> {
+    let mut inference = InferenceRequest::new(ctx.server(), "encoder", -1)?;
+    inference.set_parent_trace(request)?;
+    inference.add_input_with_data("IMAGE", DataType::Fp32, &[1, 1, 28, 28], image)?;
+    Ok(ctx.server().infer_async(inference).await?)
+}
 ```
 
 The child gets its own trace ID with `parent_id` set to the trace ID of the request, and Triton
@@ -129,10 +141,13 @@ and `Server::infer_stream` takes a child trace like `infer_async`, see [Streamin
 request, and a backend can add entries of its own between them:
 
 ```rust ignore
-let trace = request.trace()?;
-trace.report_activity("preprocess_start")?;
-let image = request.get_input("IMAGE")?.as_bytes()?;
-trace.report_activity("preprocess_end")?;
+fn preprocess(request: &Request) -> Result<Vec<u8>, Error> {
+    let trace = request.trace()?;
+    trace.report_activity("preprocess_start")?;
+    let image = request.get_input("IMAGE")?.as_bytes()?;
+    trace.report_activity("preprocess_end")?;
+    Ok(image)
+}
 ```
 
 The trace borrows the request, so it cannot outlive it, and it reports the moment of the call,
@@ -143,7 +158,7 @@ without reporting anything, so there is nothing to check before reporting.
 
 The name reaches the trace file as a JSON string the collector writes without escaping it, so
 `report_activity` refuses a name with a double quote, a backslash, a NUL byte or any other control
-character, and reports `INVALID_ARG` without recording anything. The example backend reports the
+character, and reports `INVALID_ARG` without recording anything. The test backend reports the
 activity a request names in its `report_activity` parameter, and the integration test checks that
 the trace file holds JSON and places the activity between the two ends of the request.
 
@@ -180,8 +195,9 @@ unknown model fails `InferenceRequest::new` before there is a trace; a model tha
 unloading, a full queue, a missing correlation ID of a sequence model, a timeout in the queue, a
 failed execution and a cancellation all fail after Triton took the trace, and Triton releases it.
 
-[`example/custom-backend`](https://github.com/rdcm/triton-ng/blob/main/example/custom-backend/src/lib.rs) makes every BLS call to
-`mnist_onnx` a child of its request. With the `echo_metadata` parameter it answers with the
-metadata of the request in response parameters, and with `forward_metadata` it calls itself over
-BLS with metadata derived from the request and passes the echo on. The integration tests trace
-`mnist` into `target/traces` (see `docker-compose.yml`) and look for the child traces there.
+The [`tracing` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/tracing.rs)
+exercises custom activities and a parent answered before its traced BLS call is released. The
+[`metadata` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/metadata.rs)
+reads client metadata and forwards derived metadata through a BLS call to its own model.
+Tests explicitly select `fixture_tracing` or `fixture_metadata`; trace files are written to
+`target/traces` by the root Compose service.

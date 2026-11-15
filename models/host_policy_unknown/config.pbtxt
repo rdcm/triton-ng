@@ -38,3 +38,5 @@ parameters: {
   key: "identity_model"
   value: { string_value: "identity_gpu" }
 }
+
+parameters: { key: "fixture" value: { string_value: "host_policy" } }

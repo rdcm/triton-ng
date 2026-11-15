@@ -1,5 +1,11 @@
 # Working on triton-ng
 
+## Language
+
+Write commit messages, branch names, and comments only in English. This includes code comments,
+review comments, and issue/PR discussion comments. Keep required ticket identifiers unchanged;
+branches named only after a ticket identifier or issue number are allowed.
+
 ## Use the Makefile only
 
 Build, lint, format, test, and run the project only through `make` targets. Do not run `cargo`,
@@ -82,9 +88,39 @@ Unit tests live next to the code they test, in a `#[cfg(test)] mod tests` at the
 source file. Tests that need a running Triton go to the crate's `tests/` directory and run
 against `make docker-env-up`.
 
+- Every test ends with exactly one explicit assertion comparing two objects: `expected`
+  and `actual`. Construct these objects before the assertion; combine multiple observed
+  values into a struct or tuple instead of writing multiple assertions.
+- Do not put assertions in the middle of a test. An intermediate assertion indicates that
+  the test must be split into independent tests, each with its own final assertion.
+- Put helper functions at the bottom of the test file, after all tests.
+- Test setup and stateful operations belong to `Sut` methods. Do not write free helper
+  functions accepting `&Sut` or pass its configuration around separately.
+- `Sut` loads configuration internally and owns the fixture lifecycle. Tests construct
+  `Sut` with the backend and dependencies; they do not construct `Config` themselves.
+- Keep `Config` private to `Sut`: no configuration getters or field accessors that make
+  tests reconstruct requests. Inference methods assemble model and tensor metadata
+  internally; callers pass only parameters, input values, and an explicit other model
+  when the scenario requires one.
+- Name each test as a declarative sentence that clearly states the behavior it verifies.
+- All tests must support parallel execution. Isolate their state and resources; do not rely
+  on execution order, serial test groups, or a global lock to serialize tests.
+
 Library unit tests are linked without `libtritonserver`, so they must not reach Triton
 symbols, including `TritonError`'s `Drop`. Test the logic on plain Rust types and convert to
 `TritonError` outside the tested part.
+
+## Comments
+
+Implementation comments explain non-obvious technical decisions, workarounds, and library
+behavior or limitations that a reader cannot infer from the code. Do not narrate routine
+operations, repeat identifiers, label files with their own names, or explain an unchanged
+default. Remove stale, duplicated, and contradictory comments when editing nearby code.
+Avoid filler, generic assurances, and commentary about the editing process.
+
+Keep comments short and specific. `SAFETY` comments must explain the actual pointer
+validity, ownership, lifetime, or synchronization argument, rather than merely label a call
+as safe. Preserve the public API documentation required below and license notices.
 
 ## Public API documentation
 
@@ -102,3 +138,10 @@ The branch must match the Triton image the project targets (`r25.09` for
 Update submodules only with `make update-submodules` and commit the new `deps/` commits
 together with any `.gitmodules` change. `.gitmodules` alone proves nothing: it can name one
 branch while the recorded commits come from another.
+
+If a local submodule checkout does not match the branch configured in `.gitmodules`
+(for example, it was switched to `main`), restore it with `make update-submodules`
+without asking the user. Such a mismatched checkout is not a change to preserve or a
+reason to request confirmation or create a separate worktree. This is a standing
+instruction from the user. Preserve unrelated uncommitted file edits inside submodules;
+do not use a forced checkout or discard those edits.

@@ -543,7 +543,9 @@ mod tests {
             ("string".to_string(), Parameter::String("hello".to_string())),
         ]);
         let proto = Parameter::map_to_proto(&parameters);
-        assert_eq!(Parameter::map_from_proto(proto), parameters);
+        let actual = Parameter::map_from_proto(proto);
+        let expected = parameters;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -562,6 +564,8 @@ mod tests {
                 },
             ),
         ]);
-        assert!(Parameter::map_from_proto(proto).is_empty());
+        let actual = Parameter::map_from_proto(proto).is_empty();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 }

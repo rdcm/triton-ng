@@ -172,7 +172,6 @@ pub struct SharedMemoryRegion {
     /// Offset of the region in the shared memory, in bytes.
     pub offset: u64,
     /// Size of the region, in bytes.
-    /// Size of the region, in bytes.
     pub byte_size: u64,
 }
 

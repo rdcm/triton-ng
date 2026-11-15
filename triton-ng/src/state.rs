@@ -550,6 +550,60 @@ mod tests {
     use crate::DataType;
     use crate::model::{ModelAddress, ModelIdentity};
 
+    #[test]
+    fn a_fixed_state_shape_reports_its_byte_size() {
+        let actual = counter().check_shape(&[1]);
+        let expected = Ok(4);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_dynamic_state_shape_reports_its_byte_size() {
+        let dynamic = StateConfig {
+            dims: vec![-1, 3],
+            ..counter()
+        };
+        let actual = dynamic.check_shape(&[7, 3]);
+        let expected = Ok(84);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_shape_the_configuration_does_not_declare_is_refused() {
+        let expected = (true, true, true, true);
+        let actual = (
+            counter().check_shape(&[2]).is_err(),
+            counter().check_shape(&[1, 1]).is_err(),
+            counter().check_shape(&[0]).is_err(),
+            counter().check_shape(&[-1]).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_state_of_a_type_without_a_size_is_refused() {
+        let bytes = StateConfig {
+            datatype: DataType::Bytes,
+            ..counter()
+        };
+        let expected = (true, true);
+        let actual = (
+            bytes.check_shape(&[1]).is_err(),
+            state_byte_size(DataType::Invalid, &[1]).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_state_too_large_for_u64_is_refused() {
+        let expected = (true, true);
+        let actual = (
+            state_byte_size(DataType::Int64, &[i64::MAX, 2]).is_err(),
+            state_byte_size(DataType::Fp64, &[i64::MAX]).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
     fn model() -> ModelIdentity {
         ModelIdentity {
             address: ModelAddress {
@@ -568,40 +622,5 @@ mod tests {
             dims: vec![1],
             model: model(),
         }
-    }
-
-    #[test]
-    fn a_shape_that_fits_the_configuration_holds_the_data() {
-        assert_eq!(counter().check_shape(&[1]), Ok(4));
-
-        let dynamic = StateConfig {
-            dims: vec![-1, 3],
-            ..counter()
-        };
-        assert_eq!(dynamic.check_shape(&[7, 3]), Ok(84));
-    }
-
-    #[test]
-    fn a_shape_the_configuration_does_not_declare_is_refused() {
-        assert!(counter().check_shape(&[2]).is_err());
-        assert!(counter().check_shape(&[1, 1]).is_err());
-        assert!(counter().check_shape(&[0]).is_err());
-        assert!(counter().check_shape(&[-1]).is_err());
-    }
-
-    #[test]
-    fn a_state_of_a_type_without_a_size_is_refused() {
-        let bytes = StateConfig {
-            datatype: DataType::Bytes,
-            ..counter()
-        };
-        assert!(bytes.check_shape(&[1]).is_err());
-        assert!(state_byte_size(DataType::Invalid, &[1]).is_err());
-    }
-
-    #[test]
-    fn a_state_too_large_for_u64_is_refused() {
-        assert!(state_byte_size(DataType::Int64, &[i64::MAX, 2]).is_err());
-        assert!(state_byte_size(DataType::Fp64, &[i64::MAX]).is_err());
     }
 }

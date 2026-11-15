@@ -349,29 +349,26 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn plan() -> OutputPlan {
-        let memory = MemoryManager::heap();
-        OutputPlan::new(HashMap::from([
-            ("ho".to_string(), Some(memory.gpu(1, 40).unwrap().into())),
-            ("logits".to_string(), Some(memory.pinned(8).unwrap().into())),
-        ]))
-    }
-
     #[test]
     fn query_reports_the_memory_of_the_buffer() {
         let plan = plan();
 
-        assert_eq!(plan.placement("ho"), Some((crate::GPU, 1)));
-        assert_eq!(plan.placement("dec"), None);
+        let expected = (Some((crate::GPU, 1)), None);
+        let actual = (plan.placement("ho"), plan.placement("dec"));
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn buffer_is_handed_over_once() {
         let plan = plan();
 
-        assert!(plan.take("ho", 40).unwrap().is_some());
-        assert_eq!(plan.placement("ho"), None);
-        assert!(plan.take("ho", 40).err().unwrap().contains("twice"));
+        let expected = (true, None, true);
+        let actual = (
+            plan.take("ho", 40).unwrap().is_some(),
+            plan.placement("ho"),
+            plan.take("ho", 40).err().unwrap().contains("twice"),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -380,20 +377,27 @@ mod tests {
 
         let error = plan.take("logits", 4).err().unwrap();
 
-        assert!(error.contains("4 bytes"), "{error}");
-        assert!(plan.take("logits", 8).is_err());
+        let expected = (true, true);
+        let actual = (error.contains("4 bytes"), plan.take("logits", 8).is_err());
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn outputs_without_buffer_are_not_planned() {
-        assert!(plan().take("dec", 1280).unwrap().is_none());
+        let actual = plan().take("dec", 1280).unwrap().is_none();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn outputs_without_buffer_get_zeroed_memory_of_their_size() {
-        assert_eq!(zeroed_vec(1280).unwrap(), vec![0; 1280]);
-        assert!(zeroed_vec(0).unwrap().is_empty());
-        assert!(zeroed_vec(usize::MAX).is_none());
+        let expected = (vec![0; 1280], true, true);
+        let actual = (
+            zeroed_vec(1280).unwrap(),
+            zeroed_vec(0).unwrap().is_empty(),
+            zeroed_vec(usize::MAX).is_none(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -407,8 +411,9 @@ mod tests {
         shared.clear();
         let third = shared.get_or_create(create).unwrap();
 
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!((*first, *third), (0, 1));
+        let expected = (true, (0, 1));
+        let actual = (Arc::ptr_eq(&first, &second), (*first, *third));
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -418,18 +423,28 @@ mod tests {
 
         shared.clear();
 
-        assert_eq!(*held, 7);
-        assert_eq!(Arc::strong_count(&held), 1);
+        let expected = (7, 1);
+        let actual = (*held, Arc::strong_count(&held));
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn failed_creation_is_retried() {
         let shared = Shared::new();
 
-        assert_eq!(
+        let expected = (Err("no memory"), 1);
+        let actual = (
             shared.get_or_create(|| Err::<u8, _>("no memory")),
-            Err("no memory")
+            *shared.get_or_create(|| Ok::<_, &str>(1)).unwrap(),
         );
-        assert_eq!(*shared.get_or_create(|| Ok::<_, &str>(1)).unwrap(), 1);
+        assert_eq!(actual, expected);
+    }
+
+    fn plan() -> OutputPlan {
+        let memory = MemoryManager::heap();
+        OutputPlan::new(HashMap::from([
+            ("ho".to_string(), Some(memory.gpu(1, 40).unwrap().into())),
+            ("logits".to_string(), Some(memory.pinned(8).unwrap().into())),
+        ]))
     }
 }
