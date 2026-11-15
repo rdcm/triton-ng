@@ -3,7 +3,7 @@
 Start with [Getting started](https://github.com/rdcm/triton-ng#getting-started) for the complete
 minimal backend, then work through BLS, streaming, metrics, tracing, memory, sequence state,
 and custom batching in the [main README](https://github.com/rdcm/triton-ng/blob/main/README.md).
-The examples describe the current Git API; crates.io/docs.rs may still describe 0.3.1.
+The examples describe the 0.4.0 API.
 
 ## Guides
 

@@ -8,8 +8,7 @@ Backends run as shared libraries inside Triton. The project also includes an asy
 for calling a running Triton server.
 
 Targets **Triton 25.09 / backend API 1.19** and **Rust 1.99**. The API checks compatibility at
-backend startup. The examples below describe the **current repository**, including additions
-after 0.3.1; use the Git dependency until those additions are released. See
+backend startup. The examples below describe the **0.4.0 API**. See
 [CHANGELOG](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md) for release boundaries.
 
 | Crate | Description |
@@ -26,7 +25,7 @@ after 0.3.1; use the Git dependency until those additions are released. See
 crate-type = ["cdylib"]
 
 [dependencies]
-triton-ng = { git = "https://github.com/rdcm/triton-ng.git" }
+triton-ng = "0.4.0"
 ```
 
 Implement one hook to call another model and return its output. This complete backend is also

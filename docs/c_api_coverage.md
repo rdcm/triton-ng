@@ -27,7 +27,7 @@ For user-facing feature tradeoffs, see [Python comparison](https://github.com/rd
 ## Source baseline
 
 - Core headers: [r25.09 at `564a324`](https://github.com/triton-inference-server/core/tree/564a324ecdde071c7a2493cc128db8e34a68d290/include/triton/core), matching `deps/triton-core` and the vendored SDK headers.
-- Rust: current repository API, including unreleased additions after 0.3.1; [release boundaries](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md).
+- Rust: triton-ng 0.4.0 API; [release boundaries](https://github.com/rdcm/triton-ng/blob/main/CHANGELOG.md).
 - Python backend: [r25.09 at `8b5a055`](https://github.com/triton-inference-server/python_backend/tree/8b5a055e6f2cdd22cf6d3644e5822b01ffc62ce1/src).
 - Shared C++ backend utilities: [r25.09 at `5fa6450`](https://github.com/triton-inference-server/backend/tree/5fa645030c0e725c4ac546e064207fc572e940fa). Only helper paths used by Python are counted, not every function in that library.
 

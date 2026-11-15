@@ -36,7 +36,7 @@ tensors read or written on the CPU side; or a bug in the model code must not tak
 
 “Not exposed” means there is no corresponding public Python hook or `pb_utils` method in
 r25.09, even if the C++ backend or Triton scheduler uses the capability internally.
-“Supported” describes the current Rust Git API, including changes after 0.3.1.
+“Supported” describes the triton-ng 0.4.0 API.
 
 | Area from #17 | python_backend r25.09 | triton-ng API and coverage | Limits / example |
 |---|---|---|---|

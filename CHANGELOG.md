@@ -7,74 +7,54 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed (#37)
+## [0.4.0] - 2026-11-15
 
-- Expand C API coverage to all 276 functions in the r25.09 backend/server headers, with
-  Rust and Python implementation links, public/internal distinctions, and missing alternatives.
+Targets Triton 25.09 / backend API 1.19 and Rust 1.99. All four public crates use version 0.4.0.
 
-- Rewrite the README with progressively introduced, compile-checked API examples and a
-  guide catalogue. Both documentation landing pages include python_backend comparison and
-  recorded benchmark summaries; the full comparison maps every area of the #17 audit.
-- Compile-check Rust snippets from every guide as well as README in `make build`.
-- Verify parent–child trace links for all 50 early-response requests in the tracing test.
-- Keep `examples/minimal-backend` and the contributor's minimal by-key strategy in
-  `examples/batch-strategy` as user examples. Test backend scenarios and batching
-  strategy move under `triton-ng-client/tests/fixtures`; feature models
-  and tests select fixtures explicitly. Root models and Compose remain in place.
-- Remove the unused configurable client demo; the small client in README is compile-checked.
+### Added
 
-
-### Added after 0.3.1
-
-- Backend API compatibility check during initialization (#16, backend API 1.19).
-- Model and instance memory-usage reports and client access to reported usage (#18).
-- Custom trace activities through `Request::trace` and `Trace::report_activity` (#19 / #31).
-- Instance profiles, passive status and secondary devices; backend artifacts, shared state,
-  and execution-policy access (#20 / #27).
-- Opt-in per-response statistics for unary and decoupled responses, including errors (#21 / #32).
+- Custom batching through `BatchStrategy` and `#[triton_ng::batch_strategy]`, exporting all
+  five `TRITONBACKEND_ModelBatch*` entry points. `RequestView` provides read-only access to
+  queued requests without the right to answer or release them (#24 / #34).
 - Sequence-state configuration, validated state writes and updates, and buffer attributes
   through `State` and `StateConfig` (#22 / #33).
-- Owned instance host-policy name and settings through `ModelInstance::host_policy` (#23 / #28).
+- Model and instance memory-usage reports, including client access to reported usage (#18).
+- Custom trace activities through `Request::trace` and `Trace::report_activity` (#19 / #31).
+- Opt-in per-response statistics for unary, decoupled, and error responses (#21 / #32).
+- Instance profiles, passive status, secondary devices, and owned host-policy settings;
+  backend artifacts, shared state, and execution-policy access (#20 / #27, #23 / #28).
+- Host-policy input access through `Input::{properties_for_host_policy, buffer_for_host_policy,
+  as_bytes_for_host_policy}`. Host data copies and metadata are owned; GPU buffers are
+  rejected, and missing policy data uses Triton's default fallback (#30 / #35).
+- BLS input/output removal and policy-specific input appends through `InferenceRequest`.
+  Removed input owners remain retained until request drop/release; removed output buffers
+  are dropped immediately. Policy-specific appends support copied and shared buffers (#25 / #36).
+- Backend API compatibility validation during initialization (#16).
 
+### Changed
 
-### Added (#25)
+- `Input<'a, P = Request>` distinguishes inputs of owned requests from inputs of queued
+  `RequestView` values. Only inputs owned by `Request` can be shared into BLS requests;
+  existing `Input<'a>` annotations retain their default owner.
+- Rewrite README and guides with examples ordered by complexity, a guide catalogue,
+  python_backend comparison, and existing benchmark summaries. Document all 276 C API
+  functions in the r25.09 backend/server headers, with implementation links and coverage
+  distinctions. Compile-check README and guide Rust snippets during `make build` (#37).
+- Keep minimal backend and by-key batching examples in `examples/`; move test scenarios
+  into dedicated fixtures under `triton-ng-client/tests/fixtures/`. Split integration tests
+  by feature and isolate their models for parallel execution (#37).
+- Extend regression coverage for batching lifecycle, callback failures, queue timeouts,
+  and parent–child trace links across 50 early-response requests (#37).
 
-- `InferenceRequest::remove_input`, `remove_all_inputs`, `remove_requested_output`, and
-  `remove_all_requested_outputs` preserve Triton's removal semantics. Input owners remain
-  retained until request drop/release; removed output buffers are dropped immediately.
-- `append_input_data_with_host_policy` and `append_input_buffer_with_host_policy` append
-  independent policy-specific input data with owned-copy and zero-copy ownership paths.
+### Safety and limitations
 
-
-### Added (#30)
-
-- `Input::properties_for_host_policy`, `buffer_for_host_policy` and
-  `as_bytes_for_host_policy` select a host policy's input data. Metadata and host data copies
-  are owned; GPU buffers are rejected and missing policy data uses Triton's default fallback.
-
-
-A backend can decide which requests form a batch. `BatchStrategy` and the `batch_strategy`
-attribute export the five `TRITONBACKEND_ModelBatch*` entry points Triton looks up in the
-batching strategy library of a model, and `RequestView` reads the requests Triton is queueing.
-`Input` gained an owner type parameter, so the inputs of a queued request can be read the same
-way as those of a request a backend owns.
-
-### Added ([#24])
-
-- `BatchStrategy` and `#[triton_ng::batch_strategy]`: the strategy library of a model that sets
-  `TRITON_BATCH_STRATEGY_PATH` in its config, or has a `batchstrategy.so` next to its config.
-- `RequestView`: the read-only view of a request a batch strategy is asked about. It reads the
-  ID, correlation ID, flags, timeout, input and output names, parameters, cancellation state and
-  inputs of the request, and cannot answer it.
-- `Input<'a, P = Request>`: the owner of an input is a type parameter, and only an input of a
-  `Request` can be shared into a BLS request; `RequestView::get_input` returns the same `Input`
-  without `share`.
-- Batching state is retired through a synchronized token registry, including unfinished
-  batches at model unload. In-flight callbacks retain their state, late callbacks cannot
-  dereference retired values, and destructor panics are contained independently.
-- Lifecycle, callback-failure and queue-timeout regression coverage for custom batching.
-- `triton-ng-client/tests/fixtures/batch-strategy`, the `batch_strategy` fixture model and an integration test that
-  reads back the batches the strategy formed.
+- A synchronized token registry retains batching state during active callbacks and retires
+  unfinished batches on unload. Late callbacks cannot dereference retired values, and
+  destructor panics are contained independently.
+- Triton r25.09 can unload a batching library before joining its scheduler. Stop producers
+  and drain requests before unloading a strategy library. Fully concurrent library unload
+  requires a Triton core fix; the Rust registry does not protect the library mapping. See
+  [batching limitations](https://github.com/rdcm/triton-ng/blob/main/docs/batching_and_concurrency.md).
 
 ## [0.3.1] - 2026-11-05
 
@@ -295,7 +275,8 @@ Fixed before the first release; the bugs affected backends that depended on the 
 - An empty output crashed Triton's HTTP frontend because it never got a buffer. Every created
   output now gets one, empty ones included.
 
-[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.3.1...HEAD
+[Unreleased]: https://github.com/rdcm/triton-ng/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/rdcm/triton-ng/compare/0.3.1...0.4.0
 [0.3.1]: https://github.com/rdcm/triton-ng/compare/0.3.0...0.3.1
 [0.3.0]: https://github.com/rdcm/triton-ng/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/rdcm/triton-ng/compare/0.1.0...0.2.0

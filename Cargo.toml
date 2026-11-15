@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 authors = ["rdcm@protonmail.ch"]
 license = "MIT"
@@ -50,7 +50,7 @@ tokio = { version = "1.48.0" }
 tonic = { version = "0.14.2", features = ["gzip", "tls-ring", "tls-native-roots"] }
 tonic-prost = { version = "0.14.2" }
 tonic-prost-build = { version = "0.14.2" }
-triton-ng = { path = "triton-ng", version = "0.3.1" }
-triton-ng-client = { path = "triton-ng-client", version = "0.3.1" }
-triton-ng-macros = { path = "triton-ng-macros", version = "0.3.1" }
-triton-ng-sys = { path = "triton-ng-sys", version = "0.3.1" }
+triton-ng = { path = "triton-ng", version = "0.4.0" }
+triton-ng-client = { path = "triton-ng-client", version = "0.4.0" }
+triton-ng-macros = { path = "triton-ng-macros", version = "0.4.0" }
+triton-ng-sys = { path = "triton-ng-sys", version = "0.4.0" }
