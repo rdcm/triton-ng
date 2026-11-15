@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use triton_ng_client as client;
 
 use super::dto::{
@@ -454,34 +454,43 @@ pub fn scrape_metrics(address: &str) -> Result<String> {
         .split_once("\r\n\r\n")
         .context("metrics response has no body")?;
     if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        bail!("metrics endpoint answered {head}");
+        return Err(anyhow::anyhow!("metrics endpoint answered {head}"));
     }
     Ok(body.to_string())
 }
 
 pub fn create_posix_shm(name: &str, size: i64) -> Result<()> {
     let cname = CString::new(name).context("invalid shared memory name")?;
-    // SAFETY: standard POSIX shm_open call
+    // SAFETY: cname is a live, NUL-terminated CString; shm_open does not retain it.
     let fd = unsafe { libc::shm_open(cname.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600_u32) };
     if fd < 0 {
-        bail!("shm_open failed: {}", std::io::Error::last_os_error());
+        return Err(anyhow::anyhow!(
+            "shm_open failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-    // SAFETY: fd is valid
+    // SAFETY: shm_open succeeded and fd has not been closed.
     let ret = unsafe { libc::ftruncate(fd, size) };
-    // SAFETY: fd is valid
+    // SAFETY: this function owns fd and closes it exactly once.
     unsafe { libc::close(fd) };
     if ret < 0 {
-        bail!("ftruncate failed: {}", std::io::Error::last_os_error());
+        return Err(anyhow::anyhow!(
+            "ftruncate failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
 
 pub fn remove_posix_shm(name: &str) -> Result<()> {
     let cname = CString::new(name).context("invalid shared memory name")?;
-    // SAFETY: standard POSIX shm_unlink call
+    // SAFETY: cname is a live, NUL-terminated CString; shm_unlink does not retain it.
     let ret = unsafe { libc::shm_unlink(cname.as_ptr()) };
     if ret < 0 {
-        bail!("shm_unlink failed: {}", std::io::Error::last_os_error());
+        return Err(anyhow::anyhow!(
+            "shm_unlink failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }

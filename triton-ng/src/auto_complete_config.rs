@@ -355,14 +355,6 @@ mod tests {
     use crate::types::DataType;
     use serde_json::{Value, json};
 
-    fn config(value: Value) -> Result<AutoCompleteConfig, Error> {
-        Ok(AutoCompleteConfig::from_json(&value.to_string())?)
-    }
-
-    fn json_of(config: &AutoCompleteConfig) -> Result<Value, Error> {
-        Ok(serde_json::from_str(&config.to_json())?)
-    }
-
     #[test]
     fn empty_config_is_filled_in() -> Result<(), Error> {
         let mut config = config(json!({"name": "m", "max_batch_size": 0}))?;
@@ -372,20 +364,19 @@ mod tests {
         config.add_optional_input("LANGUAGE", DataType::Bytes, &[1])?;
         config.add_output("DIGIT", DataType::Int32, &[1])?;
         config.set_decoupled(false)?;
-        assert_eq!(
-            json_of(&config)?,
-            json!({
-                "name": "m",
-                "max_batch_size": 8,
-                "dynamic_batching": {},
-                "input": [
-                    {"name": "IMAGE", "data_type": "TYPE_FP32", "dims": [1, 28, 28]},
-                    {"name": "LANGUAGE", "data_type": "TYPE_STRING", "dims": [1], "optional": true}
-                ],
-                "output": [{"name": "DIGIT", "data_type": "TYPE_INT32", "dims": [1]}],
-                "model_transaction_policy": {"decoupled": false}
-            })
-        );
+        let actual = json_of(&config)?;
+        let expected = json!({
+            "name": "m",
+            "max_batch_size": 8,
+            "dynamic_batching": {},
+            "input": [
+                {"name": "IMAGE", "data_type": "TYPE_FP32", "dims": [1, 28, 28]},
+                {"name": "LANGUAGE", "data_type": "TYPE_STRING", "dims": [1], "optional": true}
+            ],
+            "output": [{"name": "DIGIT", "data_type": "TYPE_INT32", "dims": [1]}],
+            "model_transaction_policy": {"decoupled": false}
+        });
+        assert_eq!(actual, expected);
         Ok(())
     }
 
@@ -398,10 +389,9 @@ mod tests {
         }))?;
         config.add_input("IMAGE", DataType::Fp32, &[-1])?;
         config.add_output("DIGIT", DataType::Int32, &[1])?;
-        assert_eq!(
-            json_of(&config)?["input"],
-            json!([{"name": "IMAGE", "data_type": "TYPE_FP32", "dims": [-1]}])
-        );
+        let actual = json_of(&config)?["input"].clone();
+        let expected = json!([{"name": "IMAGE", "data_type": "TYPE_FP32", "dims": [-1]}]);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
@@ -414,51 +404,83 @@ mod tests {
             "model_transaction_policy": {"decoupled": true},
             "input": [{"name": "IMAGE", "data_type": "TYPE_FP32", "dims": [28, 28], "optional": false}]
         }))?;
-        assert!(config.set_max_batch_size(8).is_err());
-        assert!(config.set_dynamic_batching().is_err());
-        assert!(config.set_decoupled(false).is_err());
-        assert!(
-            config
-                .add_input("IMAGE", DataType::Fp16, &[28, 28])
-                .is_err()
-        );
-        assert!(config.add_input("IMAGE", DataType::Fp32, &[784]).is_err());
-        assert!(
-            config
-                .add_optional_input("IMAGE", DataType::Fp32, &[28, 28])
-                .is_err()
-        );
+        let actual_0 = config.set_max_batch_size(8).is_err();
+        let expected_0 = true;
+        let actual_1 = config.set_dynamic_batching().is_err();
+        let expected_1 = true;
+        let actual_2 = config.set_decoupled(false).is_err();
+        let expected_2 = true;
+        let actual_3 = config
+            .add_input("IMAGE", DataType::Fp16, &[28, 28])
+            .is_err();
+        let expected_3 = true;
+        let actual_4 = config.add_input("IMAGE", DataType::Fp32, &[784]).is_err();
+        let expected_4 = true;
+        let actual_5 = config
+            .add_optional_input("IMAGE", DataType::Fp32, &[28, 28])
+            .is_err();
+        let expected_5 = true;
         config.set_max_batch_size(32)?;
         config.set_decoupled(true)?;
         config.add_input("IMAGE", DataType::Fp32, &[28, 28])?;
+        let expected = (
+            expected_0, expected_1, expected_2, expected_3, expected_4, expected_5,
+        );
+        let actual = (actual_0, actual_1, actual_2, actual_3, actual_4, actual_5);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn invalid_values_are_rejected() -> Result<(), Error> {
         let mut config = config(json!({"name": "m"}))?;
-        assert!(config.set_max_batch_size(u32::MAX).is_err());
-        assert!(config.add_input("", DataType::Fp32, &[1]).is_err());
-        assert!(config.add_input("X", DataType::Invalid, &[1]).is_err());
-        assert!(config.add_input("X", DataType::Fp32, &[0]).is_err());
-        assert!(config.add_output("Y", DataType::Fp32, &[-2]).is_err());
-        assert_eq!(json_of(&config)?, json!({"name": "m"}));
+        let expected = (true, true, true, true, true, json!({"name": "m"}));
+        let actual = (
+            config.set_max_batch_size(u32::MAX).is_err(),
+            config.add_input("", DataType::Fp32, &[1]).is_err(),
+            config.add_input("X", DataType::Invalid, &[1]).is_err(),
+            config.add_input("X", DataType::Fp32, &[0]).is_err(),
+            config.add_output("Y", DataType::Fp32, &[-2]).is_err(),
+            json_of(&config)?,
+        );
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
-    fn tensors_are_found_by_name() -> Result<(), Error> {
+    fn configured_inputs_are_found_by_name() -> Result<(), Error> {
+        let config = config(json!({"name": "m", "input": [{"name": "IMAGE"}]}))?;
+        let expected = (true, true);
+        let actual = (config.has_input("IMAGE"), !config.has_output("IMAGE"));
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn configured_outputs_are_found_by_name() -> Result<(), Error> {
         let mut config = config(json!({"name": "m", "input": [{"name": "IMAGE"}]}))?;
-        assert!(config.has_input("IMAGE"));
-        assert!(!config.has_output("IMAGE"));
         config.add_output("DIGIT", DataType::Int32, &[1])?;
-        assert!(config.has_output("DIGIT"));
+        let actual = config.has_output("DIGIT");
+        let expected = true;
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn malformed_config_is_rejected() {
-        assert!(AutoCompleteConfig::from_json("[]").is_err());
-        assert!(AutoCompleteConfig::from_json(r#"{"name": 1}"#).is_err());
+        let expected = (true, true);
+        let actual = (
+            AutoCompleteConfig::from_json("[]").is_err(),
+            AutoCompleteConfig::from_json(r#"{"name": 1}"#).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    fn config(value: Value) -> Result<AutoCompleteConfig, Error> {
+        Ok(AutoCompleteConfig::from_json(&value.to_string())?)
+    }
+
+    fn json_of(config: &AutoCompleteConfig) -> Result<Value, Error> {
+        Ok(serde_json::from_str(&config.to_json())?)
     }
 }

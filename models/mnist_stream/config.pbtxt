@@ -32,5 +32,4 @@ parameters: {
   value: { string_value: "identity_gpu" }
 }
 
-# The test fixture is selected once at model initialization.
 parameters: { key: "fixture" value: { string_value: "streaming" } }

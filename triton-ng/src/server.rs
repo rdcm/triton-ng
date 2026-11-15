@@ -426,7 +426,7 @@ impl Server {
             _parent: parent.clone(),
         })) as *mut c_void;
 
-        // Register the release callback before handing the request to Triton.
+        // Triton may release the request before ServerInferAsync returns.
         if let Err(e) = triton_call!(
             triton_ng_sys::TRITONSERVER_InferenceRequestSetReleaseCallback(
                 raw,
@@ -478,8 +478,7 @@ impl Server {
         if let Err(e) = triton_call!(triton_ng_sys::TRITONSERVER_ServerInferAsync(
             self.ptr, raw, trace_ptr,
         )) {
-            // Triton guarantees it will NOT call neither the release nor the
-            // response callback on failure, so we must clean up manually.
+            // On failure Triton calls neither callback; the request and context remain ours.
             unsafe {
                 drop(Box::from_raw(context_ptr as *mut InferenceContext));
                 inference_request_release(raw, RELEASE_ALL, buffers_ptr);
@@ -583,6 +582,51 @@ mod tests {
     use std::task::Poll;
     use tokio::sync::oneshot;
 
+    #[test]
+    fn single_response_is_the_result() {
+        let actual = single_result(1);
+        let expected = Poll::Ready(Ok(0));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn no_response_is_an_error() {
+        let actual = single_result(0);
+        let expected = Poll::Ready(Err("the model sent no response".to_string()));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn several_responses_are_an_error() {
+        let Poll::Ready(Err(message)) = single_result(3) else {
+            panic!("several responses are not an error");
+        };
+        let actual = message.contains("more than one response");
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn stream_receiver_forwards_every_response() {
+        let (results, mut stream) = InferenceStream::channel();
+        let mut receiver = Receiver::Stream(results);
+        receiver.response(result());
+        receiver.response(Err(Failure {
+            code: ErrorCode::Cancelled,
+            message: "cancelled".to_string(),
+        }));
+        receiver.finish();
+
+        let expected = (true, true, true, true);
+        let actual = (
+            matches!(stream.try_recv(), Ok(Ok(_))),
+            matches!(stream.try_recv(), Ok(Err(f)) if f.code == ErrorCode::Cancelled),
+            stream.try_recv().is_err(),
+            stream.is_closed(),
+        );
+        assert_eq!(actual, expected);
+    }
+
     fn result() -> Result<InferenceResult, Failure> {
         Ok(InferenceResult {
             outputs: vec![],
@@ -597,43 +641,5 @@ mod tests {
         receiver.finish();
         let result = received.try_recv().expect("finish sends the result");
         Poll::Ready(result.map(|r| r.outputs.len()).map_err(|f| f.message))
-    }
-
-    #[test]
-    fn single_response_is_the_result() {
-        assert_eq!(single_result(1), Poll::Ready(Ok(0)));
-    }
-
-    #[test]
-    fn no_response_is_an_error() {
-        assert_eq!(
-            single_result(0),
-            Poll::Ready(Err("the model sent no response".to_string()))
-        );
-    }
-
-    #[test]
-    fn several_responses_are_an_error() {
-        let Poll::Ready(Err(message)) = single_result(3) else {
-            panic!("several responses are not an error");
-        };
-        assert!(message.contains("more than one response"), "{message}");
-    }
-
-    #[test]
-    fn stream_receiver_forwards_every_response() {
-        let (results, mut stream) = InferenceStream::channel();
-        let mut receiver = Receiver::Stream(results);
-        receiver.response(result());
-        receiver.response(Err(Failure {
-            code: ErrorCode::Cancelled,
-            message: "cancelled".to_string(),
-        }));
-        receiver.finish();
-
-        assert!(matches!(stream.try_recv(), Ok(Ok(_))));
-        assert!(matches!(stream.try_recv(), Ok(Err(f)) if f.code == ErrorCode::Cancelled));
-        assert!(stream.try_recv().is_err());
-        assert!(stream.is_closed());
     }
 }

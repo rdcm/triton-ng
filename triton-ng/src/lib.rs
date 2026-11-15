@@ -581,7 +581,6 @@ pub mod __macro_support {
     }
 
     fn make_error(code: ErrorCode, msg: &str) -> ErrorPtr {
-        // Replace null bytes: CString cannot contain them.
         let sanitized = msg.replace('\0', "?");
         // SAFETY: replace('\0') guarantees no null bytes remain.
         let c_str = unsafe { std::ffi::CString::from_vec_unchecked(sanitized.into_bytes()) };
@@ -676,27 +675,39 @@ pub mod __macro_support {
 
         #[test]
         fn the_same_version_and_a_newer_server_are_accepted() {
-            for minor in [
+            let actual = [
                 TRITONBACKEND_API_VERSION_MINOR,
                 TRITONBACKEND_API_VERSION_MINOR + 1,
-            ] {
-                validate_api_version(TRITONBACKEND_API_VERSION_MAJOR, minor).unwrap();
-            }
+            ]
+            .map(|minor| validate_api_version(TRITONBACKEND_API_VERSION_MAJOR, minor));
+            let expected = [Ok(()), Ok(())];
+            assert_eq!(actual, expected);
         }
 
         #[test]
         fn another_major_version_is_rejected() {
+            let mut actual_0 = Vec::new();
+            let mut expected_0 = Vec::new();
+            let mut actual_1 = Vec::new();
+            let mut expected_1 = Vec::new();
+
             for major in [
                 TRITONBACKEND_API_VERSION_MAJOR - 1,
                 TRITONBACKEND_API_VERSION_MAJOR + 1,
             ] {
                 let message =
                     validate_api_version(major, TRITONBACKEND_API_VERSION_MINOR).unwrap_err();
-                assert!(message.contains(&format!("{major}.{TRITONBACKEND_API_VERSION_MINOR}")));
-                assert!(message.contains(&format!(
+                actual_0
+                    .push(message.contains(&format!("{major}.{TRITONBACKEND_API_VERSION_MINOR}")));
+                expected_0.push(true);
+                actual_1.push(message.contains(&format!(
                     "{TRITONBACKEND_API_VERSION_MAJOR}.{TRITONBACKEND_API_VERSION_MINOR}"
                 )));
+                expected_1.push(true);
             }
+            let expected = (expected_0, expected_1);
+            let actual = (actual_0, actual_1);
+            assert_eq!(actual, expected);
         }
 
         #[test]
@@ -706,7 +717,9 @@ pub mod __macro_support {
                 TRITONBACKEND_API_VERSION_MINOR - 1,
             )
             .unwrap_err();
-            assert!(message.contains("older than"));
+            let actual = message.contains("older than");
+            let expected = true;
+            assert_eq!(actual, expected);
         }
     }
 }
@@ -729,34 +742,19 @@ mod tests {
     use crate::triton_parameter::TritonParameter;
     use crate::*;
 
-    fn send<T: ?Sized + Send>() {}
-    fn sync<T: ?Sized + Sync>() {}
-
-    trait NotSend<A> {
-        fn check() {}
-    }
-    impl<T: ?Sized> NotSend<()> for T {}
-    impl<T: ?Sized + Send> NotSend<u8> for T {}
-
-    trait NotSync<A> {
-        fn check() {}
-    }
-    impl<T: ?Sized> NotSync<()> for T {}
-    impl<T: ?Sized + Sync> NotSync<u8> for T {}
-
     macro_rules! send_and_sync {
-        ($($t:ty),*) => {$(send::<$t>(); sync::<$t>();)*};
+        ($($t:ty),*) => {{ [$( { send::<$t>(); sync::<$t>(); 1usize } ),*].len() }};
     }
     macro_rules! send_not_sync {
-        ($($t:ty),*) => {$(send::<$t>(); <$t as NotSync<_>>::check();)*};
+        ($($t:ty),*) => {{ [$( { send::<$t>(); <$t as NotSync<_>>::check(); 1usize } ),*].len() }};
     }
     macro_rules! neither {
-        ($($t:ty),*) => {$(<$t as NotSend<_>>::check(); <$t as NotSync<_>>::check();)*};
+        ($($t:ty),*) => {{ [$( { <$t as NotSend<_>>::check(); <$t as NotSync<_>>::check(); 1usize } ),*].len() }};
     }
 
     #[test]
     fn thread_safety_of_every_handle_is_as_documented() {
-        send_and_sync!(
+        let checked_0 = send_and_sync!(
             TritonError,
             Server,
             Context,
@@ -785,7 +783,7 @@ mod tests {
             MetricFamily,
             Metric
         );
-        send_not_sync!(
+        let checked_1 = send_not_sync!(
             Request,
             Response,
             ResponseBody,
@@ -795,7 +793,7 @@ mod tests {
             InferenceResponse,
             InferenceTrace
         );
-        neither!(
+        let checked_2 = neither!(
             TritonParameter<'static>,
             MetricArgs,
             Model,
@@ -810,5 +808,30 @@ mod tests {
             RawBuffer,
             RequestView<'static>
         );
+
+        // The probes above enforce the traits at compile time; keep the full handle inventory.
+        let expected = (27, 8, 13);
+        let actual = (checked_0, checked_1, checked_2);
+        assert_eq!(actual, expected);
     }
+
+    fn send<T: ?Sized + Send>() {}
+
+    fn sync<T: ?Sized + Sync>() {}
+
+    trait NotSend<A> {
+        fn check() {}
+    }
+
+    impl<T: ?Sized> NotSend<()> for T {}
+
+    impl<T: ?Sized + Send> NotSend<u8> for T {}
+
+    trait NotSync<A> {
+        fn check() {}
+    }
+
+    impl<T: ?Sized> NotSync<()> for T {}
+
+    impl<T: ?Sized + Sync> NotSync<u8> for T {}
 }

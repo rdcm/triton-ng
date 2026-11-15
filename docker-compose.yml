@@ -24,6 +24,7 @@ services:
       --model-repository=/models
       --log-verbose=1
       --model-control-mode=explicit
+      --strict-readiness=false
       --load-model=mnist
       --load-model=fixture_errors
       --load-model=fixture_cancellation
@@ -75,11 +76,7 @@ services:
       - ./target/traces:/traces
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend/libtriton_custom_backend.so
       - ./target/release/libtriton_custom_backend.so:/opt/tritonserver/backends/custom_backend_device_blocking/libtriton_custom_backend_device_blocking.so
-      # The batching strategy of the `batch_strategy` model, which names it
-      # through `TRITON_BATCH_STRATEGY_PATH`. It is mounted outside the model
-      # repository so that nothing of the build lands in `models/`. `make
-      # build` has to run first: Docker creates a directory at a mount source
-      # that does not exist yet.
+      # Build first: Docker creates directories at missing library mount paths.
       - ./target/release/libtriton_batch_strategy.so:/strategies/batchstrategy.so
     ports:
       - "8000:8000" # HTTP

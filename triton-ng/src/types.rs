@@ -501,126 +501,164 @@ mod tests {
 
     #[test]
     fn instance_group_kinds_round_trip_and_unknown_ones_fail() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for kind in [
             InstanceGroupKind::Auto,
             InstanceGroupKind::Cpu,
             InstanceGroupKind::Gpu,
             InstanceGroupKind::Model,
         ] {
-            assert_eq!(InstanceGroupKind::from_sys(kind.to_sys()), Ok(kind));
+            actual_0.push(InstanceGroupKind::from_sys(kind.to_sys()));
+            expected_0.push(Ok(kind));
         }
-        assert!(InstanceGroupKind::from_sys(42).is_err());
+        actual_1.push(InstanceGroupKind::from_sys(42).is_err());
+        expected_1.push(true);
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn artifact_types_are_checked() {
-        assert_eq!(
+        let expected = (Ok(ArtifactType::FileSystem), true);
+        let actual = (
             ArtifactType::from_sys(
-                TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM
+                TRITONBACKEND_artifacttype_enum_TRITONBACKEND_ARTIFACT_FILESYSTEM,
             ),
-            Ok(ArtifactType::FileSystem)
+            ArtifactType::from_sys(42).is_err(),
         );
-        assert!(ArtifactType::from_sys(42).is_err());
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn memory_types_round_trip_and_unknown_ones_fail() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+        let mut actual_2 = Vec::new();
+        let mut expected_2 = Vec::new();
+
         for memory_type in [
             MemoryType::Cpu,
             MemoryType::CpuPinned,
             MemoryType::Gpu { device_id: 3 },
         ] {
             let (kind, memory_type_id) = memory_type.to_sys();
-            assert_eq!(MemoryType::from_sys(kind, memory_type_id), Ok(memory_type));
+            actual_0.push(MemoryType::from_sys(kind, memory_type_id));
+            expected_0.push(Ok(memory_type));
         }
-        // A kind Triton defines in a later release, and a device id that is not one.
-        assert!(MemoryType::from_sys(42, 0).is_err());
-        assert!(
+        actual_1.push(MemoryType::from_sys(42, 0).is_err());
+        expected_1.push(true);
+        actual_2.push(
             MemoryType::from_sys(
                 TRITONSERVER_memorytype_enum_TRITONSERVER_MEMORY_GPU,
-                i64::MAX
+                i64::MAX,
             )
-            .is_err()
+            .is_err(),
         );
+        expected_2.push(true);
+        let expected = (expected_0, expected_1, expected_2);
+        let actual = (actual_0, actual_1, actual_2);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn execution_policies_have_their_triton_values() {
-        assert_eq!(
+        let expected = (
+            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING,
+            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING,
+        );
+        let actual = (
             ExecutionPolicy::Blocking.to_sys(),
-            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
-        );
-        assert_eq!(
             ExecutionPolicy::DeviceBlocking.to_sys(),
-            TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
         );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn execution_policies_are_checked() {
-        assert_eq!(
-            ExecutionPolicy::from_sys(
-                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING
-            ),
-            Ok(ExecutionPolicy::Blocking)
+        let expected = (
+            Ok(ExecutionPolicy::Blocking),
+            Ok(ExecutionPolicy::DeviceBlocking),
+            true,
         );
-        assert_eq!(
+        let actual = (
             ExecutionPolicy::from_sys(
-                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_BLOCKING,
             ),
-            Ok(ExecutionPolicy::DeviceBlocking)
+            ExecutionPolicy::from_sys(
+                TRITONBACKEND_execpolicy_enum_TRITONBACKEND_EXECUTION_DEVICE_BLOCKING,
+            ),
+            ExecutionPolicy::from_sys(42).is_err(),
         );
-        assert!(ExecutionPolicy::from_sys(42).is_err());
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn request_flags_round_trip() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for sequence_start in [false, true] {
             for sequence_end in [false, true] {
                 let flags = RequestFlags {
                     sequence_start,
                     sequence_end,
                 };
-                assert_eq!(RequestFlags::from_sys(flags.to_sys()), Ok(flags));
+                actual_0.push(RequestFlags::from_sys(flags.to_sys()));
+                expected_0.push(Ok(flags));
             }
         }
-        assert_eq!(RequestFlags::default().to_sys(), 0);
+        actual_1.push(RequestFlags::default().to_sys());
+        expected_1.push(0);
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn unknown_request_flags_are_refused() {
-        assert!(RequestFlags::from_sys(4).is_err());
-        assert!(RequestFlags::from_sys(u32::MAX).is_err());
-    }
-
-    fn read<T>(kind: TRITONSERVER_ParameterType, value: &T) -> Result<Parameter, String> {
-        unsafe { Parameter::from_sys(kind, value as *const T as *const c_void) }
+        let expected = (true, true);
+        let actual = (
+            RequestFlags::from_sys(4).is_err(),
+            RequestFlags::from_sys(u32::MAX).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn reads_every_supported_type() {
-        assert_eq!(
+    fn scalar_parameters_preserve_their_types_and_values() {
+        let expected = (
+            Ok(Parameter::Bool(true)),
+            Ok(Parameter::Int(-7)),
+            Ok(Parameter::Double(0.5)),
+        );
+        let actual = (
             read(
                 TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BOOL,
-                &true
+                &true,
             ),
-            Ok(Parameter::Bool(true))
-        );
-        assert_eq!(
             read(
                 TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_INT,
-                &-7i64
+                &-7i64,
             ),
-            Ok(Parameter::Int(-7))
-        );
-        assert_eq!(
             read(
                 TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_DOUBLE,
-                &0.5f64
+                &0.5f64,
             ),
-            Ok(Parameter::Double(0.5))
         );
+        assert_eq!(actual, expected);
+    }
 
+    #[test]
+    fn string_parameters_preserve_their_text() {
         let text = CString::new("hello").unwrap();
         let string = unsafe {
             Parameter::from_sys(
@@ -628,29 +666,42 @@ mod tests {
                 text.as_ptr() as *const c_void,
             )
         };
-        assert_eq!(string, Ok(Parameter::String("hello".to_string())));
+        let actual = string;
+        let expected = Ok(Parameter::String("hello".to_string()));
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn rejects_bytes_and_null() {
-        assert!(
-            read(
-                TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BYTES,
-                &0u8
-            )
-            .is_err()
-        );
+    fn bytes_parameters_are_rejected() {
+        let actual = read(
+            TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BYTES,
+            &0u8,
+        )
+        .is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn null_parameter_values_are_rejected() {
         let null = unsafe {
             Parameter::from_sys(
                 TRITONSERVER_parametertype_enum_TRITONSERVER_PARAMETER_BOOL,
                 std::ptr::null(),
             )
         };
-        assert!(null.is_err());
+        let actual = null.is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn a_config_name_reads_back_as_its_type() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for datatype in [
             DataType::Bool,
             DataType::Uint64,
@@ -660,8 +711,17 @@ mod tests {
             DataType::Bf16,
         ] {
             let name = datatype.config_name().expect("a config name");
-            assert_eq!(DataType::from_config_name(name), Some(datatype));
+            actual_0.push(DataType::from_config_name(name));
+            expected_0.push(Some(datatype));
         }
-        assert_eq!(DataType::from_config_name("TYPE_NOPE"), None);
+        actual_1.push(DataType::from_config_name("TYPE_NOPE"));
+        expected_1.push(None);
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
+    }
+
+    fn read<T>(kind: TRITONSERVER_ParameterType, value: &T) -> Result<Parameter, String> {
+        unsafe { Parameter::from_sys(kind, value as *const T as *const c_void) }
     }
 }

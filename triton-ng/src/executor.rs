@@ -230,7 +230,9 @@ mod tests {
 
     #[test]
     fn ready_future_returns_its_output() {
-        assert_eq!(block_on(async { 7 }), 7);
+        let actual = block_on(async { 7 });
+        let expected = 7;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -239,8 +241,40 @@ mod tests {
         let sending = thread::spawn(move || {
             sender.send(5).unwrap();
         });
-        assert_eq!(block_on(receiver), Ok(5));
+        let actual = block_on(receiver);
+        let expected = Ok(5);
         sending.join().unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn wake_before_park_is_not_lost() {
+        let actual = block_on(WakesBeforePending(Arc::new(AtomicUsize::new(0))));
+        let expected = 3;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn futures_joined_in_one_batch_wait_together() {
+        let (first_sender, first) = oneshot::channel();
+        let (second_sender, second) = oneshot::channel();
+        let sending = thread::spawn(move || {
+            second_sender.send(2).unwrap();
+            first_sender.send(1).unwrap();
+        });
+        let (first, second) = block_on(async { (first.await, second.await) });
+        let actual = (first, second);
+        let expected = (Ok(1), Ok(2));
+        sending.join().unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn panic_in_the_future_reaches_the_caller() {
+        let caught = std::panic::catch_unwind(|| block_on(async { panic!("in batch") }));
+        let actual = caught.is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     /// Wakes itself before returning `Pending`: the unpark comes before the
@@ -258,32 +292,5 @@ mod tests {
             cx.waker().wake_by_ref();
             Poll::Pending
         }
-    }
-
-    #[test]
-    fn wake_before_park_is_not_lost() {
-        assert_eq!(
-            block_on(WakesBeforePending(Arc::new(AtomicUsize::new(0)))),
-            3
-        );
-    }
-
-    #[test]
-    fn futures_joined_in_one_batch_wait_together() {
-        let (first_sender, first) = oneshot::channel();
-        let (second_sender, second) = oneshot::channel();
-        let sending = thread::spawn(move || {
-            second_sender.send(2).unwrap();
-            first_sender.send(1).unwrap();
-        });
-        let (first, second) = block_on(async { (first.await, second.await) });
-        assert_eq!((first, second), (Ok(1), Ok(2)));
-        sending.join().unwrap();
-    }
-
-    #[test]
-    fn panic_in_the_future_reaches_the_caller() {
-        let caught = std::panic::catch_unwind(|| block_on(async { panic!("in batch") }));
-        assert!(caught.is_err());
     }
 }

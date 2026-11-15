@@ -2,8 +2,10 @@ use anyhow::{Context, Result};
 
 use super::dto::InferInput;
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    models: Option<std::sync::Arc<super::models::Models>>,
     pub triton_url: String,
     pub metrics_address: String,
     pub trace_dir: String,
@@ -28,11 +30,31 @@ impl Config {
         serde_json::from_str(&content).context("Failed to parse test config")
     }
 
-    /// Explicit feature fixture for a test or group; no parameter-based routing.
-    pub fn fixture(name: &str) -> Result<Self> {
+    /// Creates private model directories and instances for one test.
+    pub async fn isolated(test: &str, backend: &str, load: &[&str]) -> Result<Self> {
         let mut config = Self::load()?;
-        config.backend_model = format!("fixture_{name}");
+        let models = super::models::Models::new(test, &config.triton_url)?;
+        config.mnist_model = models.name(&config.mnist_model).to_string();
+        config.backend_model = models.name(backend).to_string();
+        config.stream_model = models.name(&config.stream_model).to_string();
+        config.sequence_state_model = models.name(&config.sequence_state_model).to_string();
+        config.sequence_state_other_model =
+            models.name(&config.sequence_state_other_model).to_string();
+        config.batch_strategy_model = models.name(&config.batch_strategy_model).to_string();
+        let sut = super::sut::Sut::new(&config.triton_url).await?;
+        let models = std::sync::Arc::new(models);
+        config.models = Some(std::sync::Arc::clone(&models));
+        for model in load {
+            sut.repository_model_load(models.name(model)).await?;
+        }
         Ok(config)
+    }
+
+    /// The private name of a model in this test's repository.
+    pub fn model<'a>(&'a self, name: &'a str) -> &'a str {
+        self.models
+            .as_ref()
+            .map_or(name, |models| models.name(name))
     }
 
     pub fn trace_dir(&self) -> std::path::PathBuf {

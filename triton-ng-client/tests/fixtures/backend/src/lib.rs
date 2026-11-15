@@ -1,40 +1,4 @@
-//! Shared hooks for isolated model fixtures. See ../README.md.
-
-mod backend_config;
-use backend_config::{echo_backend_config, execution_policy};
-mod backend_state;
-mod batching;
-mod bls_mutation;
-use bls_mutation::wait_for_input_release;
-mod bls_streaming;
-mod cancellation;
-use cancellation::{hold_until_cancelled, work_step};
-mod common;
-use common::{answer_done, argmax, host_inference, infer_image, respond};
-mod concurrency;
-mod errors;
-mod host_policy;
-mod inference;
-mod input_forward;
-use input_forward::forward_to_identity;
-mod instance_details;
-mod iterative_sequence;
-use iterative_sequence::stream_steps;
-mod memory_buffers;
-mod memory_usage;
-mod metadata;
-mod model_control;
-mod policy_append;
-mod reschedule_refusal;
-mod response_statistics;
-mod sender_refusal;
-mod sequence;
-use sequence::count_sequence;
-mod shared_inputs;
-use shared_inputs::kept_inputs;
-mod streaming;
-use streaming::{answer_with_streamed_digits, cancel_stream, stream_digits, stream_inference};
-mod tracing;
+mod fixtures;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -286,7 +250,7 @@ impl CustomBackend for MnistBackend {
     fn initialize(backend: &Backend) -> Result<(), Error> {
         println!("Initializing backend: {}", backend.name()?);
         let (artifact_type, artifact_directory) = backend.artifacts()?;
-        let policy = execution_policy(backend)?;
+        let policy = fixtures::execution_policy(backend)?;
         backend.set_execution_policy(policy)?;
         let held = backend.execution_policy()?;
         println!("Backend execution policy: set {policy:?}, Triton holds {held:?}");
@@ -311,7 +275,7 @@ impl CustomBackend for MnistBackend {
         // `ExecutionPolicy::DeviceBlocking` are created one after another: the
         // core gives an instance the thread of a sibling it has already
         // created, and loading them in parallel hides that sibling.
-        let parallel = execution_policy(backend)? == ExecutionPolicy::Blocking;
+        let parallel = fixtures::execution_policy(backend)? == ExecutionPolicy::Blocking;
         Ok(BackendAttributes::new()
             .preferred_instance_group(InstanceGroupKind::Cpu, 2, &[])?
             .parallel_model_instance_loading(parallel))
@@ -363,7 +327,7 @@ impl CustomBackend for MnistBackend {
             cancelled: AtomicI64::new(0),
             kept_inputs: Mutex::new(Vec::new()),
         })?;
-        memory_usage::report_model(model)
+        fixtures::report_model(model)
     }
 
     fn model_instance_initialize(instance: &ModelInstance) -> Result<(), Error> {
@@ -385,38 +349,10 @@ impl CustomBackend for MnistBackend {
             .lock()
             .map_err(|_| "the instance list is poisoned")?
             .push(details);
-        memory_usage::initialize_buffers(instance, host_policy)
+        fixtures::initialize_buffers(instance, host_policy)
     }
 
     async fn model_instance_execute(ctx: Context, requests: Vec<Request>) -> Result<(), Error> {
-        let state = ctx.state::<State>()?;
-        let _in_flight = InFlight::enter(state);
-        match state.fixture.as_str() {
-            "errors" => errors::execute(&ctx, requests).await,
-            "cancellation" => cancellation::execute(&ctx, requests).await,
-            "tracing" => tracing::execute(&ctx, requests).await,
-            "bls_streaming" => bls_streaming::execute(&ctx, requests).await,
-            "sender_refusal" => sender_refusal::execute(&ctx, requests).await,
-            "shared_inputs" => shared_inputs::execute(&ctx, requests).await,
-            "response_statistics" => response_statistics::execute(&ctx, requests).await,
-            "model_control" => model_control::execute(&ctx, requests).await,
-            "reschedule_refusal" => reschedule_refusal::execute(&ctx, requests).await,
-            "backend_config" => backend_config::execute(&ctx, requests).await,
-            "bls_mutation" => bls_mutation::execute(&ctx, requests).await,
-            "policy_append" => policy_append::execute(&ctx, requests).await,
-            "host_policy" => host_policy::execute(&ctx, requests).await,
-            "metadata" => metadata::execute(&ctx, requests).await,
-            "instance_details" => instance_details::execute(&ctx, requests).await,
-            "backend_state" => backend_state::execute(&ctx, requests).await,
-            "concurrency" => concurrency::execute(&ctx, requests).await,
-            "memory_buffers" => memory_buffers::execute(&ctx, requests).await,
-            "batching" => batching::execute(&ctx, requests).await,
-            "streaming" => stream_digits(&ctx, state, requests).await,
-            "sequence" => count_sequence(state, requests),
-            "iterative_sequence" => stream_steps(state, requests),
-            "input_forward" => forward_to_identity(&ctx, state, requests).await,
-            "inference" | "memory_usage" => inference::execute(&ctx, requests).await,
-            other => Err(format!("unknown test fixture '{other}'").into()),
-        }
+        fixtures::execute(&ctx, requests).await
     }
 }

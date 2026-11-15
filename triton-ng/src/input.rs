@@ -482,32 +482,21 @@ mod tests {
     use crate::{CPU, CPU_PINNED, GPU, RawBuffer};
     use std::borrow::Cow;
 
-    fn cpu(data: &[u8]) -> RawBuffer {
-        RawBuffer {
-            ptr: data.as_ptr().cast_mut().cast(),
-            len: data.len(),
-            memory_type: CPU,
-            memory_type_id: 0,
-        }
-    }
-
-    fn empty() -> RawBuffer {
-        RawBuffer {
-            ptr: std::ptr::null_mut(),
-            len: 0,
-            memory_type: GPU,
-            memory_type_id: 0,
-        }
-    }
-
     #[test]
     fn one_buffer_is_borrowed() {
         let data = [1u8, 2, 3, 4];
 
         let bytes = unsafe { contiguous("x", 4, &[empty(), cpu(&data), empty()]) }.unwrap();
 
-        assert!(matches!(&bytes, Cow::Borrowed(borrowed) if borrowed.as_ptr() == data.as_ptr()));
-        assert_eq!(&bytes[..], &data);
+        let actual_0 =
+            matches!(&bytes, Cow::Borrowed(borrowed) if borrowed.as_ptr() == data.as_ptr());
+        let expected_0 = true;
+        let actual_1 = &bytes[..];
+        let expected_1 = &data[..];
+
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -520,7 +509,9 @@ mod tests {
 
         let bytes = unsafe { contiguous("x", 8, &[pinned]) }.unwrap();
 
-        assert!(matches!(bytes, Cow::Borrowed(_)));
+        let actual = matches!(bytes, Cow::Borrowed(_));
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -529,14 +520,18 @@ mod tests {
 
         let bytes = unsafe { contiguous("x", 5, &[cpu(&first), cpu(&second)]) }.unwrap();
 
-        assert!(matches!(&bytes, Cow::Owned(owned) if owned == &[1, 2, 3, 4, 5]));
+        let actual = matches!(&bytes, Cow::Owned(owned) if owned == &[1, 2, 3, 4, 5]);
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn empty_tensor_has_no_bytes() {
         let bytes = unsafe { contiguous("x", 0, &[]) }.unwrap();
 
-        assert!(bytes.is_empty());
+        let actual = bytes.is_empty();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -545,10 +540,9 @@ mod tests {
 
         let error = unsafe { contiguous("x", 8, &[cpu(&data)]) }.unwrap_err();
 
-        assert!(
-            error.contains("has 4 bytes in its buffers, expected 8"),
-            "{error}"
-        );
+        let actual = error.contains("has 4 bytes in its buffers, expected 8");
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -567,21 +561,19 @@ mod tests {
             memory_type: 42,
             ..cpu(&data)
         };
-        assert!(
+        let expected = (true, true, true);
+        let actual = (
             unsafe { copy_host_buffers("x", 4, &[unknown]) }
                 .unwrap_err()
-                .contains("host memory")
-        );
-        assert!(
+                .contains("host memory"),
             unsafe { contiguous("x", 4, &[gpu]) }
                 .unwrap_err()
-                .contains("host memory")
-        );
-        assert!(
+                .contains("host memory"),
             unsafe { contiguous("x", 4, &[null]) }
                 .unwrap_err()
-                .contains("null")
+                .contains("null"),
         );
+        assert_eq!(actual, expected);
     }
     #[test]
     fn policy_copies_are_owned_for_single_and_split_host_buffers() {
@@ -603,34 +595,62 @@ mod tests {
         }
         .unwrap();
         first.fill(9);
-        assert_eq!(single, [1, 2]);
-        assert_eq!(split, [1, 2, 3, 4]);
-        assert!(
+        let expected = (vec![1, 2], vec![1, 2, 3, 4], true);
+        let actual = (
+            single,
+            split,
             unsafe { copy_host_buffers("x", 0, &[]) }
                 .unwrap()
-                .is_empty()
+                .is_empty(),
         );
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn invalid_policy_metadata_and_overflow_are_refused() {
-        assert!(check_metadata(DataType::Fp32, &[1, 2], 8).is_ok());
-        assert!(check_metadata(DataType::Fp32, &[], 4).is_ok());
-        assert!(check_metadata(DataType::Fp32, &[0], 0).is_ok());
-        assert!(check_metadata(DataType::Bytes, &[2], 19).is_ok());
-        assert!(check_metadata(DataType::Invalid, &[1], 4).is_err());
-        assert!(check_metadata(DataType::Fp32, &[-1], 4).is_err());
-        assert!(check_metadata(DataType::Fp32, &[1], 8).is_err());
-        assert!(check_metadata(DataType::Fp64, &[i64::MAX, i64::MAX], 0).is_err());
-        assert!(check_metadata(DataType::Fp64, &[i64::MAX], 0).is_err());
+    fn policy_input_metadata_rejects_invalid_shapes_and_sizes() {
+        let expected = (true, true, true, true, true, true, true, true, true);
+        let actual = (
+            check_metadata(DataType::Fp32, &[1, 2], 8).is_ok(),
+            check_metadata(DataType::Fp32, &[], 4).is_ok(),
+            check_metadata(DataType::Fp32, &[0], 0).is_ok(),
+            check_metadata(DataType::Bytes, &[2], 19).is_ok(),
+            check_metadata(DataType::Invalid, &[1], 4).is_err(),
+            check_metadata(DataType::Fp32, &[-1], 4).is_err(),
+            check_metadata(DataType::Fp32, &[1], 8).is_err(),
+            check_metadata(DataType::Fp64, &[i64::MAX, i64::MAX], 0).is_err(),
+            check_metadata(DataType::Fp64, &[i64::MAX], 0).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn policy_input_buffers_reject_sizes_beyond_the_slice_limit() {
         let oversized = RawBuffer {
             len: (isize::MAX as usize) + 1,
             ..empty()
         };
-        assert!(
-            unsafe { copy_host_buffers("x", oversized.len as u64, &[oversized]) }
-                .unwrap_err()
-                .contains("slice limits")
-        );
+        let actual = unsafe { copy_host_buffers("x", oversized.len as u64, &[oversized]) }
+            .unwrap_err()
+            .contains("slice limits");
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    fn cpu(data: &[u8]) -> RawBuffer {
+        RawBuffer {
+            ptr: data.as_ptr().cast_mut().cast(),
+            len: data.len(),
+            memory_type: CPU,
+            memory_type_id: 0,
+        }
+    }
+
+    fn empty() -> RawBuffer {
+        RawBuffer {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            memory_type: GPU,
+            memory_type_id: 0,
+        }
     }
 }

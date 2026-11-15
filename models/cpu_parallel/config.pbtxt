@@ -18,10 +18,8 @@ output [
   }
 ]
 
-# Two CPU instances. `ExecutionPolicy::DeviceBlocking` shares an execution
-# thread only between the non-passive GPU instances of one model and device, so
-# these two keep running at the same time; the test that measures the GPU
-# fixture uses this one to show the policy does not reach them.
+# DeviceBlocking shares execution threads only between non-passive GPU instances;
+# CPU instances still execute concurrently.
 instance_group [
   {
     count: 2
@@ -39,5 +37,4 @@ parameters: {
   value: { string_value: "identity_gpu" }
 }
 
-# The test fixture is selected once at model initialization.
 parameters: { key: "fixture" value: { string_value: "concurrency" } }

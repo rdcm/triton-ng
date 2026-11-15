@@ -180,9 +180,9 @@ unknown model fails `InferenceRequest::new` before there is a trace; a model tha
 unloading, a full queue, a missing correlation ID of a sequence model, a timeout in the queue, a
 failed execution and a cancellation all fail after Triton took the trace, and Triton releases it.
 
-The [`tracing` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/tracing.rs)
+The [`tracing` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/tracing.rs)
 exercises custom activities and a parent answered before its traced BLS call is released. The
-[`metadata` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/metadata.rs)
+[`metadata` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/metadata.rs)
 reads client metadata and forwards derived metadata through a BLS call to its own model.
 Tests explicitly select `fixture_tracing` or `fixture_metadata`; trace files are written to
 `target/traces` by the root Compose service.

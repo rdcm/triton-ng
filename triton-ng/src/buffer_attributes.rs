@@ -126,39 +126,35 @@ mod tests {
 
     #[test]
     fn one_entry_per_memory_type_stays_as_it_is() {
-        assert_eq!(
-            totals(&[(MemoryType::Cpu, 4096), (MemoryType::CpuPinned, 8192)]),
-            Some(vec![(MemoryType::Cpu, 4096), (MemoryType::CpuPinned, 8192)])
-        );
+        let actual = totals(&[(MemoryType::Cpu, 4096), (MemoryType::CpuPinned, 8192)]);
+        let expected = Some(vec![(MemoryType::Cpu, 4096), (MemoryType::CpuPinned, 8192)]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn entries_of_one_memory_type_are_summed() {
-        assert_eq!(
-            totals(&[
-                (MemoryType::Cpu, 111),
-                (MemoryType::CpuPinned, 7),
-                (MemoryType::Cpu, 222),
-            ]),
-            Some(vec![(MemoryType::Cpu, 333), (MemoryType::CpuPinned, 7)])
-        );
+        let actual = totals(&[
+            (MemoryType::Cpu, 111),
+            (MemoryType::CpuPinned, 7),
+            (MemoryType::Cpu, 222),
+        ]);
+        let expected = Some(vec![(MemoryType::Cpu, 333), (MemoryType::CpuPinned, 7)]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn the_same_memory_type_on_another_device_stays_separate() {
         let first = MemoryType::Gpu { device_id: 0 };
         let second = MemoryType::Gpu { device_id: 1 };
-        assert_eq!(
-            totals(&[(first, 1), (second, 2), (first, 3)]),
-            Some(vec![(first, 4), (second, 2)])
-        );
+        let actual = totals(&[(first, 1), (second, 2), (first, 3)]);
+        let expected = Some(vec![(first, 4), (second, 2)]);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn a_sum_that_does_not_fit_u64_is_refused() {
-        assert_eq!(
-            totals(&[(MemoryType::Cpu, u64::MAX), (MemoryType::Cpu, 1)]),
-            None
-        );
+        let actual = totals(&[(MemoryType::Cpu, u64::MAX), (MemoryType::Cpu, 1)]);
+        let expected = None;
+        assert_eq!(actual, expected);
     }
 }

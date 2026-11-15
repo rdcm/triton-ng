@@ -461,6 +461,86 @@ impl InstanceList for SecondaryDevices<'_> {
 mod tests {
     use super::{InstanceList, ListError, SecondaryDevice, collect_entries};
 
+    #[test]
+    fn profile_names_preserve_their_declared_order() -> Result<(), String> {
+        let profiles = FakeProfiles {
+            names: vec![Some("profile_0"), Some("profile_1"), Some("profile_2")],
+            failing_index: None,
+        };
+        let actual = collect_entries(&profiles).map_err(|e| e.to_string())?;
+        let expected = vec!["profile_0", "profile_1", "profile_2"];
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_profile_list_has_no_entries() -> Result<(), String> {
+        let empty = FakeProfiles {
+            names: Vec::new(),
+            failing_index: None,
+        };
+        let actual = collect_entries(&empty).map_err(|e| e.to_string())?;
+        let expected = Vec::<String>::new();
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_null_entry_fails_instead_of_becoming_an_empty_name() {
+        let profiles = FakeProfiles {
+            names: vec![Some("profile_0"), None],
+            failing_index: None,
+        };
+        let collected = collect_entries(&profiles);
+        let actual =
+            matches!(collected, Err(ListError::Missing(message)) if message.contains("index 1"));
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_failing_call_stops_the_enumeration() {
+        let profiles = FakeProfiles {
+            names: vec![Some("profile_0"), Some("profile_1"), Some("profile_2")],
+            failing_index: Some(1),
+        };
+        let collected = collect_entries(&profiles);
+        let actual =
+            matches!(collected, Err(ListError::Triton(message)) if message.contains("index 1"));
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn devices_keep_their_kind_and_id() -> Result<(), String> {
+        let devices = FakeDevices {
+            devices: vec![
+                SecondaryDevice {
+                    kind: "KIND_NVDLA".to_string(),
+                    id: 3,
+                },
+                SecondaryDevice {
+                    kind: "KIND_NVDLA".to_string(),
+                    id: 0,
+                },
+            ],
+        };
+        let collected = collect_entries(&devices).map_err(|e| e.to_string())?;
+        let actual = collected;
+        let expected = vec![
+            SecondaryDevice {
+                kind: "KIND_NVDLA".to_string(),
+                id: 3,
+            },
+            SecondaryDevice {
+                kind: "KIND_NVDLA".to_string(),
+                id: 0,
+            },
+        ];
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
     /// A list that answers like the C API of an instance whose profile names
     /// are readable, except for the entries a test marks as unusable.
     struct FakeProfiles {
@@ -510,84 +590,5 @@ mod tests {
                 None => Err(ListError::Missing(format!("no device at index {index}"))),
             }
         }
-    }
-
-    #[test]
-    fn every_entry_is_collected_in_the_order_of_the_list() -> Result<(), String> {
-        let profiles = FakeProfiles {
-            names: vec![Some("profile_0"), Some("profile_1"), Some("profile_2")],
-            failing_index: None,
-        };
-        assert_eq!(
-            collect_entries(&profiles).map_err(|e| e.to_string())?,
-            vec!["profile_0", "profile_1", "profile_2"]
-        );
-
-        let empty = FakeProfiles {
-            names: Vec::new(),
-            failing_index: None,
-        };
-        assert_eq!(
-            collect_entries(&empty).map_err(|e| e.to_string())?,
-            Vec::<String>::new()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_null_entry_fails_instead_of_becoming_an_empty_name() {
-        let profiles = FakeProfiles {
-            names: vec![Some("profile_0"), None],
-            failing_index: None,
-        };
-        let collected = collect_entries(&profiles);
-        assert!(
-            matches!(collected, Err(ListError::Missing(message)) if message.contains("index 1")),
-            "a null name is reported with its index"
-        );
-    }
-
-    #[test]
-    fn a_failing_call_stops_the_enumeration() {
-        let profiles = FakeProfiles {
-            names: vec![Some("profile_0"), Some("profile_1"), Some("profile_2")],
-            failing_index: Some(1),
-        };
-        let collected = collect_entries(&profiles);
-        assert!(
-            matches!(collected, Err(ListError::Triton(message)) if message.contains("index 1")),
-            "the error of the failing entry is the one that comes back"
-        );
-    }
-
-    #[test]
-    fn devices_keep_their_kind_and_id() -> Result<(), String> {
-        let devices = FakeDevices {
-            devices: vec![
-                SecondaryDevice {
-                    kind: "KIND_NVDLA".to_string(),
-                    id: 3,
-                },
-                SecondaryDevice {
-                    kind: "KIND_NVDLA".to_string(),
-                    id: 0,
-                },
-            ],
-        };
-        let collected = collect_entries(&devices).map_err(|e| e.to_string())?;
-        assert_eq!(
-            collected,
-            vec![
-                SecondaryDevice {
-                    kind: "KIND_NVDLA".to_string(),
-                    id: 3
-                },
-                SecondaryDevice {
-                    kind: "KIND_NVDLA".to_string(),
-                    id: 0
-                },
-            ]
-        );
-        Ok(())
     }
 }

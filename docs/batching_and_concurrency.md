@@ -18,7 +18,7 @@ instance takes the thread of a sibling the core has created already (`GetInstanc
 instances of the model being loaded), so a backend that also sets `parallel_model_instance_loading`
 creates its instances at the same time and none of them finds a sibling: the test backend therefore
 turns parallel instance loading off when it selects the policy, and
-`custom_backend_serializes_the_gpu_instances_of_a_device` measures the result.
+`device_blocking_serializes_gpu_instances` measures the result.
 
 The batcher thread moves requests from the request queue into a batch only when there is a *slot*
 for it (`dynamic_batch_scheduler.cc`, `WaitForPayloadSlotAvailable`; `rate_limiter.cc`,

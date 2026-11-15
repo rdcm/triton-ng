@@ -133,6 +133,261 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn a_stored_state_can_be_read() -> Result<(), String> {
+        let store = FakeStore::new();
+        set(
+            &store,
+            Counted {
+                name: "first",
+                drops: Arc::new(AtomicUsize::new(0)),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let actual = get::<_, Counted>(&store)
+            .map_err(|e| format!("{e:?}"))?
+            .name;
+        let expected = "first";
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_stored_state_can_be_shared() -> Result<(), String> {
+        let store = FakeStore::new();
+        set(
+            &store,
+            Counted {
+                name: "first",
+                drops: Arc::new(AtomicUsize::new(0)),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let shared = shared(&store)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or("no shared state")?;
+        let actual = shared.downcast_ref::<Counted>().map(|c| c.name);
+        let expected = Some("first");
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn an_uninitialized_store_has_no_state() -> Result<(), String> {
+        let store = FakeStore::new();
+        let expected = (true, true, true);
+        let actual = (
+            matches!(get::<_, Counted>(&store), Err(StateError::NotInitialized)),
+            matches!(get::<_, u32>(&store), Err(StateError::NotInitialized)),
+            shared(&store).map_err(|e| format!("{e:?}"))?.is_none(),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_store_rejects_reads_of_the_wrong_type() -> Result<(), String> {
+        let store = FakeStore::new();
+        set(&store, 42u32).map_err(|e| format!("{e:?}"))?;
+        let expected = (true, true, 42);
+        let actual = (
+            matches!(get::<_, Counted>(&store), Err(StateError::WrongType)),
+            matches!(get::<_, String>(&store), Err(StateError::WrongType)),
+            *get::<_, u32>(&store).map_err(|e| format!("{e:?}"))?,
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_state_is_rejected_and_dropped() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "first",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let rejected = set(
+            &store,
+            Counted {
+                name: "second",
+                drops: Arc::clone(&drops),
+            },
+        );
+        let expected = (true, 1);
+        let actual = (
+            matches!(rejected, Err(StateError::AlreadySet)),
+            drops.load(Ordering::SeqCst),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_rejected_second_state_preserves_the_first() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "first",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let _rejected = set(
+            &store,
+            Counted {
+                name: "second",
+                drops: Arc::clone(&drops),
+            },
+        );
+        let state = get::<_, Counted>(&store).map_err(|e| format!("{e:?}"))?;
+        let expected = ("first", 1);
+        let actual = (state.name, drops.load(Ordering::SeqCst));
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_store_that_refuses_the_pointer_leaves_no_leak() -> Result<(), String> {
+        let store = FakeStore::failing();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let rejected = set(
+            &store,
+            Counted {
+                name: "rejected",
+                drops: Arc::clone(&drops),
+            },
+        );
+        let expected = (true, 1, ptr::null_mut());
+        let actual = (
+            matches!(rejected, Err(StateError::Store(_))),
+            drops.load(Ordering::SeqCst),
+            store.state.get(),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_drops_the_state_and_removes_the_pointer() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "state",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        clear(&store).map_err(|e| format!("{e:?}"))?;
+        let expected = (1, ptr::null_mut(), true);
+        let actual = (
+            drops.load(Ordering::SeqCst),
+            store.state.get(),
+            matches!(get::<_, Counted>(&store), Err(StateError::NotInitialized)),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_an_empty_store_does_not_drop_again() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "state",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        clear(&store).map_err(|e| format!("{e:?}"))?;
+        clear(&store).map_err(|e| format!("{e:?}"))?;
+        let actual = drops.load(Ordering::SeqCst);
+        let expected = 1;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_shared_reference_keeps_the_cleared_state_alive() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "state",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let shared = shared(&store)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or("no shared state")?;
+        clear(&store).map_err(|e| format!("{e:?}"))?;
+        let expected = (0, Some("state"));
+        let actual = (
+            drops.load(Ordering::SeqCst),
+            shared.downcast_ref::<Counted>().map(|c| c.name),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_the_last_shared_reference_destroys_the_state() -> Result<(), String> {
+        let store = FakeStore::new();
+        let drops = Arc::new(AtomicUsize::new(0));
+        set(
+            &store,
+            Counted {
+                name: "state",
+                drops: Arc::clone(&drops),
+            },
+        )
+        .map_err(|e| format!("{e:?}"))?;
+
+        let shared = shared(&store)
+            .map_err(|e| format!("{e:?}"))?
+            .ok_or("no shared state")?;
+        clear(&store).map_err(|e| format!("{e:?}"))?;
+        drop(shared);
+        let actual = drops.load(Ordering::SeqCst);
+        let expected = 1;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_panicking_destructor_does_not_escape_clear() -> Result<(), String> {
+        let store = FakeStore::new();
+        set(&store, Panicking).map_err(|e| format!("{e:?}"))?;
+
+        let cleared = clear(&store);
+        let expected = (true, ptr::null_mut());
+        let actual = (
+            matches!(cleared, Err(StateError::DropPanicked)),
+            store.state.get(),
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
     /// A store that keeps its pointer in a cell, like Triton keeps it in the
     /// backend, and that can be told to fail the way the C API fails.
     struct FakeStore {
@@ -191,189 +446,5 @@ mod tests {
         fn drop(&mut self) {
             panic!("the destructor of the state panicked");
         }
-    }
-
-    #[test]
-    fn a_state_is_stored_read_and_shared() -> Result<(), String> {
-        let store = FakeStore::new();
-        set(
-            &store,
-            Counted {
-                name: "first",
-                drops: Arc::new(AtomicUsize::new(0)),
-            },
-        )
-        .map_err(|e| format!("{e:?}"))?;
-
-        assert_eq!(
-            get::<_, Counted>(&store)
-                .map_err(|e| format!("{e:?}"))?
-                .name,
-            "first"
-        );
-        let shared = shared(&store)
-            .map_err(|e| format!("{e:?}"))?
-            .ok_or("no shared state")?;
-        assert_eq!(
-            shared.downcast_ref::<Counted>().map(|c| c.name),
-            Some("first")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn reading_before_setting_and_the_wrong_type_fail() -> Result<(), String> {
-        let store = FakeStore::new();
-        assert!(matches!(
-            get::<_, Counted>(&store),
-            Err(StateError::NotInitialized)
-        ));
-        assert!(matches!(
-            get::<_, u32>(&store),
-            Err(StateError::NotInitialized)
-        ));
-        assert!(
-            shared(&store).map_err(|e| format!("{e:?}"))?.is_none(),
-            "an unprepared store reports no state"
-        );
-
-        set(&store, 42u32).map_err(|e| format!("{e:?}"))?;
-        assert!(matches!(
-            get::<_, Counted>(&store),
-            Err(StateError::WrongType)
-        ));
-        assert!(matches!(
-            get::<_, String>(&store),
-            Err(StateError::WrongType)
-        ));
-        assert_eq!(*get::<_, u32>(&store).map_err(|e| format!("{e:?}"))?, 42);
-        Ok(())
-    }
-
-    #[test]
-    fn a_second_state_is_refused_and_the_first_survives() -> Result<(), String> {
-        let store = FakeStore::new();
-        let drops = Arc::new(AtomicUsize::new(0));
-        set(
-            &store,
-            Counted {
-                name: "first",
-                drops: Arc::clone(&drops),
-            },
-        )
-        .map_err(|e| format!("{e:?}"))?;
-
-        let rejected = set(
-            &store,
-            Counted {
-                name: "second",
-                drops: Arc::clone(&drops),
-            },
-        );
-        assert!(matches!(rejected, Err(StateError::AlreadySet)));
-        assert_eq!(
-            drops.load(Ordering::SeqCst),
-            1,
-            "the rejected state is dropped once"
-        );
-
-        let state = get::<_, Counted>(&store).map_err(|e| format!("{e:?}"))?;
-        assert_eq!(state.name, "first");
-        assert_eq!(
-            drops.load(Ordering::SeqCst),
-            1,
-            "the stored state is untouched"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_store_that_refuses_the_pointer_leaves_no_leak() -> Result<(), String> {
-        let store = FakeStore::failing();
-        let drops = Arc::new(AtomicUsize::new(0));
-        let rejected = set(
-            &store,
-            Counted {
-                name: "rejected",
-                drops: Arc::clone(&drops),
-            },
-        );
-        assert!(matches!(rejected, Err(StateError::Store(_))));
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
-        assert_eq!(store.state.get(), ptr::null_mut(), "the store is unchanged");
-        Ok(())
-    }
-
-    #[test]
-    fn clearing_drops_once_and_nothing_else() -> Result<(), String> {
-        let store = FakeStore::new();
-        let drops = Arc::new(AtomicUsize::new(0));
-        set(
-            &store,
-            Counted {
-                name: "state",
-                drops: Arc::clone(&drops),
-            },
-        )
-        .map_err(|e| format!("{e:?}"))?;
-
-        clear(&store).map_err(|e| format!("{e:?}"))?;
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
-        assert_eq!(store.state.get(), ptr::null_mut());
-        assert!(matches!(
-            get::<_, Counted>(&store),
-            Err(StateError::NotInitialized)
-        ));
-
-        clear(&store).map_err(|e| format!("{e:?}"))?;
-        assert_eq!(
-            drops.load(Ordering::SeqCst),
-            1,
-            "clearing again drops nothing"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn a_shared_reference_outlives_the_cleared_pointer() -> Result<(), String> {
-        let store = FakeStore::new();
-        let drops = Arc::new(AtomicUsize::new(0));
-        set(
-            &store,
-            Counted {
-                name: "state",
-                drops: Arc::clone(&drops),
-            },
-        )
-        .map_err(|e| format!("{e:?}"))?;
-
-        let shared = shared(&store)
-            .map_err(|e| format!("{e:?}"))?
-            .ok_or("no shared state")?;
-        clear(&store).map_err(|e| format!("{e:?}"))?;
-        assert_eq!(drops.load(Ordering::SeqCst), 0, "the batch still holds it");
-        assert_eq!(
-            shared.downcast_ref::<Counted>().map(|c| c.name),
-            Some("state")
-        );
-
-        drop(shared);
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn a_panicking_destructor_does_not_escape_clear() -> Result<(), String> {
-        let store = FakeStore::new();
-        set(&store, Panicking).map_err(|e| format!("{e:?}"))?;
-
-        let cleared = clear(&store);
-        assert!(matches!(cleared, Err(StateError::DropPanicked)));
-        assert_eq!(
-            store.state.get(),
-            ptr::null_mut(),
-            "Triton is left consistent"
-        );
-        Ok(())
     }
 }

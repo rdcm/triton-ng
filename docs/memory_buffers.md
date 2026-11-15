@@ -257,7 +257,7 @@ an instance reports as `cpu_pinned` should be the page-locked buffers it holds.
 
 ## Example
 
-[`memory_buffers` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/memory_buffers.rs) answers a request with the
+[`memory_buffers` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/memory_buffers.rs) answers a request with the
 parameter `memory` set to `ram`, `pinned` or `gpu` from a buffer of that kind: the image goes in
 a RAM or pinned buffer, the logits are written into a buffer cached in the instance state, and
 the response reports how many buffers the instance has allocated. `gpu_input` writes the logits

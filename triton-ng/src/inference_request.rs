@@ -663,17 +663,25 @@ mod tests {
 
     #[test]
     fn string_correlation_ids_up_to_128_bytes_are_accepted() {
-        assert!(validate_string_correlation_id("call-42").is_ok());
-        assert!(validate_string_correlation_id(&"x".repeat(128)).is_ok());
-        assert!(validate_string_correlation_id(&"x".repeat(129)).is_err());
-        assert!(validate_string_correlation_id("").is_err());
+        let expected = (true, true, true, true);
+        let actual = (
+            validate_string_correlation_id("call-42").is_ok(),
+            validate_string_correlation_id(&"x".repeat(128)).is_ok(),
+            validate_string_correlation_id(&"x".repeat(129)).is_err(),
+            validate_string_correlation_id("").is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn timeouts_are_whole_microseconds() {
-        assert_eq!(timeout_micros(Duration::from_millis(5)), Ok(5_000));
-        assert!(timeout_micros(Duration::ZERO).is_err());
-        assert!(timeout_micros(Duration::from_nanos(999)).is_err());
-        assert!(timeout_micros(Duration::MAX).is_err());
+        let expected = (Ok(5_000), true, true, true);
+        let actual = (
+            timeout_micros(Duration::from_millis(5)),
+            timeout_micros(Duration::ZERO).is_err(),
+            timeout_micros(Duration::from_nanos(999)).is_err(),
+            timeout_micros(Duration::MAX).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 }

@@ -71,7 +71,8 @@ mod tests {
 
         let reused = OutputBuffer::from(gpu.into_uninit());
 
-        assert_eq!(reused.raw().ptr, ptr);
-        assert_eq!(reused.raw().memory_type, GPU);
+        let expected = (ptr, GPU);
+        let actual = (reused.raw().ptr, reused.raw().memory_type);
+        assert_eq!(actual, expected);
     }
 }

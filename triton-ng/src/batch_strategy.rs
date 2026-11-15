@@ -205,18 +205,17 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct Counted(Arc<AtomicUsize>, bool);
-    impl Drop for Counted {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            if self.1 {
-                std::panic::resume_unwind(Box::new("destructor failed"));
-            }
-        }
-    }
-
     #[test]
     fn abandoned_batches_are_released_on_every_unload() -> Result<(), Error> {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+        let mut actual_2 = Vec::new();
+        let mut expected_2 = Vec::new();
+        let mut actual_3 = Vec::new();
+        let mut expected_3 = Vec::new();
+
         let mut registry = Registry::default();
         let drops = Arc::new(AtomicUsize::new(0));
         for cycle in 1..=5 {
@@ -224,25 +223,32 @@ mod tests {
             let owner = registry.insert(0, strategy)?;
             let batch = Arc::new(Protected::new(Counted(drops.clone(), false)));
             let token = registry.insert(owner, batch)?;
-            assert!(registry.remove(0).is_empty());
+            actual_0.push(registry.remove(0).is_empty());
+            expected_0.push(true);
             drop(registry.remove(owner));
-            assert!(registry.entries.is_empty());
-            assert_eq!(drops.load(Ordering::SeqCst), cycle * 2);
-            assert!(registry.remove(token).is_empty());
+            actual_1.push(registry.entries.is_empty());
+            expected_1.push(true);
+            actual_2.push(drops.load(Ordering::SeqCst));
+            expected_2.push(cycle * 2);
+            actual_3.push(registry.remove(token).is_empty());
+            expected_3.push(true);
         }
+        let expected = (expected_0, expected_1, expected_2, expected_3);
+        let actual = (actual_0, actual_1, actual_2, actual_3);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
-    fn callback_survives_concurrent_finalize_and_late_creation_is_refused() -> Result<(), Error> {
+    fn an_in_flight_callback_survives_finalization() -> Result<(), Error> {
         let mut registry = Registry::default();
         let drops = Arc::new(AtomicUsize::new(0));
         let owner = registry.insert(0, Arc::new(Protected::new(Counted(drops.clone(), false))))?;
         let callback = registry
             .get::<Protected<Counted>>(owner)
             .ok_or("missing strategy")?;
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
             finish_rx.recv().unwrap();
@@ -250,14 +256,71 @@ mod tests {
         });
         started_rx.recv()?;
         drop(registry.remove(owner));
-        assert_eq!(drops.load(Ordering::SeqCst), 0);
-        assert!(registry.get::<Protected<Counted>>(owner).is_none());
-        assert!(registry.insert(owner, Arc::new(())).is_err());
+        let actual_0 = drops.load(Ordering::SeqCst);
+        let expected_0 = 0;
+        let actual_1 = registry.get::<Protected<Counted>>(owner).is_none();
+        let expected_1 = true;
+        let actual_2 = registry.insert(owner, Arc::new(())).is_err();
+        let expected_2 = true;
+
         finish_tx.send(())?;
         thread.join().map_err(|_| "callback thread panicked")?;
-        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let expected = (expected_0, expected_1, expected_2);
+        let actual = (actual_0, actual_1, actual_2);
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn the_last_callback_releases_the_finalized_strategy() -> Result<(), Error> {
+        let mut registry = Registry::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let owner = registry.insert(0, Arc::new(Protected::new(Counted(drops.clone(), false))))?;
+        let callback = registry
+            .get::<Protected<Counted>>(owner)
+            .ok_or("missing strategy")?;
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+            drop(callback);
+        });
+        started_rx.recv()?;
+        drop(registry.remove(owner));
+        let _ = &(registry.insert(owner, Arc::new(())).is_err());
+        finish_tx.send(())?;
+        thread.join().map_err(|_| "callback thread panicked")?;
+        let actual = drops.load(Ordering::SeqCst);
+        let expected = 1;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_new_strategy_has_a_distinct_owner_identity() -> Result<(), Error> {
+        let mut registry = Registry::default();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let owner = registry.insert(0, Arc::new(Protected::new(Counted(drops.clone(), false))))?;
+        let callback = registry
+            .get::<Protected<Counted>>(owner)
+            .ok_or("missing strategy")?;
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+            drop(callback);
+        });
+        started_rx.recv()?;
+        drop(registry.remove(owner));
+        let _ = &(registry.insert(owner, Arc::new(())).is_err());
+        finish_tx.send(())?;
+        thread.join().map_err(|_| "callback thread panicked")?;
         let next = registry.insert(0, Arc::new(()))?;
-        assert_ne!(next, owner);
+        let actual = (next) != (owner);
+        let expected = true;
+        assert_eq!(actual, expected);
         Ok(())
     }
 
@@ -270,17 +333,91 @@ mod tests {
             owner,
             Arc::new(Protected::new(Counted(drops.clone(), true))),
         )?;
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(
-                registry.remove(owner)
-            )))
-            .is_ok()
+        let expected = (true, 2, true);
+        let actual = (
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(registry.remove(owner))
+            }))
+            .is_ok(),
+            drops.load(Ordering::SeqCst),
+            registry.entries.is_empty(),
         );
-        assert_eq!(drops.load(Ordering::SeqCst), 2);
-        assert!(registry.entries.is_empty());
+        assert_eq!(actual, expected);
         Ok(())
     }
+
+    #[test]
+    fn a_failed_callback_returns_its_error() -> Result<(), Error> {
+        let strategy = Arc::new(Protected::new(MutatingStrategy));
+        let state = Mutex::new(BatchState {
+            strategy,
+            batch: Protected::new(0),
+        });
+        // The strategy never reads this view; no Triton calls or owned C objects.
+        let request = RequestView::from_ptr(std::ptr::null_mut());
+        let expected = true;
+        let actual = state.lock().unwrap().include(&request).is_err();
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_panicking_callback_is_contained() -> Result<(), Error> {
+        let strategy = Arc::new(Protected::new(MutatingStrategy));
+        let state = Mutex::new(BatchState {
+            strategy,
+            batch: Protected::new(0),
+        });
+        // The strategy never reads this view; no Triton calls or owned C objects.
+        let request = RequestView::from_ptr(std::ptr::null_mut());
+        let _failed = state.lock().unwrap().include(&request);
+        let expected = true;
+        let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.lock().unwrap().include(&request)
+        }))
+        .is_err();
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn callbacks_preserve_mutations_after_errors_and_panics() -> Result<(), Error> {
+        let strategy = Arc::new(Protected::new(MutatingStrategy));
+        let state = Mutex::new(BatchState {
+            strategy,
+            batch: Protected::new(0),
+        });
+        // The strategy never reads this view; no Triton calls or owned C objects.
+        let request = RequestView::from_ptr(std::ptr::null_mut());
+        let _ = &(state.lock().unwrap().include(&request).is_err());
+        let _ = &(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            state.lock().unwrap().include(&request)
+        }))
+        .is_err());
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let expected = (2, true, 3);
+        let actual = (
+            *state.batch.get()?,
+            state.include(&request)?,
+            *state.batch.get()?,
+        );
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    struct Counted(Arc<AtomicUsize>, bool);
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            if self.1 {
+                std::panic::resume_unwind(Box::new("destructor failed"));
+            }
+        }
+    }
+
     struct MutatingStrategy;
+
     impl BatchStrategy for MutatingStrategy {
         type Batch = usize;
         fn initialize(_: &Model) -> Result<Self, Error> {
@@ -297,28 +434,5 @@ mod tests {
                 _ => Ok(*batch == 3),
             }
         }
-    }
-
-    #[test]
-    fn callbacks_retain_mutations_after_error_and_panic() -> Result<(), Error> {
-        let strategy = Arc::new(Protected::new(MutatingStrategy));
-        let state = Mutex::new(BatchState {
-            strategy,
-            batch: Protected::new(0),
-        });
-        // The strategy never reads this view; no Triton calls or owned C objects.
-        let request = RequestView::from_ptr(std::ptr::null_mut());
-        assert!(state.lock().unwrap().include(&request).is_err());
-        assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                state.lock().unwrap().include(&request)
-            }))
-            .is_err()
-        );
-        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(*state.batch.get()?, 2);
-        assert!(state.include(&request)?);
-        assert_eq!(*state.batch.get()?, 3);
-        Ok(())
     }
 }

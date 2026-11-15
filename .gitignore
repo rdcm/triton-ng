@@ -4,3 +4,6 @@ backends/
 *.onnx
 .venv/
 __pycache__/
+
+# Per-test model repositories, removed by their fixture guards.
+models/test_*/

@@ -5,3 +5,15 @@ allow-panic-in-tests = false
 disallowed-methods = [
   { path = "std::thread::sleep", reason = "sleeping is forbidden" },
 ]
+disallowed-macros = [
+  { path = "std::panic", reason = "return errors instead of panicking" },
+  { path = "core::panic", reason = "return errors instead of panicking" },
+  { path = "core::todo", reason = "unfinished code must not panic at runtime" },
+  { path = "core::unimplemented", reason = "unfinished code must not panic at runtime" },
+  { path = "core::unreachable", reason = "handle unexpected states explicitly" },
+  { path = "core::debug_assert", reason = "handle invalid states explicitly in every build profile" },
+  { path = "core::debug_assert_eq", reason = "handle invalid states explicitly in every build profile" },
+  { path = "core::debug_assert_ne", reason = "handle invalid states explicitly in every build profile" },
+  { path = "anyhow::bail", reason = "return errors explicitly" },
+  { path = "anyhow::ensure", reason = "use an explicit condition and error return" },
+]

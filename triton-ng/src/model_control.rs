@@ -95,27 +95,42 @@ mod tests {
 
     #[test]
     fn model_from_the_repository_needs_only_a_name() {
-        assert_eq!(check_load_arguments("m", None, &[]), Ok(()));
-        assert!(check_load_arguments("", None, &[]).is_err());
+        let expected = (Ok(()), true);
+        let actual = (
+            check_load_arguments("m", None, &[]),
+            check_load_arguments("", None, &[]).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn config_is_a_json_object() {
-        assert_eq!(check_load_arguments("m", CONFIG, &[]), Ok(()));
-        assert!(check_load_arguments("m", Some("not json"), &[]).is_err());
-        assert!(check_load_arguments("m", Some("[]"), &[]).is_err());
-        assert!(check_load_arguments("m", Some(""), &[]).is_err());
+        let expected = (Ok(()), true, true, true);
+        let actual = (
+            check_load_arguments("m", CONFIG, &[]),
+            check_load_arguments("m", Some("not json"), &[]).is_err(),
+            check_load_arguments("m", Some("[]"), &[]).is_err(),
+            check_load_arguments("m", Some(""), &[]).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn files_need_a_config() {
         let files: &[(&str, &[u8])] = &[("file:1/model.onnx", b"onnx")];
-        assert_eq!(check_load_arguments("m", CONFIG, files), Ok(()));
-        assert!(check_load_arguments("m", None, files).is_err());
+        let expected = (Ok(()), true);
+        let actual = (
+            check_load_arguments("m", CONFIG, files),
+            check_load_arguments("m", None, files).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn files_stay_inside_the_model_directory() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+
         for name in [
             "1/model.onnx",
             "file:",
@@ -124,24 +139,35 @@ mod tests {
             "file:1/../../model.onnx",
         ] {
             let files: &[(&str, &[u8])] = &[(name, b"onnx")];
-            assert!(check_load_arguments("m", CONFIG, files).is_err(), "{name}");
+            actual.push(check_load_arguments("m", CONFIG, files).is_err());
+            expected.push(true);
         }
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn repeated_file_is_rejected() {
         let files: &[(&str, &[u8])] = &[("file:1/model.onnx", b"a"), ("file:1/model.onnx", b"b")];
-        assert!(check_load_arguments("m", CONFIG, files).is_err());
+        let actual = check_load_arguments("m", CONFIG, files).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn model_control_is_refused_only_inside_a_forbidding_hook() {
-        assert_eq!(check_model_control_allowed("loaded"), Ok(()));
+    fn model_control_is_allowed_outside_hooks() {
+        let actual = check_model_control_allowed("loaded");
+        let expected = Ok(());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn model_control_is_refused_inside_a_forbidding_hook() {
         let inside = forbid_model_control("finalize", || check_model_control_allowed("loaded"));
-        assert_eq!(
-            inside,
-            Err("models cannot be loaded in finalize".to_string())
+        let expected = (
+            Err("models cannot be loaded in finalize".to_string()),
+            Ok(()),
         );
-        assert_eq!(check_model_control_allowed("loaded"), Ok(()));
+        let actual = (inside, check_model_control_allowed("loaded"));
+        assert_eq!(actual, expected);
     }
 }

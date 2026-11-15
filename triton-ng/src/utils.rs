@@ -139,26 +139,26 @@ pub(crate) fn decode_le<T, const N: usize>(
 mod tests {
     use super::{count_strings, decode_string, encode_string, parse_parameter};
 
-    fn encoded(values: &[&str]) -> Result<Vec<u8>, std::io::Error> {
-        let mut data = Vec::new();
-        for value in values {
-            data.extend(encode_string(value)?);
-        }
-        Ok(data)
-    }
-
     #[test]
     fn strings_round_trip() -> Result<(), std::io::Error> {
         let data = encoded(&["", "привет", "abc"])?;
-        assert_eq!(decode_string(&data)?, vec!["", "привет", "abc"]);
-        assert_eq!(count_strings(&data)?, 3);
+        let expected = (
+            vec!["", "привет", "abc"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>(),
+            3,
+        );
+        let actual = (decode_string(&data)?, count_strings(&data)?);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
     #[test]
     fn empty_content_has_no_strings() -> Result<(), std::io::Error> {
-        assert!(decode_string(&[])?.is_empty());
-        assert_eq!(count_strings(&[])?, 0);
+        let expected = (true, 0);
+        let actual = (decode_string(&[])?.is_empty(), count_strings(&[])?);
+        assert_eq!(actual, expected);
         Ok(())
     }
 
@@ -166,31 +166,37 @@ mod tests {
     fn length_past_the_end_is_rejected() {
         let mut data = u32::MAX.to_le_bytes().to_vec();
         data.extend(b"abc");
-        assert!(decode_string(&data).is_err());
-        assert!(count_strings(&data).is_err());
+        let expected = (true, true);
+        let actual = (decode_string(&data).is_err(), count_strings(&data).is_err());
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn parameter_is_parsed_without_surrounding_spaces() {
-        assert_eq!(parse_parameter::<u32>("config", "threads", " 4 "), Ok(4));
+        let actual = parse_parameter::<u32>("config", "threads", " 4 ");
+        let expected = Ok(4);
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn invalid_parameter_names_its_kind_key_and_value() {
-        assert_eq!(
-            parse_parameter::<u32>("backend config", "threads", "four"),
-            Err(
-                "invalid value 'four' of backend config parameter 'threads': \
+        let actual = parse_parameter::<u32>("backend config", "threads", "four");
+        let expected = Err(
+            "invalid value 'four' of backend config parameter 'threads': \
                  invalid digit found in string"
-                    .to_string()
-            )
+                .to_string(),
         );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn truncated_length_is_rejected() {
-        assert!(decode_string(&[1, 0]).is_err());
-        assert!(count_strings(&[1, 0]).is_err());
+        let expected = (true, true);
+        let actual = (
+            decode_string(&[1, 0]).is_err(),
+            count_strings(&[1, 0]).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[cfg(unix)]
@@ -202,6 +208,16 @@ mod tests {
 
         let cstr = CStr::from_bytes_with_nul(b"/opt/back\xffends\0").expect("a NUL-free path");
         let path = path_from_cstr(cstr).expect("the bytes are the path on Unix");
-        assert_eq!(path.as_os_str().as_bytes(), b"/opt/back\xffends");
+        let actual = path.as_os_str().as_bytes();
+        let expected = b"/opt/back\xffends";
+        assert_eq!(actual, expected);
+    }
+
+    fn encoded(values: &[&str]) -> Result<Vec<u8>, std::io::Error> {
+        let mut data = Vec::new();
+        for value in values {
+            data.extend(encode_string(value)?);
+        }
+        Ok(data)
     }
 }

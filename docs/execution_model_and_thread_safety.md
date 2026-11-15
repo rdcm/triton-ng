@@ -123,7 +123,7 @@ makes is compiled against those headers, and Triton does nothing with the versio
 reports about itself. The versions go to the log, `TRITONBACKEND API version: server 1.19,
 compiled 1.19`, next to the line Triton prints for its own backends.
 
-[`inference` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/inference.rs) sends every image of a batch to
+[`inference` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/inference.rs) sends every image of a batch to
 `mnist_onnx` over BLS and answers with the recognized digit. A request with the
 `hold_until_cancelled` parameter repeats a BLS call and checks `Request::is_cancelled` between the
 calls until the client cancels it: Triton only marks a cancelled request, a backend finds out at

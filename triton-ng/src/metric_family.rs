@@ -222,25 +222,23 @@ fn validate_buckets(buckets: &[f64]) -> Result<(), String> {
 mod tests {
     use super::{FamilySpec, MetricKind, validate_family, validate_label_name};
 
-    fn spec(kind: MetricKind) -> FamilySpec {
-        FamilySpec {
-            kind,
-            description: "requests".to_string(),
-        }
-    }
-
     #[test]
     fn prometheus_metric_names_are_accepted() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+
         for name in ["requests_total", "_hidden", "asr:latency_seconds", "a1"] {
-            assert!(
-                validate_family(name, &spec(MetricKind::Counter)).is_ok(),
-                "{name}"
-            );
+            actual.push(validate_family(name, &spec(MetricKind::Counter)).is_ok());
+            expected.push(true);
         }
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn invalid_metric_names_are_refused() {
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+
         for name in [
             "",
             "1st",
@@ -249,11 +247,10 @@ mod tests {
             "привет",
             "nv_inference_count",
         ] {
-            assert!(
-                validate_family(name, &spec(MetricKind::Gauge)).is_err(),
-                "{name}"
-            );
+            actual.push(validate_family(name, &spec(MetricKind::Gauge)).is_err());
+            expected.push(true);
         }
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -262,17 +259,29 @@ mod tests {
             kind: MetricKind::Counter,
             description: "bad\0".to_string(),
         };
-        assert!(validate_family("requests_total", &spec).is_err());
+        let actual = validate_family("requests_total", &spec).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn label_names_follow_prometheus() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+
         for name in ["model", "_x", "gpu0"] {
-            assert!(validate_label_name(name).is_ok(), "{name}");
+            actual_0.push(validate_label_name(name).is_ok());
+            expected_0.push(true);
         }
         for name in ["", "0gpu", "__name", "a-b", "a:b"] {
-            assert!(validate_label_name(name).is_err(), "{name}");
+            actual_1.push(validate_label_name(name).is_err());
+            expected_1.push(true);
         }
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -283,12 +292,23 @@ mod tests {
                 &spec(MetricKind::Histogram(buckets.to_vec())),
             )
         };
-        assert!(histogram(&[0.01, 0.1, 1.0]).is_ok());
-        assert!(histogram(&[-1.0]).is_ok());
-        assert!(histogram(&[]).is_err());
-        assert!(histogram(&[0.1, 0.1]).is_err());
-        assert!(histogram(&[1.0, 0.1]).is_err());
-        assert!(histogram(&[0.1, f64::NAN]).is_err());
-        assert!(histogram(&[0.1, f64::INFINITY]).is_err());
+        let expected = (true, true, true, true, true, true, true);
+        let actual = (
+            histogram(&[0.01, 0.1, 1.0]).is_ok(),
+            histogram(&[-1.0]).is_ok(),
+            histogram(&[]).is_err(),
+            histogram(&[0.1, 0.1]).is_err(),
+            histogram(&[1.0, 0.1]).is_err(),
+            histogram(&[0.1, f64::NAN]).is_err(),
+            histogram(&[0.1, f64::INFINITY]).is_err(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    fn spec(kind: MetricKind) -> FamilySpec {
+        FamilySpec {
+            kind,
+            description: "requests".to_string(),
+        }
     }
 }

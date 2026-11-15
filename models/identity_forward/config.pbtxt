@@ -36,5 +36,4 @@ parameters: {
 }
 
 
-# The test fixture is selected once at model initialization.
 parameters: { key: "fixture" value: { string_value: "input_forward" } }

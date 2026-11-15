@@ -121,32 +121,41 @@ mod tests {
 
     #[test]
     fn group_keeps_its_kind_count_and_devices() {
-        assert_eq!(
-            preferred_instance_group(InstanceGroupKind::Gpu, 2, &[0, 3]),
-            Ok(PreferredInstanceGroup {
-                kind: InstanceGroupKind::Gpu,
-                count: 2,
-                devices: vec![0, 3],
-            })
-        );
+        let actual = preferred_instance_group(InstanceGroupKind::Gpu, 2, &[0, 3]);
+        let expected = Ok(PreferredInstanceGroup {
+            kind: InstanceGroupKind::Gpu,
+            count: 2,
+            devices: vec![0, 3],
+        });
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn devices_belong_to_gpu_and_auto_groups_only() {
-        assert!(preferred_instance_group(InstanceGroupKind::Cpu, 1, &[0]).is_err());
-        assert!(preferred_instance_group(InstanceGroupKind::Model, 1, &[0]).is_err());
-        assert!(preferred_instance_group(InstanceGroupKind::Cpu, 1, &[]).is_ok());
-        assert!(preferred_instance_group(InstanceGroupKind::Auto, 1, &[0]).is_ok());
+        let expected = (true, true, true, true);
+        let actual = (
+            preferred_instance_group(InstanceGroupKind::Cpu, 1, &[0]).is_err(),
+            preferred_instance_group(InstanceGroupKind::Model, 1, &[0]).is_err(),
+            preferred_instance_group(InstanceGroupKind::Cpu, 1, &[]).is_ok(),
+            preferred_instance_group(InstanceGroupKind::Auto, 1, &[0]).is_ok(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn repeated_device_is_rejected() {
-        assert!(preferred_instance_group(InstanceGroupKind::Gpu, 1, &[1, 1]).is_err());
+        let actual = preferred_instance_group(InstanceGroupKind::Gpu, 1, &[1, 1]).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn values_beyond_int32_are_rejected() {
-        assert!(preferred_instance_group(InstanceGroupKind::Gpu, u32::MAX, &[]).is_err());
-        assert!(preferred_instance_group(InstanceGroupKind::Gpu, 1, &[u32::MAX]).is_err());
+        let expected = (true, true);
+        let actual = (
+            preferred_instance_group(InstanceGroupKind::Gpu, u32::MAX, &[]).is_err(),
+            preferred_instance_group(InstanceGroupKind::Gpu, 1, &[u32::MAX]).is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 }

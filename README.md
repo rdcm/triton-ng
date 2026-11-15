@@ -460,34 +460,20 @@ Start with the topics you need; the guides and this README are also included in
 
 ## Development
 
-Run these commands from the repository root:
+Install Rust, Docker, the NVIDIA Container Toolkit, and a compatible NVIDIA driver.
+The test suite also requires Python 3 and `cargo-nextest`. From the repository root:
 
-| Command | Purpose |
-|---|---|
-| `make build` | Build the workspace in release mode, including examples and README snippet checks |
-| `make download-model` | Download the MNIST model and create model version directories |
-| `make docker-env-up` | Start local Triton after building and downloading the models |
-| `make docker-env-down` | Stop the local Triton service |
-| `make docker-env-clean` | Stop local Triton and remove its volumes |
-| `make docker-logs` | Show local Triton logs |
-| `make tests` | Run unit and integration tests; integration tests require local Triton |
-| `make format` | Sort workspace manifests and format Rust code |
-| `make lint` | Run Clippy |
-| `make doc` | Build workspace documentation with warnings treated as errors |
-| `make update-submodules` | Restore submodules to the branches in `.gitmodules` and refresh vendored headers |
-| `make gen-grpc-client` | Regenerate the gRPC client from protobuf definitions |
-| `make setup-protoc` | Install the protobuf compiler using `dnf` |
-| `make benchmarks` | Run the benchmark suite in a separate Triton container |
-| `make benchmarks-env-up` | Build and start the benchmark service on ports 9000–9002 |
-| `make benchmarks-env-down` | Stop the benchmark service |
-| `make publish DRY_RUN=1` | Package and check workspace crates without publishing |
-| `make publish` | Publish workspace crates to crates.io |
+```bash
+make build
+make download-model
+make docker-env-up
+make tests
+make docker-env-down
+```
 
-User examples live in `examples/`; feature and failure fixtures live in
-[tests/fixtures](https://github.com/rdcm/triton-ng/tree/main/triton-ng-client/tests/fixtures).
-Models and Compose stay at the root. The local service requires Docker, NVIDIA Container
-Toolkit, and a compatible NVIDIA driver because it includes GPU fixtures. Integration tests
-run serially and read traces from `target/traces`.
+Wait until Triton reports the models ready before running the tests. After changing a
+backend, rebuild and restart the service. See the [Makefile](https://github.com/rdcm/triton-ng/blob/main/Makefile) for all development
+commands.
 
 ## License
 

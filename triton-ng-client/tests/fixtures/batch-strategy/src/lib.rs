@@ -1,20 +1,11 @@
-//! The batching strategy of the `batch_strategy` fixture model: requests of
-//! one batch share the value of their `batch_key` request parameter.
-//!
-//! The model config names this library through `TRITON_BATCH_STRATEGY_PATH`,
-//! and the integration test reads back how it grouped the requests from the
-//! `batch_keys` response parameter the test backend answers with.
-
 use triton_ng::{BatchStrategy, Error, Model, Parameter, RequestView};
 
-/// The request parameter whose value groups the requests of a batch.
 const BATCH_KEY: &str = "batch_key";
 
-// Failure fixtures alternate a failed load and a successful recovery. This
-// lets the test clear Triton's retained failed-version status without changing
-// repository files, and remains repeatable in one running server.
-static INIT_ERROR_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-static INIT_PANIC_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+// A failure and its recovery belong to one model, even when tests load models concurrently.
+static FAILED_INITIALIZATIONS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(Default::default);
 
 /// Groups the requests of a batch by `batch_key`, the key of the request at
 /// the head of the queue first.
@@ -42,15 +33,25 @@ impl BatchStrategy for ByKey {
         let mode = model
             .config_parameter("strategy_failure")?
             .unwrap_or_default();
-        if mode == "init_error"
-            && INIT_ERROR_NEXT.fetch_xor(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err("strategy initialization failed".into());
-        }
-        if mode == "init_panic"
-            && INIT_PANIC_NEXT.fetch_xor(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            std::panic::resume_unwind(Box::new("strategy initialization panicked"));
+        if mode == "init_error" || mode == "init_panic" {
+            let name = model.name()?;
+            let fail = {
+                let mut failed = FAILED_INITIALIZATIONS
+                    .lock()
+                    .map_err(|_| "initialization history is poisoned")?;
+                if failed.remove(&name) {
+                    false
+                } else {
+                    failed.insert(name);
+                    true
+                }
+            };
+            if fail {
+                if mode == "init_error" {
+                    return Err("strategy initialization failed".into());
+                }
+                std::panic::resume_unwind(Box::new("strategy initialization panicked"));
+            }
         }
         let strategy = Self {
             model: model.name()?,
@@ -118,15 +119,43 @@ impl BatchStrategy for ByKey {
 
 /// Appends one lifecycle event to the test trace volume. A single write keeps
 /// events from concurrently loaded models distinguishable by their name.
+#[derive(Default)]
+struct Events {
+    strategies_created: u64,
+    strategies_dropped: u64,
+    batches_created: u64,
+    batches_dropped: u64,
+}
+
+static EVENTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Events>>> =
+    std::sync::LazyLock::new(Default::default);
+
 fn event(model: &str, kind: &str) {
-    use std::io::Write;
-    let result = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/traces/batch_strategy_lifecycle.log")
-        .and_then(|mut file| writeln!(file, "{model} {kind}"));
-    if let Err(error) = result {
-        eprintln!("cannot record strategy lifecycle: {error}");
+    let Ok(mut models) = EVENTS.lock() else {
+        eprintln!("strategy lifecycle counters are poisoned");
+        return;
+    };
+    let counts = models.entry(model.to_string()).or_default();
+    match kind {
+        "strategy_created" => counts.strategies_created += 1,
+        "strategy_dropped" => counts.strategies_dropped += 1,
+        "batch_created" => counts.batches_created += 1,
+        "batch_dropped" => counts.batches_dropped += 1,
+        _ => return,
+    }
+    // Publish a bounded snapshot on teardown, including batches released after the strategy.
+    // Active queue retries only update counters; they never append an unbounded log.
+    if counts.strategies_created == counts.strategies_dropped && counts.strategies_created > 0 {
+        let snapshot = format!(
+            "[{},{},{},{}]",
+            counts.strategies_created,
+            counts.strategies_dropped,
+            counts.batches_created,
+            counts.batches_dropped
+        );
+        if let Err(error) = std::fs::write(format!("/traces/{model}.lifecycle.json"), snapshot) {
+            eprintln!("cannot record strategy lifecycle: {error}");
+        }
     }
 }
 

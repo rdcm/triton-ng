@@ -49,5 +49,4 @@ parameters: {
   value: { string_value: "mnist_stream" }
 }
 
-# The test fixture is selected once at model initialization.
 parameters: { key: "fixture" value: { string_value: "cancellation" } }

@@ -70,7 +70,7 @@ The family is deleted with its last metric and family value. Every type is `Send
 removed from the endpoint when its last metric is dropped, so the metrics of an unloaded model
 disappear and start from zero when it is loaded again.
 
-The [common fixture response helper](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/common.rs) counts answered requests, the
+The [common fixture response helper](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/common.rs) counts answered requests, the
 requests it holds and the duration of its BLS calls, labelled with the model; the integration
 tests read them from `:8002/metrics`.
 

@@ -82,9 +82,31 @@ Unit tests live next to the code they test, in a `#[cfg(test)] mod tests` at the
 source file. Tests that need a running Triton go to the crate's `tests/` directory and run
 against `make docker-env-up`.
 
+- Every test ends with exactly one explicit assertion comparing two objects: `expected`
+  and `actual`. Construct these objects before the assertion; combine multiple observed
+  values into a struct or tuple instead of writing multiple assertions.
+- Do not put assertions in the middle of a test. An intermediate assertion indicates that
+  the test must be split into independent tests, each with its own final assertion.
+- Put helper functions at the bottom of the test file, after all tests.
+- Name each test as a declarative sentence that clearly states the behavior it verifies.
+- All tests must support parallel execution. Isolate their state and resources; do not rely
+  on execution order, serial test groups, or a global lock to serialize tests.
+
 Library unit tests are linked without `libtritonserver`, so they must not reach Triton
 symbols, including `TritonError`'s `Drop`. Test the logic on plain Rust types and convert to
 `TritonError` outside the tested part.
+
+## Comments
+
+Implementation comments explain non-obvious technical decisions, workarounds, and library
+behavior or limitations that a reader cannot infer from the code. Do not narrate routine
+operations, repeat identifiers, label files with their own names, or explain an unchanged
+default. Remove stale, duplicated, and contradictory comments when editing nearby code.
+Avoid filler, generic assurances, and commentary about the editing process.
+
+Keep comments short and specific. `SAFETY` comments must explain the actual pointer
+validity, ownership, lifetime, or synchronization argument, rather than merely label a call
+as safe. Preserve the public API documentation required below and license notices.
 
 ## Public API documentation
 

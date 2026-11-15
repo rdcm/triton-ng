@@ -1,9 +1,3 @@
-# Integration tests share a live Triton server — run them serially to avoid
-# race conditions between state-mutating tests (model unload/reload, shared
-# memory register/unregister) and read-only tests that depend on that state.
-[test-groups]
-triton-integration = { max-threads = 1 }
-
-[[profile.default.overrides]]
-filter = 'package(triton-ng-client)'
-test-group = 'triton-integration'
+# Keep tests concurrent while bounding the number of live Triton model instances.
+[profile.default]
+test-threads = 8

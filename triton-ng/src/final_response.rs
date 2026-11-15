@@ -282,7 +282,9 @@ mod tests {
     fn response_without_shared_inputs_is_sent_at_once() {
         let mut gate = Gate::default();
 
-        assert_eq!(gate.send(1), Some(1));
+        let actual = gate.send(1);
+        let expected = Some(1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -291,9 +293,9 @@ mod tests {
         gate.share("a").unwrap();
         gate.share("b").unwrap();
 
-        assert_eq!(gate.send(1), None);
-        assert_eq!(gate.unshare("a"), None);
-        assert_eq!(gate.unshare("b"), Some(1));
+        let expected = (None, None, Some(1));
+        let actual = (gate.send(1), gate.unshare("a"), gate.unshare("b"));
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -301,34 +303,58 @@ mod tests {
         let mut gate = Gate::default();
         gate.share("a").unwrap();
 
-        assert_eq!(gate.unshare("a"), None::<i32>);
-        assert_eq!(gate.send(1), Some(1));
+        let expected = (None::<i32>, Some(1));
+        let actual = (gate.unshare("a"), gate.send(1));
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn input_is_not_shared_after_the_response() {
         let mut gate = Gate::default();
         gate.share("a").unwrap();
-        assert_eq!(gate.send(1), None);
-
-        assert!(gate.share("a").is_err());
-        assert_eq!(gate.unshare("a"), Some(1));
-        assert!(gate.share("a").is_err());
+        let expected = (None, true, Some(1), true);
+        let actual = (
+            gate.send(1),
+            gate.share("a").is_err(),
+            gate.unshare("a"),
+            gate.share("a").is_err(),
+        );
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn a_shared_input_is_known_by_its_name_until_it_is_dropped() {
+    fn shared_inputs_are_found_by_their_own_names() {
         let mut gate = Gate::<i32>::default();
         gate.share("features").unwrap();
         gate.share("features").unwrap();
 
-        assert!(gate.is_shared("features"));
-        assert!(!gate.is_shared("pixels"));
+        let expected = (true, true);
+        let actual = (gate.is_shared("features"), !gate.is_shared("pixels"));
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_shared_input_is_known_until_its_last_reference_is_dropped() {
+        let mut gate = Gate::<i32>::default();
+        gate.share("features").unwrap();
+        gate.share("features").unwrap();
 
         gate.unshare("features");
-        assert!(gate.is_shared("features"));
+        let actual = gate.is_shared("features");
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_dropped_shared_input_is_no_longer_known() {
+        let mut gate = Gate::<i32>::default();
+        gate.share("features").unwrap();
+        gate.share("features").unwrap();
 
         gate.unshare("features");
-        assert!(!gate.is_shared("features"));
+        gate.unshare("features");
+        let actual = !gate.is_shared("features");
+        let expected = true;
+        assert_eq!(actual, expected);
     }
 }

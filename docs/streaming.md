@@ -220,7 +220,7 @@ while let Some(response) = stream.next().await {
 
 ## Example
 
-[`streaming` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/streaming.rs) serves `mnist_stream`, a decoupled
+[`streaming` fixture](https://github.com/rdcm/triton-ng/blob/main/triton-ng-client/tests/fixtures/backend/src/fixtures/streaming.rs) serves `mnist_stream`, a decoupled
 model of the same backend: a request carries several images (`[-1, 1, 28, 28]`), and the model
 streams the digit of every image, each from a BLS call to `mnist_onnx`. With the
 `hold_until_cancelled` parameter it waits for the client to cancel the stream after the digits, and

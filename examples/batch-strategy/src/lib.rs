@@ -3,7 +3,6 @@
 
 use triton_ng::{BatchStrategy, Error, Model, Parameter, RequestView};
 
-/// The request parameter whose value groups the requests of a batch.
 const BATCH_KEY: &str = "batch_key";
 
 /// Groups the requests of a batch by `batch_key`, the key of the request at

@@ -187,28 +187,21 @@ mod tests {
     use crate::response_allocator::{OutputMemory, OutputTag};
     use crate::{CPU, CPU_PINNED, GPU, MemoryManager, OutputBuffer, RawBuffer, WrittenBuffer};
 
-    fn tagged_gpu() -> (OutputTag, RawBuffer) {
-        let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());
-        let raw = buffer.raw();
-        (Some(OutputMemory::Buffer(buffer)), raw)
-    }
-
-    fn tagged_host(len: usize) -> (OutputTag, RawBuffer) {
-        let memory = OutputMemory::Host(vec![7; len]);
-        let raw = memory.raw();
-        (Some(memory), raw)
-    }
-
     #[test]
     fn output_in_its_buffer_is_handed_over() {
         let (mut tag, placed) = tagged_gpu();
 
         let written = written_output(&mut tag, "ho", &placed).unwrap();
 
-        assert!(
-            matches!(written, OutputData::Buffer(WrittenBuffer::Gpu(buffer)) if buffer.len() == 40)
-        );
-        assert!(tag.is_none());
+        let actual_0 =
+            matches!(written, OutputData::Buffer(WrittenBuffer::Gpu(buffer)) if buffer.len() == 40);
+        let expected_0 = true;
+        let actual_1 = tag.is_none();
+        let expected_1 = true;
+
+        let expected = (expected_0, expected_1);
+        let actual = (actual_0, actual_1);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -219,24 +212,32 @@ mod tests {
             panic!("host output is not in host memory");
         };
 
-        assert_eq!(data.as_ptr(), placed.ptr.cast_const().cast());
-        assert_eq!(data, vec![7; 40]);
-        assert_eq!(placed.memory_type, CPU);
-        assert!(tag.is_none());
+        let expected = (placed.ptr.cast_const().cast(), vec![7; 40], CPU, true);
+        let actual = (data.as_ptr(), data, placed.memory_type, tag.is_none());
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn empty_host_output_has_no_memory() {
         let (mut tag, placed) = tagged_host(0);
 
-        assert!(placed.ptr.is_null());
-        assert!(
-            matches!(written_output(&mut tag, "dec", &placed), Ok(OutputData::Host(data)) if data.is_empty())
+        let expected = (true, true);
+        let actual = (
+            placed.ptr.is_null(),
+            matches!(written_output(&mut tag, "dec", &placed), Ok(OutputData::Host(data)) if data.is_empty()),
         );
+        assert_eq!(actual, expected);
     }
 
     #[test]
     fn output_placed_elsewhere_is_refused() {
+        let mut actual_0 = Vec::new();
+        let mut expected_0 = Vec::new();
+        let mut actual_1 = Vec::new();
+        let mut expected_1 = Vec::new();
+        let mut actual_2 = Vec::new();
+        let mut expected_2 = Vec::new();
+
         let elsewhere: [fn(RawBuffer) -> RawBuffer; 4] = [
             |placed| RawBuffer { len: 4, ..placed },
             |placed| RawBuffer {
@@ -255,12 +256,18 @@ mod tests {
 
         for move_output in elsewhere {
             let (mut tag, placed) = tagged_gpu();
-            assert_eq!(placed.memory_type, GPU);
-            assert!(written_output(&mut tag, "ho", &move_output(placed)).is_err());
+            actual_0.push(placed.memory_type);
+            expected_0.push(GPU);
+            actual_1.push(written_output(&mut tag, "ho", &move_output(placed)).is_err());
+            expected_1.push(true);
 
             let (mut tag, placed) = tagged_host(40);
-            assert!(written_output(&mut tag, "dec", &move_output(placed)).is_err());
+            actual_2.push(written_output(&mut tag, "dec", &move_output(placed)).is_err());
+            expected_2.push(true);
         }
+        let expected = (expected_0, expected_1, expected_2);
+        let actual = (actual_0, actual_1, actual_2);
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -268,6 +275,20 @@ mod tests {
         let (mut tag, placed) = tagged_gpu();
         written_output(&mut tag, "ho", &placed).unwrap();
 
-        assert!(written_output(&mut tag, "ho", &placed).is_err());
+        let actual = written_output(&mut tag, "ho", &placed).is_err();
+        let expected = true;
+        assert_eq!(actual, expected);
+    }
+
+    fn tagged_gpu() -> (OutputTag, RawBuffer) {
+        let buffer = OutputBuffer::from(MemoryManager::heap().gpu(0, 40).unwrap());
+        let raw = buffer.raw();
+        (Some(OutputMemory::Buffer(buffer)), raw)
+    }
+
+    fn tagged_host(len: usize) -> (OutputTag, RawBuffer) {
+        let memory = OutputMemory::Host(vec![7; len]);
+        let raw = memory.raw();
+        (Some(memory), raw)
     }
 }

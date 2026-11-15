@@ -67,5 +67,5 @@ The test model selects its fixture at initialization; no shared request-paramete
 selects unrelated test behavior. `models/` and `docker-compose.yml` stay in the root.
 
 `make build` also compiles every Rust snippet in the root README using the compile-only
-`readme-checks` fixture. `make doc` includes these guides in the SDK's Rust documentation;
+[`tools/readme-checks`](../tools/readme-checks) tool. `make doc` includes these guides in the SDK's Rust documentation;
 `make tests` runs the SDK and integration suite against the root Triton service.
