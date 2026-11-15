@@ -3,9 +3,9 @@
 [![crates.io](https://img.shields.io/crates/v/triton-ng.svg)](https://crates.io/crates/triton-ng)
 [![docs.rs](https://img.shields.io/docsrs/triton-ng)](https://docs.rs/triton-ng)
 
-Write NVIDIA Triton backends in Rust, or call a running Triton server with the async gRPC client.
-A backend runs as a shared library inside Triton: use BLS to compose models, stream responses,
-keep data on the GPU between calls, and let Rust types enforce request and response ownership.
+A Rust SDK for writing custom backends for NVIDIA Triton Inference Server.
+Backends run as shared libraries inside Triton. The project also includes an async gRPC client
+for calling a running Triton server.
 
 Targets **Triton 25.09 / backend API 1.19** and **Rust 1.99**. The API checks compatibility at
 backend startup. The examples below describe the **current repository**, including additions
