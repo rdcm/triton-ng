@@ -9,6 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed (#37)
 
+- Expand C API coverage to all 276 functions in the r25.09 backend/server headers, with
+  Rust and Python implementation links, public/internal distinctions, and missing alternatives.
+
 - Rewrite the README with progressively introduced, compile-checked API examples and a
   guide catalogue. Both documentation landing pages include python_backend comparison and
   recorded benchmark summaries; the full comparison maps every area of the #17 audit.

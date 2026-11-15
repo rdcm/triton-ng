@@ -188,7 +188,7 @@ pub mod docs {
     #[doc = include_str!("../docs/memory_buffers.md")]
     pub mod memory_buffers {}
 
-    #[doc = "C API coverage: what of `tritonbackend.h` and of the server functions a backend calls is wrapped, and what is not."]
+    #[doc = "C API coverage: every function in tritonbackend.h and tritonserver.h compared across Rust and Python backends."]
     #[doc = ""]
     #[doc = include_str!("../docs/c_api_coverage.md")]
     pub mod c_api_coverage {}
