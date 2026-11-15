@@ -244,7 +244,7 @@ mod tests {
             "1st",
             "with-dash",
             "with space",
-            "привет",
+            "hello!",
             "nv_inference_count",
         ] {
             actual.push(validate_family(name, &spec(MetricKind::Gauge)).is_err());

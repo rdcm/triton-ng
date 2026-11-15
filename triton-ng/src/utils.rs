@@ -141,9 +141,9 @@ mod tests {
 
     #[test]
     fn strings_round_trip() -> Result<(), std::io::Error> {
-        let data = encoded(&["", "привет", "abc"])?;
+        let data = encoded(&["", "hello \u{1F44B}", "abc"])?;
         let expected = (
-            vec!["", "привет", "abc"]
+            vec!["", "hello \u{1F44B}", "abc"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>(),
