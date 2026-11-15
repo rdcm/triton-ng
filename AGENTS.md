@@ -1,5 +1,11 @@
 # Working on triton-ng
 
+## Language
+
+Write commit messages, branch names, and comments only in English. This includes code comments,
+review comments, and issue/PR discussion comments. Keep required ticket identifiers unchanged;
+branches named only after a ticket identifier or issue number are allowed.
+
 ## Use the Makefile only
 
 Build, lint, format, test, and run the project only through `make` targets. Do not run `cargo`,
