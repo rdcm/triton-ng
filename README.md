@@ -197,20 +197,30 @@ async fn traced_call(ctx: &Context, request: &Request) -> Result<InferenceResult
 
 ## Memory buffers
 
-Supply an output buffer, then take it back for reuse:
+Choose memory for each output, then take the buffers back for reuse. This example takes a
+prepared request for a model with three FP32 outputs of shape `[1, 10]`:
 
 ```rust ignore
-async fn reuse_output(ctx: &Context) -> Result<RamBuffer, Error> {
-    let mut call = InferenceRequest::new(ctx.server(), "minimal_backend_target", -1)?;
-    call.add_input_with_data("INPUT0", DataType::Fp32, &[1, 10], vec![0; 40])?;
-    call.add_requested_output_into("OUTPUT0", ctx.memory().ram(40)?)?;
+async fn reuse_outputs(
+    ctx: &Context,
+    mut call: InferenceRequest,
+    device_id: i32,
+) -> Result<(RamBuffer, PinnedRamBuffer, GpuBuffer), Error> {
+    call.add_requested_output_into("CPU_OUTPUT", ctx.memory().ram(40)?)?;
+    call.add_requested_output_into("PINNED_OUTPUT", ctx.memory().pinned(40)?)?;
+    call.add_requested_output_into("GPU_OUTPUT", ctx.memory().gpu(device_id, 40)?)?;
     let mut result = ctx.server().infer_async(call).await?;
-    result.take_ram("OUTPUT0")
+    Ok((
+        result.take_ram("CPU_OUTPUT")?,
+        result.take_pinned("PINNED_OUTPUT")?,
+        result.take_gpu("GPU_OUTPUT")?,
+    ))
 }
 ```
 
-Use `pinned` for pinned host memory or `gpu` / `take_gpu` to keep BLS outputs on the GPU.
-CPU access to GPU data requires your own CUDA code.
+Use any one of these buffer types, or combine them as above. Pinned and GPU allocations require
+Triton's corresponding memory pools. A `GpuBuffer` can become the next BLS call's input without
+a host copy; CPU access to its data requires your own CUDA code.
 
 Report memory held by your model so clients can inspect it in model statistics:
 
