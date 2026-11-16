@@ -7,7 +7,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-15
+## [0.4.0] - 2026-11-16
 
 Targets Triton 25.09 / backend API 1.19 and Rust 1.99. All four public crates use version 0.4.0.
 
