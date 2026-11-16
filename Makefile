@@ -1,3 +1,5 @@
+.PHONY: publish-check publish
+
 # Install the protobuf compiler using dnf and print its version.
 setup-protoc:
 	sudo dnf install protobuf-compiler
@@ -50,9 +52,11 @@ update-submodules:
 gen-grpc-client:
 	cargo run -p gen-grpc-client
 
-# Publish workspace crates to crates.io. Use make publish DRY_RUN=1 to package and check only.
+publish-check:
+	cargo publish --workspace --dry-run
+
 publish:
-	cargo publish --workspace $(if $(DRY_RUN),--dry-run)
+	cargo publish --workspace
 
 # Build the workspace in release mode, including examples, test libraries, and README and guide snippet checks.
 build:

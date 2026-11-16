@@ -29,7 +29,8 @@ added to the `Makefile` only after it is agreed.
 | `make docker-logs` | logs of the local Triton |
 | `make update-submodules` | updates `deps/` to the branches in `.gitmodules` and copies the Triton headers into `triton-ng-sys/include` |
 | `make gen-grpc-client` | regenerates the gRPC client in `triton-ng-client/src/generated` from `proto/` |
-| `make publish` | publishes the crates to crates.io in dependency order; `DRY_RUN=1` only packages and verifies them |
+| `make publish-check` | packages and verifies workspace crates without publishing |
+| `make publish` | publishes workspace crates to crates.io in dependency order |
 | `make setup-protoc` | installs `protoc` |
 
 ## Defensive programming
@@ -145,3 +146,8 @@ without asking the user. Such a mismatched checkout is not a change to preserve 
 reason to request confirmation or create a separate worktree. This is a standing
 instruction from the user. Preserve unrelated uncommitted file edits inside submodules;
 do not use a forced checkout or discard those edits.
+
+## Makefile commands
+
+Use separate explicit targets for checks and actions that change external state. Do not add
+Makefile variables or environment switches to select between verification and publishing.
