@@ -22,7 +22,7 @@ r25.09:
 | Backend config and attributes | not exposed | `Backend::config`, `CustomBackend::attributes` |
 | Memory | numpy arrays; CPU tensors copied into shared memory, GPU tensors through DLPack and CUDA IPC | RAM, pinned and GPU buffers of Triton's memory manager; BLS outputs taken over and request inputs passed on without a copy |
 | Data types | Triton-supported NumPy dtypes; DLPack for framework tensors | Typed helpers for fp32, fp64, i32, i64, u64, bool and strings; raw bytes for other Triton datatypes |
-| GPU outputs of a response, GPU inputs read on the CPU | yes, copied | no: triton-ng has no CUDA runtime |
+| GPU outputs of a response, GPU inputs | copied with CUDA to whatever the allocator returned; a GPU input reaches the model through the DLPack handle, `as_numpy` throws | outputs accept host bytes only; an input offers host bytes or `share`, no device view |
 | Custom `is_ready` hook | Not available in r25.09 | Not available with the targeted r25.09 C API |
 | PyTorch, TensorFlow, JAX inside the model | yes | no: the model goes to its framework backend and is called over BLS |
 | A crash in the model | takes down the stub; Triton notices | panics are caught at the FFI boundary; a segfault takes down Triton |
