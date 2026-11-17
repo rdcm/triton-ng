@@ -302,6 +302,11 @@ fn update_counter(request: &mut Request, counter: &StateConfig) -> Result<(), Er
   -1. Triton writes whatever datatype and shape it is given into the metadata of the state without
   comparing them with the configuration, so a shape that does not fit is refused before Triton
   sees it.
+- **Fixed-width datatypes only.** The size of the state is fixed when it is created, from the
+  datatype of the entry over the shape the request needs, and `State` writes exactly that many
+  bytes. BYTES has no fixed element width, so `State::new` refuses it: Triton takes the buffer size
+  from the caller on every write, and a BYTES state would need the serialized length of its strings
+  in place of a product of the shape.
 - **The entry belongs to the model of the request.** Each entry remembers the model it was read
   from, and `State::new` compares it with the model of the request. Two models can declare the
   same state name with different dimensions, and Triton would keep whatever the caller passes, so
