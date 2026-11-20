@@ -162,6 +162,23 @@ character, and reports `INVALID_ARG` without recording anything. The test backen
 activity a request names in its `report_activity` parameter, and the integration test checks that
 the trace file holds JSON and places the activity between the two ends of the request.
 
+**Spans of the model.** With `--trace-config ...mode=opentelemetry`, Triton keeps the context of
+its server span in the trace, and `Trace::context` returns it: a JSON object with the W3C
+`traceparent` and `tracestate` of that span.
+
+```text
+{"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "tracestate": ""}
+```
+
+A model that reports spans of its own reads this JSON as a W3C carrier, extracts the parent with an
+OpenTelemetry propagator, and starts its spans under the context it gets back (`start_with_context`
+in `opentelemetry`, `set_parent` in `tracing-opentelemetry`). They then carry the trace ID of the
+client request and nest under the request span of Triton. PyTriton reads the same JSON from Python
+(`pb_utils.InferenceRequest.trace().get_context()`) and does this in its proxy.
+
+The value is a copy, because `report_activity` replaces the string Triton keeps. It is `None` in
+`mode=triton` and for a request that is not traced, where a fresh context is the right start.
+
 **Lifetimes.** Triton's frontend frees the trace data shared by a trace and its children with the
 parent, and a child that reports after that writes into freed memory. So a request with a traced
 child is released to Triton only after the child BLS request and its response are done, even when

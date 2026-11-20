@@ -1,8 +1,10 @@
 use crate::TritonError;
 use crate::error::ErrorCode;
 use crate::request::Request;
-use std::ffi::CString;
+use libc::c_char;
+use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
+use std::ptr;
 use triton_ng_macros::triton_call;
 
 /// The trace of a [`Request`], from [`Request::trace`].
@@ -13,7 +15,8 @@ use triton_ng_macros::triton_call;
 ///
 /// A request that Triton does not sample, and a server built without tracing,
 /// give a trace whose [`Trace::report_activity`] does nothing and reports
-/// success, so a backend can report activities without checking first.
+/// success, so a backend can report activities without checking first, and
+/// whose [`Trace::context`] is `None`.
 ///
 /// # Examples
 ///
@@ -75,6 +78,46 @@ impl<'a> Trace<'a> {
             name.as_ptr()
         ))
     }
+
+    /// The context Triton keeps for the trace: a JSON object with the W3C
+    /// `traceparent` and `tracestate` of the server span, for a model that
+    /// reports spans of its own into the same trace.
+    ///
+    /// `None` when the server runs in `triton` mode, when the request is not
+    /// sampled, and when Triton was built without tracing: there is no server
+    /// span to join, and a fresh context is the right start.
+    ///
+    /// The JSON is copied, because [`Trace::report_activity`] replaces the
+    /// string Triton keeps, so a slice borrowed from it would not stay valid.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let trace = request.trace()?;
+    /// let parent = match trace.context()? {
+    ///     Some(json) => propagator.extract(&JsonCarrier::new(&json)),
+    ///     None => Context::new(),
+    /// };
+    /// let span = tracer.start_with_context("preprocess", &parent);
+    /// ```
+    pub fn context(&self) -> Result<Option<String>, TritonError> {
+        if self.ptr.is_null() {
+            return Ok(None);
+        }
+
+        let mut context: *const c_char = ptr::null();
+        // SAFETY: `ptr` is the trace of the request this value borrows, which
+        // Triton keeps alive until the request is released; reading the
+        // context only reads it.
+        triton_call!(triton_ng_sys::TRITONSERVER_InferenceTraceContext(
+            self.ptr,
+            &mut context
+        ))?;
+        // SAFETY: the context string belongs to the trace, which is alive for
+        // the whole call, and the copy taken here is the one that is returned.
+        unsafe { context_string(context) }
+            .map_err(|message| TritonError::with_code(ErrorCode::Internal, message))
+    }
 }
 
 /// The C string of an activity name, a message when the trace collector cannot
@@ -95,10 +138,60 @@ fn activity_name(activity: &str) -> Result<CString, String> {
     CString::new(activity).map_err(|_| "an activity name must not contain a NUL byte".to_string())
 }
 
+/// The context of a trace, `None` when the trace has none.
+///
+/// Carries text rather than a [`TritonError`], so the unit tests check the
+/// conversion without a Triton server.
+///
+/// # Safety
+///
+/// `ptr` must be null or a NUL-terminated string that stays alive and unchanged
+/// for the whole call.
+unsafe fn context_string(ptr: *const c_char) -> Result<Option<String>, String> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let context = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| "the context of a trace is not UTF-8".to_string())?
+        .to_owned();
+    Ok((!context.is_empty()).then_some(context))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::activity_name;
+    use super::{activity_name, context_string};
     use std::ffi::CString;
+    use std::ptr;
+
+    #[test]
+    fn a_trace_context_is_copied_and_an_empty_one_is_none() -> Result<(), String> {
+        let empty = CString::new("").map_err(|e| e.to_string())?;
+        let json = CString::new(r#"{"traceparent":"00-abcd","tracestate":""}"#)
+            .map_err(|e| e.to_string())?;
+        let invalid = CString::new(vec![0x66u8, 0xff]).map_err(|e| e.to_string())?;
+
+        let expected = (
+            Ok(None),
+            Ok(None),
+            Ok(Some(
+                r#"{"traceparent":"00-abcd","tracestate":""}"#.to_string(),
+            )),
+            Err("the context of a trace is not UTF-8".to_string()),
+        );
+        // SAFETY: each pointer is either null or the C string of a binding that
+        // outlives the call.
+        let actual = unsafe {
+            (
+                context_string(ptr::null()),
+                context_string(empty.as_ptr()),
+                context_string(json.as_ptr()),
+                context_string(invalid.as_ptr()),
+            )
+        };
+        assert_eq!(actual, expected);
+        Ok(())
+    }
 
     #[test]
     fn a_name_the_trace_collector_cannot_write_is_refused() {
