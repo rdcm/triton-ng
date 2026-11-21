@@ -162,9 +162,9 @@ character, and reports `INVALID_ARG` without recording anything. The test backen
 activity a request names in its `report_activity` parameter, and the integration test checks that
 the trace file holds JSON and places the activity between the two ends of the request.
 
-**Spans of the model.** With `--trace-config ...mode=opentelemetry`, Triton keeps the context of
-its server span in the trace, and `Trace::context` returns it: a JSON object with the W3C
-`traceparent` and `tracestate` of that span.
+**Spans of the model.** In `mode=opentelemetry`, Triton keeps the context of its server span in
+the trace, and `Trace::context` returns it: a JSON object with the W3C `traceparent` and
+`tracestate` of that span.
 
 ```text
 {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "tracestate": ""}
@@ -176,8 +176,12 @@ in `opentelemetry`, `set_parent` in `tracing-opentelemetry`). They then carry th
 client request and nest under the request span of Triton. PyTriton reads the same JSON from Python
 (`pb_utils.InferenceRequest.trace().get_context()`) and does this in its proxy.
 
-The value is a copy, because `report_activity` replaces the string Triton keeps. It is `None` in
-`mode=triton` and for a request that is not traced, where a fresh context is the right start.
+`Trace::context` returns the context as Triton keeps it. In `mode=triton` it is empty until the
+model reports an activity, and then holds the activities as a JSON object keyed by their timestamp,
+with no `traceparent` in it. The value is `None` when there is nothing: a request Triton does not
+sample, a server built without tracing, and `mode=triton` before the first activity. A context
+without a `traceparent` has no parent to join, and a fresh context is the right start. The value is
+a copy, because `report_activity` replaces the string Triton keeps.
 
 **Lifetimes.** Triton's frontend frees the trace data shared by a trace and its children with the
 parent, and a child that reports after that writes into freed memory. So a request with a traced

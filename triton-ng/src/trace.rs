@@ -79,13 +79,15 @@ impl<'a> Trace<'a> {
         ))
     }
 
-    /// The context Triton keeps for the trace: a JSON object with the W3C
-    /// `traceparent` and `tracestate` of the server span, for a model that
-    /// reports spans of its own into the same trace.
+    /// The context Triton keeps for the trace, as it is: in `mode=opentelemetry`
+    /// a JSON object with the W3C `traceparent` and `tracestate` of the server
+    /// span, and in `mode=triton` the activities reported so far, keyed by their
+    /// timestamp and without any `traceparent` in it.
     ///
-    /// `None` when the server runs in `triton` mode, when the request is not
-    /// sampled, and when Triton was built without tracing: there is no server
-    /// span to join, and a fresh context is the right start.
+    /// `None` when the trace has no context: a request Triton does not sample, a
+    /// server built without tracing, and `mode=triton` before the first
+    /// [`Trace::report_activity`]. A context without a `traceparent` cannot be
+    /// joined, and a fresh context is the right start then.
     ///
     /// The JSON is copied, because [`Trace::report_activity`] replaces the
     /// string Triton keeps, so a slice borrowed from it would not stay valid.
@@ -113,8 +115,14 @@ impl<'a> Trace<'a> {
             self.ptr,
             &mut context
         ))?;
-        // SAFETY: the context string belongs to the trace, which is alive for
-        // the whole call, and the copy taken here is the one that is returned.
+        // SAFETY: the pointer is into the `std::string` the trace owns, which
+        // lives as long as the request borrowed here. Triton replaces that
+        // string only in `RecordActivityName`, reached through
+        // `report_activity`, which needs `&Request`; `Request` is not `Sync`, so
+        // no other thread reports into this trace while the call runs.
+        // `SetContext` runs once, in the frontend, before the request reaches
+        // the backend, and the compute activities of the core report timestamps
+        // without `RecordActivityName`.
         unsafe { context_string(context) }
             .map_err(|message| TritonError::with_code(ErrorCode::Internal, message))
     }
