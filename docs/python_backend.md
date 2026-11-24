@@ -21,7 +21,7 @@ r25.09:
 | Model loading, `auto_complete_config` | `pb_utils.load_model`, `ModelConfig` | `Server::load_model`, `AutoCompleteConfig` |
 | Backend config and attributes | not exposed | `Backend::config`, `CustomBackend::attributes` |
 | Memory | numpy arrays; CPU tensors copied into shared memory, GPU tensors through DLPack and CUDA IPC | RAM, pinned and GPU buffers of Triton's memory manager; BLS outputs taken over and request inputs passed on without a copy |
-| Data types | Triton-supported NumPy dtypes; DLPack for framework tensors | Typed helpers for fp32, fp64, i32, i64, u64, bool and strings; raw bytes for other Triton datatypes |
+| Data types | Triton-supported NumPy dtypes; DLPack for framework tensors | Typed helpers for FP32, FP64, I32, I64, U64, BOOL and BYTES, differing per direction; raw bytes for FP16, BF16, the 8- and 16-bit integers, U32, and a BLS result of another datatype |
 | GPU outputs of a response, GPU inputs | copied with CUDA to whatever the allocator returned; a GPU input reaches the model through the DLPack handle, `as_numpy` throws | outputs accept host bytes only; an input offers host bytes or `share`, no device view |
 | Custom `is_ready` hook | Not available in r25.09 | Not available with the targeted r25.09 C API |
 | PyTorch, TensorFlow, JAX inside the model | yes | no: the model goes to its framework backend and is called over BLS |
