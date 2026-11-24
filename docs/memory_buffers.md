@@ -80,6 +80,7 @@ memory with undefined content cannot become a model input.
 | `RamBuffer` | CPU memory |
 | `PinnedRamBuffer` | pinned CPU memory |
 | `GpuBuffer` | GPU memory of its device |
+| `GpuBufferSlice` | a retained byte range of a GPU buffer |
 | `SharedInput` | the memory the request keeps the input in, CPU or GPU |
 | `Arc<T>` of any of them | the memory of `T` |
 
@@ -97,6 +98,31 @@ somewhere else.
 The request owns the buffer until Triton releases the request, which can happen after the
 response has already arrived. Pass an `Arc` to keep using the buffer, for example in a cache:
 the `Arc` is shared until the release, and becomes unique again only after it.
+
+## GPU input ranges
+
+`GpuBuffer::slice` borrows a checked byte range from an `Arc<GpuBuffer>` without a
+copy. The returned `GpuBufferSlice` owns another reference to the allocation;
+Triton keeps it until request release. The allocation cannot be turned back into
+an output buffer through `Arc::try_unwrap` while a slice still refers to it.
+Reversed and out-of-bounds ranges fail, including an empty range past the end.
+Offsets and lengths are bytes; align them to the tensor element size.
+
+Slices can be appended alongside host inputs. For example, a batched recurrent
+model can preserve one row on the GPU and replace another row with a zero state:
+
+```rust ignore
+fn reset_second_row(inference: &mut InferenceRequest, state: &Arc<GpuBuffer>, row_bytes: usize) -> Result<(), Error> {
+    inference.append_input_buffer("state", state.slice(0..row_bytes)?)?;
+    inference.append_input_buffer("state", vec![0; row_bytes])?;
+    Ok(())
+}
+```
+
+This substitutes the BLS input bytes without modifying the original GPU buffer.
+It does not eliminate copies inside the model backend: a TensorRT backend may
+still copy inputs into its own bindings and copy outputs into response buffers.
+Slices are input-only and cannot be supplied to `add_requested_output_into`.
 
 ## Inputs of the request
 
