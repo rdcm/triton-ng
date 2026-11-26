@@ -1,8 +1,12 @@
-use crate::{CPU, GpuBuffer, PinnedRamBuffer, RamBuffer, RawBuffer, Sealed};
+use crate::{
+    CPU, GpuBuffer, GpuBufferSlice, PinnedRamBuffer, PinnedRamBufferSlice, RamBuffer,
+    RamBufferSlice, RawBuffer, Sealed,
+};
 use std::sync::Arc;
 
 /// Data of a BLS input: `Vec<u8>`, [`RamBuffer`], [`PinnedRamBuffer`],
-/// [`GpuBuffer`], an input of the request being answered
+/// [`GpuBuffer`], their retained ranges ([`RamBufferSlice`],
+/// [`PinnedRamBufferSlice`], [`GpuBufferSlice`]), an input of the request being answered
 /// ([`crate::SharedInput`]), or an `Arc` of any of them to keep using the
 /// buffer, for example in a cache, while Triton reads it.
 ///
@@ -54,6 +58,39 @@ impl Sealed for GpuBuffer {
 }
 
 impl InputBuffer for GpuBuffer {}
+
+impl Sealed for GpuBufferSlice {
+    fn buffers(&self) -> Vec<RawBuffer> {
+        let mut raw = self.buffer.0.raw();
+        raw.ptr = raw.ptr.cast::<u8>().wrapping_add(self.range.start).cast();
+        raw.len = self.range.end - self.range.start;
+        vec![raw]
+    }
+}
+
+impl InputBuffer for GpuBufferSlice {}
+
+impl Sealed for RamBufferSlice {
+    fn buffers(&self) -> Vec<RawBuffer> {
+        let mut raw = self.buffer.0.raw();
+        raw.ptr = raw.ptr.cast::<u8>().wrapping_add(self.range.start).cast();
+        raw.len = self.range.end - self.range.start;
+        vec![raw]
+    }
+}
+
+impl InputBuffer for RamBufferSlice {}
+
+impl Sealed for PinnedRamBufferSlice {
+    fn buffers(&self) -> Vec<RawBuffer> {
+        let mut raw = self.buffer.0.raw();
+        raw.ptr = raw.ptr.cast::<u8>().wrapping_add(self.range.start).cast();
+        raw.len = self.range.end - self.range.start;
+        vec![raw]
+    }
+}
+
+impl InputBuffer for PinnedRamBufferSlice {}
 
 impl<T: InputBuffer + Sync> Sealed for Arc<T> {
     fn buffers(&self) -> Vec<RawBuffer> {
