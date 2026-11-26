@@ -80,6 +80,8 @@ memory with undefined content cannot become a model input.
 | `RamBuffer` | CPU memory |
 | `PinnedRamBuffer` | pinned CPU memory |
 | `GpuBuffer` | GPU memory of its device |
+| `RamBufferSlice` | a retained byte range of a CPU buffer |
+| `PinnedRamBufferSlice` | a retained byte range of a pinned CPU buffer |
 | `GpuBufferSlice` | a retained byte range of a GPU buffer |
 | `SharedInput` | the memory the request keeps the input in, CPU or GPU |
 | `Arc<T>` of any of them | the memory of `T` |
@@ -99,14 +101,27 @@ The request owns the buffer until Triton releases the request, which can happen 
 response has already arrived. Pass an `Arc` to keep using the buffer, for example in a cache:
 the `Arc` is shared until the release, and becomes unique again only after it.
 
-## GPU input ranges
+## Input ranges
 
-`GpuBuffer::slice` borrows a checked byte range from an `Arc<GpuBuffer>` without a
-copy. The returned `GpuBufferSlice` owns another reference to the allocation;
+`RamBuffer::slice`, `PinnedRamBuffer::slice` and `GpuBuffer::slice` borrow a
+checked byte range from an `Arc` of the corresponding buffer without a copy.
+They return `RamBufferSlice`, `PinnedRamBufferSlice` and `GpuBufferSlice`,
+respectively. Each slice owns another reference to the allocation;
 Triton keeps it until request release. The allocation cannot be turned back into
 an output buffer through `Arc::try_unwrap` while a slice still refers to it.
+For CPU and pinned buffers, `Arc::get_mut` also prevents mutation while shared.
+The slice preserves the source memory type and device ID.
 Reversed and out-of-bounds ranges fail, including an empty range past the end.
 Offsets and lengths are bytes; align them to the tensor element size.
+
+CPU and pinned ranges are attached in the same way:
+
+```rust ignore
+fn attach_row(inference: &mut InferenceRequest, rows: &Arc<PinnedRamBuffer>, row_bytes: usize) -> Result<(), Error> {
+    inference.append_input_buffer("input", rows.slice(0..row_bytes)?)?;
+    Ok(())
+}
+```
 
 Slices can be appended alongside host inputs. For example, a batched recurrent
 model can preserve one row on the GPU and replace another row with a zero state:

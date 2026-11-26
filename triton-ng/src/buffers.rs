@@ -28,6 +28,96 @@ pub struct GpuBufferSlice {
     pub(crate) range: Range<usize>,
 }
 
+/// A byte range of a CPU buffer, usable as a BLS input without copying.
+///
+/// Owns a reference to the whole allocation until Triton releases the input.
+/// Created by [`RamBuffer::slice`]; it cannot mutate or receive outputs
+/// into the buffer.
+///
+/// # Examples
+///
+/// ```ignore
+/// let buffer = Arc::new(ctx.memory().ram(16)?);
+/// inference.append_input_buffer("input", buffer.slice(4..12)?)?;
+/// ```
+pub struct RamBufferSlice {
+    pub(crate) buffer: Arc<RamBuffer>,
+    pub(crate) range: Range<usize>,
+}
+
+impl RamBuffer {
+    /// Borrows a byte range as an owned BLS input, retaining this allocation.
+    ///
+    /// Fails when the range is reversed or exceeds the allocation. Offsets
+    /// are bytes; callers must align ranges to their tensor element size.
+    /// An outstanding slice prevents mutable access and output reuse through
+    /// the source `Arc` until the slice is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = Arc::new(ctx.memory().ram(16)?);
+    /// inference.append_input_buffer("input", buffer.slice(4..12)?)?;
+    /// ```
+    pub fn slice(self: &Arc<Self>, range: Range<usize>) -> Result<RamBufferSlice, Error> {
+        if range.start > range.end || range.end > self.len() {
+            return Err(
+                format!("CPU slice {range:?} exceeds buffer of {} bytes", self.len()).into(),
+            );
+        }
+        Ok(RamBufferSlice {
+            buffer: Arc::clone(self),
+            range,
+        })
+    }
+}
+
+/// A byte range of a pinned CPU buffer, usable as a BLS input without copying.
+///
+/// Owns a reference to the whole allocation until Triton releases the input.
+/// Created by [`PinnedRamBuffer::slice`]; it cannot mutate or receive outputs
+/// into the buffer.
+///
+/// # Examples
+///
+/// ```ignore
+/// let buffer = Arc::new(ctx.memory().pinned(16)?);
+/// inference.append_input_buffer("input", buffer.slice(4..12)?)?;
+/// ```
+pub struct PinnedRamBufferSlice {
+    pub(crate) buffer: Arc<PinnedRamBuffer>,
+    pub(crate) range: Range<usize>,
+}
+
+impl PinnedRamBuffer {
+    /// Borrows a byte range as an owned BLS input, retaining this allocation.
+    ///
+    /// Fails when the range is reversed or exceeds the allocation. Offsets
+    /// are bytes; callers must align ranges to their tensor element size.
+    /// An outstanding slice prevents mutable access and output reuse through
+    /// the source `Arc` until the slice is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let buffer = Arc::new(ctx.memory().pinned(16)?);
+    /// inference.append_input_buffer("input", buffer.slice(4..12)?)?;
+    /// ```
+    pub fn slice(self: &Arc<Self>, range: Range<usize>) -> Result<PinnedRamBufferSlice, Error> {
+        if range.start > range.end || range.end > self.len() {
+            return Err(format!(
+                "pinned CPU slice {range:?} exceeds buffer of {} bytes",
+                self.len()
+            )
+            .into());
+        }
+        Ok(PinnedRamBufferSlice {
+            buffer: Arc::clone(self),
+            range,
+        })
+    }
+}
+
 impl Deref for RamBuffer {
     type Target = [u8];
 
@@ -127,8 +217,8 @@ impl UninitGpuBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::{GpuBuffer, GpuBufferSlice};
-    use crate::{Error, GPU, MemoryManager, Sealed};
+    use super::{GpuBuffer, GpuBufferSlice, PinnedRamBuffer, RamBuffer};
+    use crate::{CPU, CPU_PINNED, Error, GPU, MemoryManager, RawBuffer, Sealed};
     use std::ops::Range;
     use std::sync::Arc;
 
@@ -183,6 +273,60 @@ mod tests {
         let sut = Sut::new()?;
         let actual = sut.observe_buffer_reuse()?;
         let expected = (true, true);
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_preserve_the_requested_bytes_and_memory_placement() -> Result<(), Error> {
+        let sut = HostSut::new(16)?;
+        let actual = sut.describe_slices(4..12)?;
+        let expected = vec![(true, 8, CPU, 0), (true, 8, CPU_PINNED, 0)];
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_reject_reversed_and_out_of_bounds_ranges() -> Result<(), Error> {
+        let sut = HostSut::new(16)?;
+        let actual = sut.invalid_ranges_are_rejected();
+        let expected = (vec![true; 6], (1, 1));
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_allow_an_empty_range_at_the_end() -> Result<(), Error> {
+        let sut = HostSut::new(16)?;
+        let actual = sut.describe_slices(16..16)?;
+        let expected = vec![(true, 0, CPU, 0), (true, 0, CPU_PINNED, 0)];
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_allow_empty_allocations() -> Result<(), Error> {
+        let sut = HostSut::new(0)?;
+        let actual = sut.describe_slices(0..0)?;
+        let expected = vec![(true, 0, CPU, 0), (true, 0, CPU_PINNED, 0)];
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_retain_the_allocation_after_the_source_is_dropped() -> Result<(), Error> {
+        let sut = HostSut::new(16)?;
+        let actual = sut.observe_allocation_lifetime()?;
+        let expected = ((true, true), (true, true));
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn host_slices_prevent_mutation_and_output_reuse_until_dropped() -> Result<(), Error> {
+        let sut = HostSut::new(16)?;
+        let actual = sut.observe_buffer_reuse()?;
+        let expected = ((true, true), (true, true), (true, true));
         assert_eq!(actual, expected);
         Ok(())
     }
@@ -256,6 +400,113 @@ mod tests {
                     Ok((true, Arc::try_unwrap(buffer).is_ok()))
                 }
             }
+        }
+    }
+
+    struct HostSut {
+        ram: Arc<RamBuffer>,
+        pinned: Arc<PinnedRamBuffer>,
+    }
+
+    impl HostSut {
+        fn new(len: usize) -> Result<Self, Error> {
+            let memory = MemoryManager::heap();
+            let mut ram = memory.ram(len)?;
+            let mut pinned = memory.pinned(len)?;
+            ram.fill(7);
+            pinned.fill(9);
+            Ok(Self {
+                ram: Arc::new(ram),
+                pinned: Arc::new(pinned),
+            })
+        }
+
+        fn describe_slices(
+            &self,
+            range: Range<usize>,
+        ) -> Result<Vec<(bool, usize, u32, i64)>, Error> {
+            let ram = self.ram.slice(range.clone())?;
+            let pinned = self.pinned.slice(range.clone())?;
+            let sources = [self.ram.0.raw(), self.pinned.0.raw()];
+            let slices = [ram.buffers(), pinned.buffers()];
+            sources
+                .into_iter()
+                .zip(slices)
+                .map(|(source, slice)| {
+                    let raw: RawBuffer = slice
+                        .into_iter()
+                        .next()
+                        .ok_or("missing host slice buffer")?;
+                    let expected_ptr = source.ptr.cast::<u8>().wrapping_add(range.start).cast();
+                    // SAFETY: the checked range lies in the initialized CPU-accessible
+                    // allocation retained by `ram` or `pinned` for this entire read.
+                    let bytes_match = raw.len == 0
+                        || unsafe {
+                            std::slice::from_raw_parts(raw.ptr.cast::<u8>(), raw.len)
+                                .iter()
+                                .all(|byte| *byte == if raw.memory_type == CPU { 7 } else { 9 })
+                        };
+                    Ok((
+                        raw.ptr == expected_ptr && bytes_match,
+                        raw.len,
+                        raw.memory_type,
+                        raw.memory_type_id,
+                    ))
+                })
+                .collect()
+        }
+
+        fn invalid_ranges_are_rejected(&self) -> (Vec<bool>, (usize, usize)) {
+            let rejected = [Range { start: 9, end: 8 }, 0..17, 17..17]
+                .into_iter()
+                .flat_map(|range| {
+                    [
+                        self.ram.slice(range.clone()).is_err(),
+                        self.pinned.slice(range).is_err(),
+                    ]
+                })
+                .collect();
+            (
+                rejected,
+                (
+                    Arc::strong_count(&self.ram),
+                    Arc::strong_count(&self.pinned),
+                ),
+            )
+        }
+
+        fn observe_allocation_lifetime(self) -> Result<((bool, bool), (bool, bool)), Error> {
+            let ram = Arc::downgrade(&self.ram);
+            let pinned = Arc::downgrade(&self.pinned);
+            let ram_slice = self.ram.slice(4..12)?;
+            let pinned_slice = self.pinned.slice(4..12)?;
+            drop(self);
+            let retained = (ram.strong_count() == 1, pinned.strong_count() == 1);
+            drop((ram_slice, pinned_slice));
+            Ok((
+                retained,
+                (ram.upgrade().is_none(), pinned.upgrade().is_none()),
+            ))
+        }
+
+        fn observe_buffer_reuse(
+            mut self,
+        ) -> Result<((bool, bool), (bool, bool), (bool, bool)), Error> {
+            let ram_slice = self.ram.slice(4..12)?;
+            let pinned_slice = self.pinned.slice(4..12)?;
+            let mutation_blocked = (
+                Arc::get_mut(&mut self.ram).is_none(),
+                Arc::get_mut(&mut self.pinned).is_none(),
+            );
+            let ram = Arc::try_unwrap(self.ram);
+            let pinned = Arc::try_unwrap(self.pinned);
+            let reuse_blocked = (ram.is_err(), pinned.is_err());
+            drop((ram_slice, pinned_slice));
+            let reusable = (
+                ram.is_err_and(|buffer| Arc::try_unwrap(buffer).is_ok()),
+                pinned.is_err_and(|buffer| Arc::try_unwrap(buffer).is_ok()),
+            );
+            Ok((mutation_blocked, reuse_blocked, reusable))
         }
     }
 }

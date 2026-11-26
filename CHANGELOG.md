@@ -9,8 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Checked, allocation-retaining GPU input ranges through `GpuBuffer::slice` and
-  `GpuBufferSlice`, including mixed host/GPU input composition without CUDA calls.
+- Checked, allocation-retaining CPU, pinned CPU and GPU input ranges through
+  `RamBuffer::slice`, `PinnedRamBuffer::slice` and `GpuBuffer::slice`, including
+  mixed host/GPU input composition without CUDA calls.
 
 ## [0.4.0] - 2026-11-16
 
